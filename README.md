@@ -59,13 +59,15 @@ Denial document
 | 2 | [Data](docs/02-data.md) | Where the data comes from and how labels are created |
 | 3 | [Architecture](docs/03-architecture.md) | Components, data flow, folder layout |
 | 4 | [Product & Dashboard](docs/04-product-and-dashboard.md) | Screens, users, permissions |
+| 5 | [Build Plan](docs/05-build-plan.md) | Stages, what each produces, when it is done |
+| 6 | [Coding Conventions](docs/06-conventions.md) | Naming, structure and rules all code follows |
 | - | [Repository Rules](docs/repo-rules.md) | How the repo is set up and how work enters it |
 | - | [Learning Notes](docs/learning.md) | Why every decision was made, and what we rejected |
 
 ## Status
 
-**Design only - no code written yet.** The build plan and coding conventions will be added
-as `docs/05-*` and `docs/06-*` when the first stage of implementation starts.
+**Design complete, implementation starting at Stage 0.** See the
+[build plan](docs/05-build-plan.md).
 
 ## How work is split across machines
 

@@ -125,16 +125,32 @@ Lower case, hyphen separated, no spaces, no issue numbers in the name.
 | `test` | Tests only | `test/extraction-edge-cases` |
 | `perf` | Speed or cost improvement | `perf/cache-embeddings` |
 
-**Rule 2: one branch, one concern.** If the branch name needs the word "and", it is two
-branches.
+**Rule 2: one branch per feature group, and only one branch open at a time.**
+
+A **feature group** is a set of related tasks that only make sense together — for example
+the settings module, the database session and the first migration are all "database
+foundation". Group them on one branch instead of opening a branch per task.
+
+| Too small (avoid) | Right size | Too big (avoid) |
+|---|---|---|
+| `chore/add-settings`, `chore/add-session`, `feat/add-migration` — three branches | `feat/database-foundation` — one branch | `stage-0/everything` — the whole stage |
+
+How to decide whether tasks belong together:
+
+- **Together:** they touch the same component, or one is useless without the other.
+- **Apart:** they are unrelated — a data loader and a README typo are two branches.
+- **Split it:** the pull request would pass roughly 400 changed lines.
+
+Aim for **2–4 branches per stage**. Open the next branch only after the current one is
+merged.
 
 ### 3.2 Lifetime
 
-A branch should live **hours to a couple of days**. Long branches drift from `main`,
-collect conflicts, and produce pull requests too large to review honestly.
+A branch should live **a few days at most**. Long branches drift from `main`, collect
+conflicts, and produce pull requests too large to review honestly.
 
-If a piece of work is genuinely large, split it into stages that each merge on their own —
-a schema change, then the logic, then the API, then the UI.
+If a feature group grows too large, merge what is finished and continue the rest on a new
+branch.
 
 ---
 
@@ -308,15 +324,16 @@ of `--force`, always.
 
 ### 8.1 Issues
 
-Every piece of work starts as an issue. Title carries the stage:
+Every branch starts as an issue — **one issue per feature group**, not one per small task.
+List the tasks inside the issue as a checklist. Title carries the stage:
 
 ```text
-[S0] Settings module validated from the environment
-[S1] Loader for the claims data source
-[S3] Schema-bound extraction with per-field confidence
+[S0] Database foundation
+[S1] Claims data loader
+[S3] Schema-bound extraction
 ```
 
-An issue body states: what, why, and how you will know it is done.
+An issue body states what, why, the task checklist, and how you will know it is done.
 
 ### 8.2 Board
 
@@ -452,7 +469,7 @@ time.
 | # | Rule |
 |---|---|
 | 1 | Never commit directly to `main` |
-| 2 | One branch, one concern |
+| 2 | One branch per feature group, one branch open at a time |
 | 3 | Never merge on red CI |
 | 4 | Commit small and often on your branch |
 | 5 | If `git status` surprises you, stop and investigate |

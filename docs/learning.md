@@ -159,14 +159,28 @@ not check and will happily destroy them.
 useful question before starting: *is this a feature, or a fix, or just tooling?* If you
 cannot answer, the work is not well defined yet.
 
-### D2. Why one branch, one concern
+### D2. Why one branch per feature group
 
-**The failure it prevents:** you set out to add upload validation, notice some messy code,
-refactor it, spot a typo in the docs, fix that too. Now the pull request touches twelve
-files for three unrelated reasons. If one part is wrong, you cannot revert it without
-losing the other two.
+**What we chose:** related tasks share one branch — for example `feat/database-foundation`
+holds the settings module, the database session and the first migration together.
 
-**Simple test:** if the branch name needs the word "and", it should be two branches.
+**What else exists:**
+
+| Approach | Problem |
+|---|---|
+| One branch per tiny task | Many branches and PRs for pieces that are useless alone. Pure overhead for one person |
+| One branch per whole stage | PRs of 2,000+ lines nobody can review, and CI feedback arrives far too late |
+| **One branch per feature group** | — |
+
+**Why the middle wins:** few branches to manage, but each PR is still small enough to read
+properly and to revert cleanly if it turns out wrong.
+
+**The failure it still prevents:** mixing *unrelated* work. A data loader and a README typo
+fix do not belong on one branch — if one is wrong, you cannot revert it without losing the
+other.
+
+**Simple test:** would these tasks make sense merged separately? If not, they are one
+group. If yes, and they are unrelated, they are two branches.
 
 ### D3. Why pull requests stay under ~400 lines
 
@@ -424,6 +438,7 @@ argument later.
 | An identity provider for login | Plain accounts with roles | An IDP solves single sign-on across many applications. We have one application. |
 | Weekly task sheets in the repo | Task sheets stay local | They went stale within days and buried the real history. |
 | Required 1 approval on pull requests | 0 approvals, CI is the gate | GitHub forbids self-approval — the rule would have blocked every merge. |
+| One branch per small task | One branch per feature group | Too many branches for one person. Grouping related tasks keeps branches few while PRs stay reviewable. |
 
 ---
 

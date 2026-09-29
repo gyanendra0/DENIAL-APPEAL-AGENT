@@ -61,7 +61,6 @@ Denial document
 | 4 | [Product & Dashboard](docs/04-product-and-dashboard.md) | Screens, users, permissions |
 | 5 | [Build Plan](docs/05-build-plan.md) | Stages, what each produces, when it is done |
 | 6 | [Coding Conventions](docs/06-conventions.md) | Naming, structure and rules all code follows |
-| - | [Repository Rules](docs/repo-rules.md) | How the repo is set up and how work enters it |
 | - | [Learning Notes](docs/learning.md) | Why every decision was made, and what we rejected |
 
 ## Status
@@ -87,10 +86,10 @@ Source code, published documentation, configuration templates and deployment man
 
 **Never committed:** secrets, datasets, trained models, dependency folders, and **working
 documents** - task sheets, checklists and scratch notes live in `docs/working/` and stay
-local. See `.gitignore` and Part 10 of the repository rules.
+local. See `.gitignore`.
 
-All work follows [docs/repo-rules.md](docs/repo-rules.md): no direct commits to `main`,
-one branch per feature, pull request with green checks, squash merge.
+All work follows the same workflow: no direct commits to `main`, an issue before every
+branch, one branch per feature group, pull request with green checks, squash merge.
 
 > **Note on sources.** Dataset names, links and numbers in these documents are written
 > from general knowledge. Verify each one before depending on it.

@@ -71,6 +71,7 @@ docs/**/*.draft.md
 TODO.md
 NOTES.md
 scratch/
+docs/repo-rules.md
 
 # ---------- Editors ----------
 .vscode/

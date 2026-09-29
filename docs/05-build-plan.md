@@ -6,7 +6,7 @@ condition that must hold on the run machine before the next stage begins.
 Stages are not dated. Do not reorder them — each one relies on the previous.
 
 Every stage is delivered as 2–4 feature-group branches, one issue and one pull request
-each, following [repo-rules.md](repo-rules.md). A stage is complete when its done
+each. A stage is complete when its done
 condition holds and a release tag is pushed.
 
 ---

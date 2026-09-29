@@ -1,7 +1,6 @@
 # 6. Coding Conventions
 
-Rules every file in this repository follows. Git and pull request rules are in
-[repo-rules.md](repo-rules.md); this document covers the code itself.
+Rules every file in this repository follows. This document covers the code itself.
 
 ---
 

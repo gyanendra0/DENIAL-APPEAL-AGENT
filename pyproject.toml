@@ -8,7 +8,13 @@ version = "0.0.1"
 description = "Insurance denial analysis and appeal drafting agent"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy>=2.1",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -49,3 +55,4 @@ addopts = "--cov=src --cov-report=term-missing --cov-fail-under=70"
 [tool.coverage.run]
 branch = true
 source = ["src"]
+omit = ["src/db/migrations/*"]

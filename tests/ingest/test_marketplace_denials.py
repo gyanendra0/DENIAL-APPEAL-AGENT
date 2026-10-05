@@ -1,6 +1,7 @@
 """Loader tests. The fixture workbook is tiny and made up: 3 issuers on 6 plan rows (4 to 9)."""
 
 import logging
+import zipfile
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +31,7 @@ from src.ingest.marketplace_denials import (
 CellValue = int | float | str | None
 FIXTURE = Path(__file__).parent / "fixtures" / "tc_puf_sample.xlsx"
 PLAN_YEAR = 2026
+DATA_SHEET_ENTRY = "xl/worksheets/sheet2.xml"  # the QHP sheet inside the fixture's zip
 SHEET_NAME = SHEET_NAME_TEMPLATE.format(plan_year=PLAN_YEAR)
 
 
@@ -121,9 +123,51 @@ def test_rejects_a_plan_year_that_does_not_match_the_file() -> None:
         read_issuer_denial_rows(FIXTURE, 2025)
 
 
-def test_rejects_a_file_that_is_not_a_workbook(tmp_path: Path) -> None:
+def _rezipped_fixture(path: Path, replace: dict[str, bytes]) -> Path:
+    """Copy the fixture's zip entries to `path`, swapping the content of some of them."""
+    with zipfile.ZipFile(FIXTURE) as source, zipfile.ZipFile(path, "w") as target:
+        for name in source.namelist():
+            target.writestr(name, replace.get(name, source.read(name)))
+    return path
+
+
+def test_rejects_a_text_file(tmp_path: Path) -> None:
     path = tmp_path / "not_really.xlsx"
     path.write_text("just some text")
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+
+def test_rejects_a_workbook_with_another_extension(tmp_path: Path) -> None:
+    path = tmp_path / "sample.csv"
+    path.write_bytes(FIXTURE.read_bytes())
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+
+def test_rejects_a_zip_that_is_not_a_workbook(tmp_path: Path) -> None:
+    path = tmp_path / "archive.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("readme.txt", "not a workbook")
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+
+def test_rejects_a_workbook_with_broken_xml(tmp_path: Path) -> None:
+    path = _rezipped_fixture(tmp_path / "broken.xlsx", {"xl/workbook.xml": b"<not xml"})
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+
+def test_rejects_a_workbook_whose_sheet_is_cut_short(tmp_path: Path) -> None:
+    with zipfile.ZipFile(FIXTURE) as source:
+        sheet_xml = source.read(DATA_SHEET_ENTRY)
+    half = sheet_xml[: len(sheet_xml) // 2]
+    path = _rezipped_fixture(tmp_path / "cut_short.xlsx", {DATA_SHEET_ENTRY: half})
 
     with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
         read_issuer_denial_rows(path, PLAN_YEAR)

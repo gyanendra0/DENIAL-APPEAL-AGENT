@@ -10,6 +10,7 @@ import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Self
+from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
 from openpyxl import load_workbook
@@ -42,6 +43,10 @@ HEADER_ROW = 3
 MISSING_TOKENS = frozenset({"*", "**", "***", "N/A"})
 YES_NO = {"Yes": True, "No": False}
 MAX_PROBLEMS_IN_MESSAGE = 20
+UNREADABLE_WORKBOOK = "not a readable .xlsx workbook"
+# What openpyxl raises for a file that is not a workbook: not a zip, wrong extension,
+# a zip without the workbook parts (KeyError), or broken XML inside.
+UNREADABLE_WORKBOOK_ERRORS = (BadZipFile, InvalidFileException, KeyError, ParseError)
 UPSERT_CONSTRAINT = "uq_issuer_denial_stats_issuer_year"
 UPSERT_KEY_COLUMNS = ("issuer_id", "plan_year")
 
@@ -162,8 +167,8 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
     sheet_name = SHEET_NAME_TEMPLATE.format(plan_year=plan_year)
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
-    except (BadZipFile, InvalidFileException) as exc:
-        raise BatchRejectedError(["not a readable .xlsx workbook"]) from exc
+    except UNREADABLE_WORKBOOK_ERRORS as exc:
+        raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
     try:
         if sheet_name not in workbook.sheetnames:
             raise BatchRejectedError([f"sheet {sheet_name!r} not found"])
@@ -200,6 +205,8 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
                     f"row {row_number}: issuer {row.issuer_id} differs from an earlier row "
                     "of the same issuer"
                 )
+    except ParseError as exc:  # sheets are parsed lazily, so broken XML can surface mid-read
+        raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
     finally:
         workbook.close()
 

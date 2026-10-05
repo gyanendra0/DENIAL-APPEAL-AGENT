@@ -71,7 +71,7 @@ these fail:
 | There are no data rows | Reject |
 | Issuer id is not five digits, state is not two letters, or exchange type is unknown | Reject |
 | A count is negative or not a whole number; a percent is outside 0 to 100 or has more than two decimals | Reject |
-| A cell holds text that is neither a number nor a legend token | Reject |
+| A number cell holds text that is neither a number nor a legend token, or holds TRUE/FALSE | Reject |
 | Appeals overturned is greater than appeals filed | Reject |
 | A count or percent cell is blank (the source always writes a number or a legend token) | Reject |
 | Two plan rows of one issuer disagree on an issuer-level value | Reject |
@@ -84,8 +84,8 @@ python3 -m pipelines.load_marketplace_denials data/raw/marketplace/<file>.xlsx -
 ```
 
 Exit code 0 means loaded, 1 means the file was rejected (the first 20 problems are
-listed, with their row numbers), 2 means a bad argument. Running the command again is safe: rows are
-matched on issuer and plan year and updated in place.
+listed, with their row numbers), 2 means a bad argument. Running the command again is
+safe: rows are matched on issuer and plan year and updated in place.
 
 **Label definition.** The ML target is:
 

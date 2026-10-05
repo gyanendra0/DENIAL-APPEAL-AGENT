@@ -7,6 +7,7 @@ rejected outright: nothing is returned. Validated rows are then upserted into
 """
 
 import logging
+import zlib
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -44,9 +45,11 @@ MISSING_TOKENS = frozenset({"*", "**", "***", "N/A"})
 YES_NO = {"Yes": True, "No": False}
 MAX_PROBLEMS_IN_MESSAGE = 20
 UNREADABLE_WORKBOOK = "not a readable .xlsx workbook"
-# What openpyxl raises for a file that is not a workbook: not a zip, wrong extension,
-# a zip without the workbook parts (KeyError), or broken XML inside.
-UNREADABLE_WORKBOOK_ERRORS = (BadZipFile, InvalidFileException, KeyError, ParseError)
+# Raised for damaged content (bad zip or checksum, bad compressed data, broken XML). Sheets
+# are read lazily, so these can surface when the file is opened or while rows are read.
+DAMAGED_CONTENT_ERRORS = (BadZipFile, zlib.error, ParseError)
+# Raised only when opening: also a wrong extension, and a zip without the workbook parts.
+UNREADABLE_WORKBOOK_ERRORS = (*DAMAGED_CONTENT_ERRORS, InvalidFileException, KeyError)
 UPSERT_CONSTRAINT = "uq_issuer_denial_stats_issuer_year"
 UPSERT_KEY_COLUMNS = ("issuer_id", "plan_year")
 
@@ -169,6 +172,12 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
         workbook = load_workbook(path, read_only=True, data_only=True)
     except UNREADABLE_WORKBOOK_ERRORS as exc:
         raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
+    except OSError as exc:
+        # openpyxl raises a bare OSError for an Office file that is not a spreadsheet.
+        # Real operating-system errors (such as permission denied) carry an errno: let them through.
+        if exc.errno is not None:
+            raise
+        raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
     try:
         if sheet_name not in workbook.sheetnames:
             raise BatchRejectedError([f"sheet {sheet_name!r} not found"])
@@ -205,7 +214,7 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
                     f"row {row_number}: issuer {row.issuer_id} differs from an earlier row "
                     "of the same issuer"
                 )
-    except ParseError as exc:  # sheets are parsed lazily, so broken XML can surface mid-read
+    except DAMAGED_CONTENT_ERRORS as exc:
         raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
     finally:
         workbook.close()

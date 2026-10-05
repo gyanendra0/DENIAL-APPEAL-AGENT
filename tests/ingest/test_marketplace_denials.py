@@ -2,6 +2,7 @@
 
 import logging
 import zipfile
+import zlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -163,10 +164,74 @@ def test_rejects_a_workbook_with_broken_xml(tmp_path: Path) -> None:
         read_issuer_denial_rows(path, PLAN_YEAR)
 
 
+def test_rejects_an_office_file_that_is_not_a_spreadsheet(tmp_path: Path) -> None:
+    content_types = (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Override PartName="/word/document.xml" ContentType="application/'
+        'vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
+    )
+    path = tmp_path / "letter.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+
+def test_missing_file_is_not_reported_as_a_bad_workbook(tmp_path: Path) -> None:
+    # A real operating-system error is left alone, so the caller sees what actually happened.
+    with pytest.raises(FileNotFoundError):
+        read_issuer_denial_rows(tmp_path / "nope.xlsx", PLAN_YEAR)
+
+
+def test_rejects_a_workbook_with_damaged_compressed_data(tmp_path: Path) -> None:
+    path = tmp_path / "damaged.xlsx"
+    with zipfile.ZipFile(FIXTURE) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as t:
+        for name in source.namelist():
+            t.writestr(name, source.read(name))
+        entry = t.getinfo(DATA_SHEET_ENTRY)
+    raw = bytearray(path.read_bytes())
+    data_start = entry.header_offset + 30 + len(entry.filename) + len(entry.extra)
+    raw[data_start + 5] ^= 0xFF  # flip one byte inside the sheet's compressed data
+    path.write_bytes(raw)
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook") as excinfo:
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+    assert isinstance(excinfo.value.__cause__, zlib.error)
+
+
+def test_rejects_a_checksum_mismatch_found_while_reading_rows(tmp_path: Path) -> None:
+    # Big enough that the sheet is read in several pieces: the checksum is only verified at
+    # the end, after the file has opened and rows have started to come back.
+    workbook = load_workbook(FIXTURE)
+    sheet = workbook[SHEET_NAME]
+    first_plan_row = [cell.value for cell in sheet[HEADER_ROW + 1]]
+    for _ in range(200):
+        sheet.append(first_plan_row)
+    grown = tmp_path / "grown.xlsx"
+    workbook.save(grown)
+    path = tmp_path / "bad_checksum.xlsx"
+    with zipfile.ZipFile(grown) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as t:
+        for name in source.namelist():
+            t.writestr(name, source.read(name))
+    raw = path.read_bytes()
+    last_value = raw.rfind(b"<v>9000</v>")
+    assert last_value != -1
+    path.write_bytes(raw[:last_value] + b"<v>9001</v>" + raw[last_value + 11 :])
+    load_workbook(path, read_only=True).close()  # opening alone does not notice the damage
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook") as excinfo:
+        read_issuer_denial_rows(path, PLAN_YEAR)
+
+    assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
+
+
 def test_rejects_a_workbook_whose_sheet_is_cut_short(tmp_path: Path) -> None:
     with zipfile.ZipFile(FIXTURE) as source:
         sheet_xml = source.read(DATA_SHEET_ENTRY)
     half = sheet_xml[: len(sheet_xml) // 2]
+    assert b"Issuer_ID" in half  # the cut is after the header row, so it is hit while reading rows
     path = _rezipped_fixture(tmp_path / "cut_short.xlsx", {DATA_SHEET_ENTRY: half})
 
     with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):

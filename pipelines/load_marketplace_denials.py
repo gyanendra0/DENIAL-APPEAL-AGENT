@@ -1,4 +1,4 @@
-"""Load the CMS Transparency in Coverage PUF into `issuer_denial_stats`.
+"""Load the CMS Transparency in Coverage PUF into `issuer_denial_stats` and `plan_denial_stats`.
 
 Usage:
     python3 -m pipelines.load_marketplace_denials <path-to-xlsx> --plan-year 2026
@@ -19,6 +19,7 @@ from src.ingest.marketplace_denials import (
     read_issuer_denial_rows,
     upsert_issuer_denial_rows,
 )
+from src.ingest.marketplace_plan_denials import read_plan_denial_rows, upsert_plan_denial_rows
 
 EXIT_OK = 0
 EXIT_REJECTED = 1
@@ -37,7 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=get_settings().log_level)
     try:
-        rows = read_issuer_denial_rows(args.path, args.plan_year)
+        issuer_rows = read_issuer_denial_rows(args.path, args.plan_year)
+        plan_rows = read_plan_denial_rows(args.path, args.plan_year)
     except BatchRejectedError as exc:
         print(exc, file=sys.stderr)
         return EXIT_REJECTED
@@ -45,10 +47,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine = create_db_engine()
     try:
         with session_scope(create_session_factory(engine)) as session:
-            written = upsert_issuer_denial_rows(session, rows)
+            issuers = upsert_issuer_denial_rows(session, issuer_rows)
+            plans = upsert_plan_denial_rows(session, plan_rows)  # after the issuers they point at
     finally:
         engine.dispose()
-    print(f"loaded {written} issuer rows for plan year {args.plan_year}")
+    print(f"loaded {issuers} issuer rows and {plans} plan rows for plan year {args.plan_year}")
     return EXIT_OK
 
 

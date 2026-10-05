@@ -8,7 +8,7 @@ rejected outright: nothing is returned. Validated rows are then upserted into
 
 import logging
 import zlib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -29,6 +29,7 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from src.db.base import Base
 from src.db.models import (
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
@@ -53,6 +54,7 @@ DAMAGED_CONTENT_ERRORS = (BadZipFile, zlib.error, ParseError)
 UNREADABLE_WORKBOOK_ERRORS = (*DAMAGED_CONTENT_ERRORS, InvalidFileException, KeyError)
 UPSERT_CONSTRAINT = "uq_issuer_denial_stats_issuer_year"
 UPSERT_KEY_COLUMNS = ("issuer_id", "plan_year")
+UPSERT_BATCH_SIZE = 1000
 
 # Row model field -> exact header text in the sheet.
 SOURCE_HEADERS = {
@@ -247,27 +249,45 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
     return rows
 
 
+def upsert_rows(
+    session: Session,
+    table: type[Base],
+    rows: Sequence[BaseModel],
+    constraint: str,
+    key_columns: Collection[str],
+) -> int:
+    """Insert `rows` into `table`, updating any row that already has the same key.
+
+    `constraint` is the unique constraint that defines the key and `key_columns` its columns.
+    Every other field of the row model is overwritten and `updated_at` is set. Rows are sent
+    in batches, because one statement can carry at most 65,535 values. Returns the number of
+    rows written. Does not commit: the caller owns the transaction.
+    """
+    for start in range(0, len(rows), UPSERT_BATCH_SIZE):
+        batch = rows[start : start + UPSERT_BATCH_SIZE]
+        statement = insert(table).values([row.model_dump() for row in batch])
+        new_values = {
+            name: statement.excluded[name]
+            for name in type(batch[0]).model_fields
+            if name not in key_columns
+        }
+        session.execute(
+            statement.on_conflict_do_update(
+                constraint=constraint, set_={**new_values, "updated_at": func.now()}
+            )
+        )
+    return len(rows)
+
+
 def upsert_issuer_denial_rows(session: Session, rows: list[IssuerDenialRow]) -> int:
     """Insert `rows` into `issuer_denial_stats`, updating any issuer + plan year already there.
 
     Loading the same rows twice changes nothing except `updated_at`. Returns the number of
     rows written. Does not commit: the caller owns the transaction.
     """
-    if not rows:
-        return 0
-    statement = insert(IssuerDenialStats).values([row.model_dump() for row in rows])
-    new_values = {
-        name: statement.excluded[name]
-        for name in IssuerDenialRow.model_fields
-        if name not in UPSERT_KEY_COLUMNS
-    }
-    session.execute(
-        statement.on_conflict_do_update(
-            constraint=UPSERT_CONSTRAINT, set_={**new_values, "updated_at": func.now()}
-        )
-    )
-    logger.info("upserted %d issuer rows", len(rows))
-    return len(rows)
+    written = upsert_rows(session, IssuerDenialStats, rows, UPSERT_CONSTRAINT, UPSERT_KEY_COLUMNS)
+    logger.info("upserted %d issuer rows", written)
+    return written
 
 
 def describe_validation_error(row_number: int, exc: ValidationError) -> list[str]:

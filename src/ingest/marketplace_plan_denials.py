@@ -2,7 +2,8 @@
 
 One sheet row is one plan. A plan is either reported (numbers, some suppressed) or not
 reported at all (new to the Exchange). A file that fails any quality gate is rejected
-outright: nothing is returned.
+outright: nothing is returned. Validated rows are then upserted into `plan_denial_stats`,
+a public reference table (no `account_id`).
 """
 
 import logging
@@ -17,13 +18,15 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlalchemy.orm import Session
 
-from src.db.models import PLAN_COUNT_COLUMNS, MetalLevel, PlanType
+from src.db.models import PLAN_COUNT_COLUMNS, MetalLevel, PlanDenialStats, PlanType
 from src.ingest.marketplace_denials import (
     BatchRejectedError,
     Count,
     describe_validation_error,
     read_sheet_rows,
+    upsert_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,8 @@ SUPPRESSED_MARK = "**"
 # Legend tokens that mean the plan has no figures: new to the Exchange, not required,
 # or not available.
 NOT_REPORTED_TOKENS = frozenset({"N/A", "***", "*"})
+PLAN_UPSERT_CONSTRAINT = "uq_plan_denial_stats_plan_year"
+PLAN_UPSERT_KEY_COLUMNS = ("plan_id", "plan_year")
 REASON_COLUMNS = tuple(name for name in PLAN_COUNT_COLUMNS if name.startswith("denied_"))
 
 # Row model field -> exact header text in the sheet (the typos are in the source).
@@ -173,6 +178,20 @@ def read_plan_denial_rows(path: Path, plan_year: int) -> list[PlanDenialRow]:
     _warn_implausible(rows)
     logger.info("read %d plan rows for plan year %d", len(rows), plan_year)
     return rows
+
+
+def upsert_plan_denial_rows(session: Session, rows: list[PlanDenialRow]) -> int:
+    """Insert `rows` into `plan_denial_stats`, updating any plan + plan year already there.
+
+    The issuer rows of the same plan year must be written first (foreign key). Loading the
+    same rows twice changes nothing except `updated_at`. Returns the number of rows written.
+    Does not commit: the caller owns the transaction.
+    """
+    written = upsert_rows(
+        session, PlanDenialStats, rows, PLAN_UPSERT_CONSTRAINT, PLAN_UPSERT_KEY_COLUMNS
+    )
+    logger.info("upserted %d plan rows", written)
+    return written
 
 
 def _above(value: int | None, limit: int | None) -> bool:

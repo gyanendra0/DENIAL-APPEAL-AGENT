@@ -1,14 +1,33 @@
 """Plan reader tests. Fixture plan rows 4 to 8 are reported; row 9 (a new issuer) is not."""
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from openpyxl.utils import get_column_letter
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from src.db.models import PLAN_COUNT_COLUMNS, MetalLevel, PlanType
-from src.ingest.marketplace_denials import BatchRejectedError
-from src.ingest.marketplace_plan_denials import PlanDenialRow, read_plan_denial_rows
+from src.db.models import (
+    PLAN_COUNT_COLUMNS,
+    IssuerDenialStats,
+    MetalLevel,
+    PlanDenialStats,
+    PlanType,
+)
+from src.ingest import marketplace_denials
+from src.ingest.marketplace_denials import (
+    BatchRejectedError,
+    read_issuer_denial_rows,
+    upsert_issuer_denial_rows,
+)
+from src.ingest.marketplace_plan_denials import (
+    PlanDenialRow,
+    read_plan_denial_rows,
+    upsert_plan_denial_rows,
+)
 from tests.ingest.helpers import FIXTURE, PLAN_YEAR, CellValue, edited_copy
 
 # The 16 plan count columns are Y to AN (columns 25 to 40).
@@ -191,3 +210,78 @@ def test_warns_but_loads_when_numbers_look_implausible(
 
     assert len(rows) == 6
     assert expected in caplog.text
+
+
+def _load_issuers(session: Session) -> None:
+    upsert_issuer_denial_rows(session, read_issuer_denial_rows(FIXTURE, PLAN_YEAR))
+
+
+def _stored(session: Session) -> list[PlanDenialStats]:
+    """Every stored plan row, read fresh from the database."""
+    session.expire_all()
+    return list(session.scalars(select(PlanDenialStats).order_by(PlanDenialStats.plan_id)))
+
+
+def test_first_load_stores_the_values_that_were_read(session: Session) -> None:
+    _load_issuers(session)
+    rows = read_plan_denial_rows(FIXTURE, PLAN_YEAR)
+
+    written = upsert_plan_denial_rows(session, rows)
+
+    assert written == 6
+    for row, stats in zip(rows, _stored(session), strict=True):
+        for field, value in row.model_dump().items():
+            assert getattr(stats, field) == value, field
+
+
+def test_loading_twice_keeps_the_same_rows(session: Session) -> None:
+    _load_issuers(session)
+    rows = read_plan_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_plan_denial_rows(session, rows)
+    ids_after_first_load = [stats.id for stats in _stored(session)]
+
+    upsert_plan_denial_rows(session, rows)
+
+    assert [stats.id for stats in _stored(session)] == ids_after_first_load
+
+
+def test_reload_updates_a_changed_value_and_the_timestamp(session: Session) -> None:
+    # now() is fixed for the whole test transaction, so age the rows first.
+    long_ago = datetime(2000, 1, 1, tzinfo=UTC)
+    _load_issuers(session)
+    rows = read_plan_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_plan_denial_rows(session, rows)
+    session.execute(update(PlanDenialStats).values(created_at=long_ago, updated_at=long_ago))
+    corrected = rows[0].model_copy(update={"denied_other": 2, "metal_level": MetalLevel.GOLD})
+
+    upsert_plan_denial_rows(session, [corrected])
+
+    first, second = _stored(session)[:2]
+    assert first.denied_other == 2
+    assert first.metal_level is MetalLevel.GOLD
+    assert first.created_at == long_ago
+    assert first.updated_at > long_ago
+    assert second.updated_at == long_ago  # a row that was not re-loaded is left alone
+
+
+def test_writes_every_row_when_there_are_more_than_one_batch(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(marketplace_denials, "UPSERT_BATCH_SIZE", 2)
+    _load_issuers(session)
+
+    written = upsert_plan_denial_rows(session, read_plan_denial_rows(FIXTURE, PLAN_YEAR))
+
+    assert written == 6
+    assert len(_stored(session)) == 6
+
+
+def test_plans_cannot_be_stored_before_their_issuers(session: Session) -> None:
+    with pytest.raises(IntegrityError, match="fk_plan_denial_stats_issuer_year"):
+        upsert_plan_denial_rows(session, read_plan_denial_rows(FIXTURE, PLAN_YEAR))
+
+
+def test_empty_batch_writes_nothing(session: Session) -> None:
+    assert upsert_plan_denial_rows(session, []) == 0
+    assert _stored(session) == []
+    assert session.scalars(select(IssuerDenialStats)).all() == []

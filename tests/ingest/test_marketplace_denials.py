@@ -28,23 +28,9 @@ from src.ingest.marketplace_denials import (
     read_issuer_denial_rows,
     upsert_issuer_denial_rows,
 )
+from tests.ingest.helpers import FIXTURE, PLAN_YEAR, SHEET_NAME, CellValue, edited_copy
 
-CellValue = int | float | str | None
-FIXTURE = Path(__file__).parent / "fixtures" / "tc_puf_sample.xlsx"
-PLAN_YEAR = 2026
 DATA_SHEET_ENTRY = "xl/worksheets/sheet2.xml"  # the QHP sheet inside the fixture's zip
-SHEET_NAME = SHEET_NAME_TEMPLATE.format(plan_year=PLAN_YEAR)
-
-
-def _edited_copy(tmp_path: Path, edits: dict[str, CellValue]) -> Path:
-    """Copy the fixture with some cells replaced, e.g. {"E4": 123}."""
-    workbook = load_workbook(FIXTURE)
-    sheet = workbook[SHEET_NAME]
-    for cell, value in edits.items():
-        sheet[cell] = value
-    path = tmp_path / "edited.xlsx"
-    workbook.save(path)
-    return path
 
 
 def test_returns_one_row_per_issuer() -> None:
@@ -261,14 +247,14 @@ def test_rejects_a_workbook_whose_sheet_is_cut_short(tmp_path: Path) -> None:
     ],
 )
 def test_rejects_a_bad_file(tmp_path: Path, edits: dict[str, CellValue], expected: str) -> None:
-    path = _edited_copy(tmp_path, edits)
+    path = edited_copy(tmp_path, edits)
 
     with pytest.raises(BatchRejectedError, match=expected):
         read_issuer_denial_rows(path, PLAN_YEAR)
 
 
 def test_rejection_lists_every_problem(tmp_path: Path) -> None:
-    path = _edited_copy(tmp_path, {"E4": 123, "U7": 101})
+    path = edited_copy(tmp_path, {"E4": 123, "U7": 101})
 
     with pytest.raises(BatchRejectedError) as excinfo:
         read_issuer_denial_rows(path, PLAN_YEAR)
@@ -277,7 +263,7 @@ def test_rejection_lists_every_problem(tmp_path: Path) -> None:
 
 
 def test_rejection_message_leaves_out_cell_values(tmp_path: Path) -> None:
-    path = _edited_copy(tmp_path, {"D4": "S" * 201})
+    path = edited_copy(tmp_path, {"D4": "S" * 201})
 
     with pytest.raises(BatchRejectedError) as excinfo:
         read_issuer_denial_rows(path, PLAN_YEAR)

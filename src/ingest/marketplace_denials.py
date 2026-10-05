@@ -8,6 +8,7 @@ rejected outright: nothing is returned. Validated rows are then upserted into
 
 import logging
 import zlib
+from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -160,11 +161,14 @@ class IssuerDenialRow(BaseModel):
         return self
 
 
-def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]:
-    """Read the PUF workbook at `path` and return one validated row per issuer.
+def read_sheet_rows(
+    path: Path, plan_year: int, headers: Mapping[str, str]
+) -> list[tuple[int, dict[str, Any]]]:
+    """Return (row number, {field: cell}) for every non-blank data row of the plan year's sheet.
 
-    The sheet read is the one named for `plan_year`, so a year that does not match the file
-    is rejected. Raises `BatchRejectedError` if any quality gate fails.
+    `headers` maps a field name to the exact header text of its column. The sheet read is the
+    one named for `plan_year`, so a year that does not match the file is rejected. Raises
+    `BatchRejectedError` for an unreadable file, a missing sheet or header, or no data rows.
     Reading the full file takes a few seconds.
     """
     sheet_name = SHEET_NAME_TEMPLATE.format(plan_year=plan_year)
@@ -184,43 +188,56 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
         sheet_rows = workbook[sheet_name].iter_rows(min_row=HEADER_ROW, values_only=True)
         header = next(sheet_rows, ())
         positions = {text: index for index, text in enumerate(header)}
-        missing = [text for text in SOURCE_HEADERS.values() if text not in positions]
+        missing = [text for text in headers.values() if text not in positions]
         if missing:
             raise BatchRejectedError(
                 [f"row {HEADER_ROW}: missing header {text!r}" for text in missing]
             )
 
-        problems: list[str] = []
-        by_issuer: dict[str, IssuerDenialRow] = {}
+        rows: list[tuple[int, dict[str, Any]]] = []
         for row_number, cells in enumerate(sheet_rows, start=HEADER_ROW + 1):
             if all(cell is None for cell in cells):
                 continue  # the sheet ends with a long run of blank rows
             padded = cells + (None,) * (len(header) - len(cells))
-            raw = {field: padded[positions[text]] for field, text in SOURCE_HEADERS.items()}
-            # The source never leaves a number blank (it uses a legend token), so a blank
-            # means a damaged row, not a missing value.
-            blank = [field for field in NUMERIC_FIELDS if raw[field] is None]
-            if blank:
-                problems.extend(f"row {row_number}: {field}: blank cell" for field in blank)
-                continue
-            try:
-                row = IssuerDenialRow.model_validate({"plan_year": plan_year, **raw})
-            except ValidationError as exc:
-                problems.extend(_describe(row_number, exc))
-                continue
-            earlier = by_issuer.setdefault(row.issuer_id, row)
-            if earlier != row:
-                problems.append(
-                    f"row {row_number}: issuer {row.issuer_id} differs from an earlier row "
-                    "of the same issuer"
-                )
+            rows.append(
+                (row_number, {field: padded[positions[text]] for field, text in headers.items()})
+            )
     except DAMAGED_CONTENT_ERRORS as exc:
         raise BatchRejectedError([UNREADABLE_WORKBOOK]) from exc
     finally:
         workbook.close()
 
-    if not problems and not by_issuer:
-        problems.append("no data rows")
+    if not rows:
+        raise BatchRejectedError(["no data rows"])
+    return rows
+
+
+def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]:
+    """Read the PUF workbook at `path` and return one validated row per issuer.
+
+    Raises `BatchRejectedError` if any quality gate fails (see `read_sheet_rows` for the
+    file-level ones). Reading the full file takes a few seconds.
+    """
+    problems: list[str] = []
+    by_issuer: dict[str, IssuerDenialRow] = {}
+    for row_number, raw in read_sheet_rows(path, plan_year, SOURCE_HEADERS):
+        # The source never leaves a number blank (it uses a legend token), so a blank
+        # means a damaged row, not a missing value.
+        blank = [field for field in NUMERIC_FIELDS if raw[field] is None]
+        if blank:
+            problems.extend(f"row {row_number}: {field}: blank cell" for field in blank)
+            continue
+        try:
+            row = IssuerDenialRow.model_validate({"plan_year": plan_year, **raw})
+        except ValidationError as exc:
+            problems.extend(describe_validation_error(row_number, exc))
+            continue
+        earlier = by_issuer.setdefault(row.issuer_id, row)
+        if earlier != row:
+            problems.append(
+                f"row {row_number}: issuer {row.issuer_id} differs from an earlier row "
+                "of the same issuer"
+            )
     if problems:
         raise BatchRejectedError(problems)
 
@@ -253,7 +270,7 @@ def upsert_issuer_denial_rows(session: Session, rows: list[IssuerDenialRow]) -> 
     return len(rows)
 
 
-def _describe(row_number: int, exc: ValidationError) -> list[str]:
+def describe_validation_error(row_number: int, exc: ValidationError) -> list[str]:
     """One line per failed field. Cell values are left out on purpose."""
     return [
         f"row {row_number}: {'.'.join(str(part) for part in error['loc']) or 'row'}: {error['msg']}"

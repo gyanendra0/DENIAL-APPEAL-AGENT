@@ -260,22 +260,25 @@ def upsert_rows(
 
     `constraint` is the unique constraint that defines the key and `key_columns` its columns.
     Every other field of the row model is overwritten and `updated_at` is set. Rows are sent
-    in batches, because one statement can carry at most 65,535 values. Returns the number of
-    rows written. Does not commit: the caller owns the transaction.
+    in batches. Returns the number of rows written. Does not commit: the caller owns the
+    transaction.
     """
+    if not rows:
+        return 0
+    # The plain table, with the rows passed as parameters: one short statement run for many
+    # rows. Putting every row into the statement itself is several times slower to build.
+    statement = insert(Base.metadata.tables[table.__tablename__])
+    new_values = {
+        name: statement.excluded[name]
+        for name in type(rows[0]).model_fields
+        if name not in key_columns
+    }
+    upsert = statement.on_conflict_do_update(
+        constraint=constraint, set_={**new_values, "updated_at": func.now()}
+    )
     for start in range(0, len(rows), UPSERT_BATCH_SIZE):
         batch = rows[start : start + UPSERT_BATCH_SIZE]
-        statement = insert(table).values([row.model_dump() for row in batch])
-        new_values = {
-            name: statement.excluded[name]
-            for name in type(batch[0]).model_fields
-            if name not in key_columns
-        }
-        session.execute(
-            statement.on_conflict_do_update(
-                constraint=constraint, set_={**new_values, "updated_at": func.now()}
-            )
-        )
+        session.execute(upsert, [row.model_dump() for row in batch])
     return len(rows)
 
 

@@ -5,20 +5,25 @@ the published file has (no procedure code, an undefined indicator, payment above
 """
 
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from src.db.models import CLAIM_LINE_AMOUNT_COLUMNS
+from src.db.models import CLAIM_LINE_AMOUNT_COLUMNS, ClaimSample, ClaimSampleLine
 from src.ingest import claims_sample
 from src.ingest.claims_sample import (
     AMOUNT_FAMILIES,
     EXPECTED_HEADER,
+    ClaimSampleBatch,
     ClaimSampleLineRow,
     ClaimSampleRow,
     read_claim_sample_rows,
+    upsert_claim_sample_batch,
 )
 from src.ingest.marketplace_denials import BatchRejectedError
 from tests.ingest.helpers import CLAIMS_FIXTURE, claims_zip, zipped
@@ -378,3 +383,80 @@ def test_logs_how_many_claims_and_lines_were_read(
         read_claim_sample_rows(claims_zip(tmp_path))
 
     assert "read 6 claims with 9 service lines" in caplog.text
+
+
+def _stored_counts(session: Session) -> tuple[int, int]:
+    """(claim rows, line rows)."""
+    return (
+        session.scalar(select(func.count()).select_from(ClaimSample)) or 0,
+        session.scalar(select(func.count()).select_from(ClaimSampleLine)) or 0,
+    )
+
+
+def test_upsert_writes_every_claim_and_line(session: Session, tmp_path: Path) -> None:
+    batch = read_claim_sample_rows(claims_zip(tmp_path))
+
+    written = upsert_claim_sample_batch(session, batch)
+
+    assert written == (6, 9)
+    assert _stored_counts(session) == (6, 9)
+    stored = session.scalars(
+        select(ClaimSample).where(ClaimSample.source_claim_id == "800000000000003")
+    ).one()
+    assert stored.diagnosis_codes == ["V5869", "42731"]
+    paid_by_other = session.scalars(
+        select(ClaimSampleLine).where(
+            ClaimSampleLine.source_claim_id == "800000000000005", ClaimSampleLine.line_number == 2
+        )
+    ).one()
+    assert paid_by_other.primary_payer_paid_amount == Decimal("1200.00")
+    assert paid_by_other.processing_indicator == "<"
+
+
+def test_second_upsert_keeps_the_same_rows(session: Session, tmp_path: Path) -> None:
+    batch = read_claim_sample_rows(claims_zip(tmp_path))
+    upsert_claim_sample_batch(session, batch)
+
+    upsert_claim_sample_batch(session, batch)
+
+    assert _stored_counts(session) == (6, 9)
+
+
+def test_upsert_updates_changed_values_in_place_and_advances_updated_at(
+    session: Session, tmp_path: Path
+) -> None:
+    upsert_claim_sample_batch(session, read_claim_sample_rows(claims_zip(tmp_path)))
+    long_ago = datetime(2020, 1, 1, tzinfo=UTC)
+    session.execute(update(ClaimSample).values(updated_at=long_ago))
+    session.execute(update(ClaimSampleLine).values(updated_at=long_ago))
+    corrected = claims_zip(
+        tmp_path, {(2, "ICD9_DGNS_CD_1"): "2724", (2, "LINE_NCH_PMT_AMT_1"): "40.00"}
+    )
+
+    upsert_claim_sample_batch(session, read_claim_sample_rows(corrected))
+    session.expire_all()
+
+    claim = session.scalars(
+        select(ClaimSample).where(ClaimSample.source_claim_id == "800000000000001")
+    ).one()
+    line = session.scalars(
+        select(ClaimSampleLine).where(ClaimSampleLine.source_claim_id == "800000000000001")
+    ).one()
+    assert claim.diagnosis_codes == ["2724", "V5869"]
+    assert line.payment_amount == Decimal("40.00")
+    assert claim.updated_at > long_ago
+    assert line.updated_at > long_ago
+    assert _stored_counts(session) == (6, 9)
+
+
+def test_upsert_refuses_lines_without_their_claim(session: Session, tmp_path: Path) -> None:
+    batch = read_claim_sample_rows(claims_zip(tmp_path))
+    orphans = ClaimSampleBatch(claims=[], lines=batch.lines)
+
+    with pytest.raises(IntegrityError, match="fk_claim_sample_lines_claim"):
+        upsert_claim_sample_batch(session, orphans)
+
+
+def test_upsert_of_an_empty_batch_writes_nothing(session: Session) -> None:
+    assert upsert_claim_sample_batch(session, ClaimSampleBatch(claims=[], lines=[])) == (0, 0)
+    assert _stored_counts(session) == (0, 0)

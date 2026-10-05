@@ -22,7 +22,7 @@ Candidate public sources. **Verify each before relying on it.**
 
 | Source | What is in it | Use |
 |---|---|---|
-| CMS public use files (Medicare claims samples) | De-identified claim lines, amounts, payment status | Base table, money amounts |
+| CMS public use files (Medicare claims samples) | Claim lines, amounts, payment status | Base table, money amounts. **Loaded** (the synthetic file), see 2.2.2 |
 | CMS Transparency in Coverage / payer transparency files | Payer-level rates and coverage terms | Payer behaviour features |
 | Healthcare.gov Marketplace issuer data | Issuer-level claim denial rates and reasons | Denial-rate priors per payer. **Loaded**, see 2.2.1 |
 | HCUP / public discharge summaries | Diagnosis and procedure mixes | Realistic clinical context |
@@ -129,6 +129,104 @@ again is safe: issuer rows are matched on issuer and plan year, plan rows on pla
 plan year, and both are updated in place. Rows are never removed: an issuer or plan that
 a later version of the file drops stays in the table.
 
+### 2.2.2 Loaded source: CMS DE-SynPUF carrier claims
+
+The source of claim-level rows. It is the CMS 2008-2010 Data Entrepreneurs' Synthetic Public
+Use File (DE-SynPUF), published by CMS on its Medicare claims synthetic public use files
+page. The "carrier" file holds claims from doctors and other non-institutional providers.
+
+| Item | Value |
+|---|---|
+| File | One `.zip` holding one `.csv`, kept under `data/raw/claims/` (never committed) |
+| Which file | Sample 1, Carrier Claims 1A (the DE-SynPUF has 20 samples; each carrier sample is split in two) |
+| Size | About 113 MB zipped, 1.2 GB unzipped; 2,370,667 claims, 142 columns |
+| Years | Claims from 2008 to 2010 |
+| Grain in the file | One row per claim, with up to 13 service lines side by side (`HCPCS_CD_1` to `HCPCS_CD_13`, and so on) |
+| Grain we store | One row per claim; one row per used service line |
+| Lands in | `claim_samples` and `claim_sample_lines` (public reference tables, no `account_id`) |
+
+**Synthetic data, and what it may be used for.** CMS describes the file as fully synthetic:
+no beneficiary in it is an actual Medicare beneficiary. It was made by starting from real
+"seed" beneficiaries and altering them, and the provider identifiers are random. CMS says
+the file is for developing software and for training, and that it must not be used to draw
+conclusions about the real Medicare population, because the alteration changed how the
+variables relate to each other. No licence or terms-of-use statement was found on the CMS
+page, in the codebook or in the FAQ; the file is published as a public use file.
+
+**What is loaded.** Per claim: the claim id, the from and thru dates, and the claim's
+diagnosis codes (up to 8; empty slots are dropped and the order is kept). Per service line:
+the line number, the procedure code (HCPCS), the line diagnosis code, the line processing
+indicator, and five amounts (Medicare payment, deductible, primary payer paid, coinsurance,
+allowed charge).
+
+**What is not loaded.** The beneficiary, physician and tax identifier columns; the other
+DE-SynPUF files (beneficiary summary, inpatient, outpatient, prescription drugs, Carrier
+Claims 1B); samples 2 to 20; and every claim after the load limit (see "How to load").
+
+**Which line slots are used.** Each row has 13 line slots. A slot is in use exactly when it
+has a tax number, which in the published file is also exactly when it has a processing
+indicator; used slots always run from slot 1 without a gap. The procedure code is not a safe
+test: it is empty on 5.78% of used lines. The tax number is read only for this test and is
+not stored.
+
+**Reading the numbers.** Several things in the published file are easy to get wrong:
+
+- The processing indicator says how the line was handled: `A` means allowed, and the other
+  values are reasons such as `C` (non-covered care), `N` (medically unnecessary) and `O`
+  (other). But the indicator and the money are only loosely linked: about 20% of `A` lines
+  are paid nothing, and about 46% of the other lines are paid something. A label must not
+  assume that `A` means paid or that anything else means unpaid.
+- 9 indicator values in the file (`H`, `G`, `K`, `2`, `J`, `1`, `=`, `E`, `0`) are not
+  defined in the CMS codebook. They are kept as published.
+- The amounts do not add up. Allowed charge equals payment plus deductible plus coinsurance
+  plus primary payer paid on fewer than half of the lines, and the payment is above the
+  allowed charge on about 13%. Every amount is a multiple of 10.00 and has a cap (payment
+  stops at 550.00).
+- There is no billed (submitted) amount, only allowed and paid amounts.
+- Diagnosis codes are ICD-9, not ICD-10, and are written without the decimal point. Some
+  cells hold placeholder words such as `XX000` or `OTHER`. A line's diagnosis is usually not
+  one of the claim's diagnoses.
+- CMS did no cleaning on the file, so oddities are expected.
+
+**Quality gates.** The file is rejected as a whole, and nothing is written to either table,
+if any of these fail. They are checked on the rows that are read (see "How to load").
+
+| Gate | Action |
+|---|---|
+| The file is not a readable `.zip`, does not hold exactly one `.csv`, or is not UTF-8 text | Reject |
+| The header is not the expected 142 column names in order | Reject |
+| A row does not have 142 fields; or there are no data rows | Reject |
+| Claim id is not 15 digits, or appears twice | Reject |
+| A date is not a valid `YYYYMMDD` date, is outside 2008 to 2010, or from is after thru | Reject |
+| An amount on a used line is blank, not a number, negative, or has more than two decimals | Reject |
+| A claim has no used line, or its used lines do not run from line 1 without a gap | Reject |
+| A line has a tax number without an indicator, or an indicator without a tax number | Reject |
+| An unused line slot holds a code or an amount other than zero | Reject |
+| The indicator is not exactly one character; a procedure code is not 5 characters; a diagnosis code is longer than 5 | Reject |
+| The indicator is not in the CMS codebook list | Warn only; this occurs in the published file |
+| The payment is above the allowed charge | Warn only; this occurs in the published file |
+| A used line has no procedure code | Warn only; this occurs in the published file |
+
+There is no gate on the amounts adding up, because the published file does not satisfy it.
+
+**How to load.** With the database running and migrated:
+
+```text
+python3 -m pipelines.load_claims_sample data/raw/claims/<file>.zip
+```
+
+The command reads the first 50,000 claims of the file (about 100,000 service lines); pass
+`--max-claims <n>` to read a different number. The full file is not loaded by default
+because it has 2.4 million claims. The command checks every row it reads before it writes
+anything, then writes the claims and their lines in one transaction. Exit code 0 means
+loaded, 1 means the file was rejected (the first 20 problems are listed, with their row
+numbers), 2 means a bad argument. Running the command again is safe: claims are matched on
+the claim id and lines on the claim id and line number, and both are updated in place. Rows
+are never removed. Loading 50,000 claims takes about half a minute.
+
+Because only the first rows are read, the gates say nothing about the rest of the file: a
+duplicate claim id or a damaged row further down is not noticed.
+
 **Label definition.** The ML target is:
 
 > `appeal_success` = 1 if an appeal on this denial would be paid, else 0.
@@ -186,6 +284,11 @@ A batch is rejected if any of these fail:
 - Amounts positive and inside a sane range.
 - Denial-reason codes come from the known code list.
 - Class balance between 20% and 80% — otherwise resample.
+
+These are the general rules. Each loaded source lists the gates it actually applies in its
+own section (2.2.1, 2.2.2). Where the published file itself breaks a general rule (for
+example amounts of zero, or codes outside the known list), the loader relaxes that rule or
+applies it as a warning instead of a rejection, and the section says so.
 
 ## 2.7 Privacy
 

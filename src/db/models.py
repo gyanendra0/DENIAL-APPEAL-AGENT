@@ -1,10 +1,21 @@
-"""Core tables: accounts, users, claims, denials."""
+"""Core tables (accounts, users, claims, denials) and public reference tables."""
 
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import AccountScopedMixin, Base, TimestampMixin
@@ -21,6 +32,12 @@ class DenialStatus(StrEnum):
     IN_REVIEW = "in_review"
     APPEALED = "appealed"
     CLOSED = "closed"
+
+
+class ExchangeType(StrEnum):
+    FFE = "FFE"
+    SPE = "SPE"
+    SBE_FP = "SBE-FP"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -77,3 +94,38 @@ class Denial(AccountScopedMixin, TimestampMixin, Base):
         nullable=False,
         default=DenialStatus.NEW,
     )
+
+
+class IssuerDenialStats(TimestampMixin, Base):
+    """Issuer-level claim and appeal counts from the CMS Transparency in Coverage PUF.
+
+    Public reference table shared by all accounts, so it has no `account_id`.
+    A count or percent is NULL when the source suppressed it or it did not apply.
+    """
+
+    __tablename__ = "issuer_denial_stats"
+    __table_args__ = (
+        UniqueConstraint("issuer_id", "plan_year", name="uq_issuer_denial_stats_issuer_year"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    issuer_id: Mapped[str] = mapped_column(String(5), nullable=False)
+    issuer_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(String(2), nullable=False)
+    exchange_type: Mapped[ExchangeType] = mapped_column(
+        Enum(ExchangeType, name="exchange_type", values_callable=_values), nullable=False
+    )
+    is_new_to_exchange: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    claims_received_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_received_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_denied_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_denied_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_resubmitted_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_resubmitted_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    internal_appeals_filed: Mapped[int | None] = mapped_column(BigInteger)
+    internal_appeals_overturned: Mapped[int | None] = mapped_column(BigInteger)
+    internal_appeals_overturned_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    external_appeals_filed: Mapped[int | None] = mapped_column(BigInteger)
+    external_appeals_overturned: Mapped[int | None] = mapped_column(BigInteger)
+    external_appeals_overturned_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))

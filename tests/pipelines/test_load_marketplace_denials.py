@@ -10,20 +10,26 @@ from sqlalchemy import Engine, delete, func, select
 from pipelines.load_marketplace_denials import main
 from src.config.settings import get_settings
 from src.db.models import IssuerDenialStats
-from src.ingest.marketplace_denials import SHEET_NAME
+from src.ingest.marketplace_denials import SHEET_NAME_TEMPLATE
 
 FIXTURE = Path(__file__).parents[1] / "ingest" / "fixtures" / "tc_puf_sample.xlsx"
+SHEET_NAME = SHEET_NAME_TEMPLATE.format(plan_year=2026)
 
 
 @pytest.fixture
 def database(
     engine: Engine, test_database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Engine]:
-    """Point the command at the test database, and empty the table afterwards."""
+    """Point the command at the test database, and empty the table before and afterwards."""
     monkeypatch.setenv("DATABASE_URL", test_database_url)
     get_settings.cache_clear()
+    _empty_table(engine)  # in case an earlier run was killed before its clean-up
     yield engine
     get_settings.cache_clear()
+    _empty_table(engine)
+
+
+def _empty_table(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(delete(IssuerDenialStats))
 

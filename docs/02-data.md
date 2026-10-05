@@ -37,7 +37,7 @@ no claim lines and no patient data.
 | Item | Value |
 |---|---|
 | File | One `.xlsx` workbook, kept under `data/raw/marketplace/` (never committed) |
-| Sheet read | `Transparency 2026 - Ind QHP` (individual market medical plans) |
+| Sheet read | `Transparency <plan year> - Ind QHP` (individual market medical plans) |
 | Header row | Row 3. Rows 1 and 2 are a title and a legend |
 | Grain in the file | One row per plan |
 | Grain we store | One row per issuer and plan year |
@@ -58,19 +58,22 @@ labels and get their own loader.
 type) and `N/A` (issuer new to the Exchange). All four are stored as empty (`NULL`).
 
 **Plan year.** The sheet has no year column; the year appears only in the sheet name. The
-loader takes the plan year as an argument.
+loader takes the plan year as an argument and reads the sheet named for that year, so a
+year that does not match the file is rejected.
 
 **Quality gates.** The file is rejected as a whole, and nothing is written, if any of
 these fail:
 
 | Gate | Action |
 |---|---|
-| The sheet or a required header is missing or renamed | Reject |
+| The file is not a readable `.xlsx` workbook | Reject |
+| The sheet for the given plan year, or a required header, is missing or renamed | Reject |
 | There are no data rows | Reject |
 | Issuer id is not five digits, state is not two letters, or exchange type is unknown | Reject |
 | A count is negative or not a whole number; a percent is outside 0 to 100 or has more than two decimals | Reject |
 | A cell holds text that is neither a number nor a legend token | Reject |
 | Appeals overturned is greater than appeals filed | Reject |
+| A count or percent cell is blank (the source always writes a number or a legend token) | Reject |
 | Two plan rows of one issuer disagree on an issuer-level value | Reject |
 | Out-of-network claims denied is greater than claims received | Warn only; this occurs in the published file |
 
@@ -80,8 +83,8 @@ these fail:
 python3 -m pipelines.load_marketplace_denials data/raw/marketplace/<file>.xlsx --plan-year 2026
 ```
 
-Exit code 0 means loaded, 1 means the file was rejected (the problems are listed, with
-their row numbers), 2 means a bad argument. Running the command again is safe: rows are
+Exit code 0 means loaded, 1 means the file was rejected (the first 20 problems are
+listed, with their row numbers), 2 means a bad argument. Running the command again is safe: rows are
 matched on issuer and plan year and updated in place.
 
 **Label definition.** The ML target is:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -19,16 +20,17 @@ from src.db.models import (
 from src.ingest.marketplace_denials import (
     HEADER_ROW,
     MAX_PROBLEMS_IN_MESSAGE,
-    SHEET_NAME,
+    SHEET_NAME_TEMPLATE,
     BatchRejectedError,
     IssuerDenialRow,
     read_issuer_denial_rows,
     upsert_issuer_denial_rows,
 )
 
-CellValue = int | float | str
+CellValue = int | float | str | None
 FIXTURE = Path(__file__).parent / "fixtures" / "tc_puf_sample.xlsx"
 PLAN_YEAR = 2026
+SHEET_NAME = SHEET_NAME_TEMPLATE.format(plan_year=PLAN_YEAR)
 
 
 def _edited_copy(tmp_path: Path, edits: dict[str, CellValue]) -> Path:
@@ -103,10 +105,28 @@ def test_skips_blank_trailing_rows() -> None:
     assert len(read_issuer_denial_rows(FIXTURE, PLAN_YEAR)) == 3
 
 
-def test_plan_year_comes_from_the_caller() -> None:
-    rows = read_issuer_denial_rows(FIXTURE, 2025)
+def test_reads_the_sheet_named_for_the_plan_year(tmp_path: Path) -> None:
+    workbook = load_workbook(FIXTURE)
+    workbook[SHEET_NAME].title = SHEET_NAME_TEMPLATE.format(plan_year=2027)
+    path = tmp_path / "next_year.xlsx"
+    workbook.save(path)
 
-    assert {row.plan_year for row in rows} == {2025}
+    rows = read_issuer_denial_rows(path, 2027)
+
+    assert {row.plan_year for row in rows} == {2027}
+
+
+def test_rejects_a_plan_year_that_does_not_match_the_file() -> None:
+    with pytest.raises(BatchRejectedError, match="sheet 'Transparency 2025 - Ind QHP' not found"):
+        read_issuer_denial_rows(FIXTURE, 2025)
+
+
+def test_rejects_a_file_that_is_not_a_workbook(tmp_path: Path) -> None:
+    path = tmp_path / "not_really.xlsx"
+    path.write_text("just some text")
+
+    with pytest.raises(BatchRejectedError, match="not a readable .xlsx workbook"):
+        read_issuer_denial_rows(path, PLAN_YEAR)
 
 
 @pytest.mark.parametrize(
@@ -120,6 +140,9 @@ def test_plan_year_comes_from_the_caller() -> None:
         ({"M4": -1}, "row 4: claims_received_out_of_network"),
         ({"M4": "unknown"}, "row 4: claims_received_out_of_network"),
         ({"M4": 12.5}, "row 4: claims_received_out_of_network"),
+        ({"M4": True}, "row 4: claims_received_out_of_network: Value error, must be a number"),
+        ({"M4": None}, "row 4: claims_received_out_of_network: blank cell"),
+        ({"X9": None}, "row 9: external_appeals_overturned_pct: blank cell"),
         ({"U4": 101}, "row 4: internal_appeals_overturned_pct"),
         ({"U4": 50.123}, "row 4: internal_appeals_overturned_pct"),
         ({"S9": 5, "T9": 6}, "row 9: row: Value error, internal appeals overturned"),
@@ -173,9 +196,11 @@ def test_rejects_a_file_with_no_data_rows(tmp_path: Path) -> None:
         read_issuer_denial_rows(path, PLAN_YEAR)
 
 
-def test_rejects_an_impossible_plan_year() -> None:
-    with pytest.raises(BatchRejectedError, match="plan_year"):
-        read_issuer_denial_rows(FIXTURE, 26)
+def test_row_model_rejects_an_impossible_plan_year() -> None:
+    first = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)[0]
+
+    with pytest.raises(ValidationError, match="plan_year"):
+        IssuerDenialRow.model_validate(first.model_dump() | {"plan_year": 26})
 
 
 def test_warns_but_loads_when_denied_exceeds_received(
@@ -267,9 +292,10 @@ def test_reload_advances_updated_at_and_keeps_created_at(session: Session) -> No
 
 
 def test_another_plan_year_adds_new_rows(session: Session) -> None:
-    upsert_issuer_denial_rows(session, read_issuer_denial_rows(FIXTURE, 2025))
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_issuer_denial_rows(session, [row.model_copy(update={"plan_year": 2025}) for row in rows])
 
-    upsert_issuer_denial_rows(session, read_issuer_denial_rows(FIXTURE, 2026))
+    upsert_issuer_denial_rows(session, rows)
 
     assert [stats.plan_year for stats in _stored(session)] == [2025] * 3 + [2026] * 3
 

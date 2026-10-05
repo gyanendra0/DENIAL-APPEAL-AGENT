@@ -10,8 +10,10 @@ import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Self
+from zipfile import BadZipFile
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -33,7 +35,8 @@ from src.db.models import (
 
 logger = logging.getLogger(__name__)
 
-SHEET_NAME = "Transparency 2026 - Ind QHP"
+# The sheet has no year column: the plan year appears only in the sheet name.
+SHEET_NAME_TEMPLATE = "Transparency {plan_year} - Ind QHP"
 HEADER_ROW = 3
 # Legend tokens the source uses in place of a number (not available, suppressed, not required, new).
 MISSING_TOKENS = frozenset({"*", "**", "***", "N/A"})
@@ -62,6 +65,8 @@ SOURCE_HEADERS = {
     "external_appeals_overturned": "Issuer_Number_External_Appeals_Overturned",
     "external_appeals_overturned_pct": "Issuer_Percent_External_Appeals_Overturned",
 }
+
+NUMERIC_FIELDS = (*ISSUER_COUNT_COLUMNS, *ISSUER_PERCENT_COLUMNS)
 
 Count = Annotated[int | None, Field(ge=0)]
 Percent = Annotated[Decimal | None, Field(ge=0, le=100, max_digits=5, decimal_places=2)]
@@ -121,9 +126,11 @@ class IssuerDenialRow(BaseModel):
             raise ValueError("must be 'Yes' or 'No'")
         return YES_NO[value]
 
-    @field_validator(*ISSUER_COUNT_COLUMNS, *ISSUER_PERCENT_COLUMNS, mode="before")
+    @field_validator(*NUMERIC_FIELDS, mode="before")
     @classmethod
     def _missing_token_to_none(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("must be a number")  # otherwise TRUE would be read as 1
         if isinstance(value, str) and value in MISSING_TOKENS:
             return None
         return value
@@ -148,15 +155,19 @@ class IssuerDenialRow(BaseModel):
 def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]:
     """Read the PUF workbook at `path` and return one validated row per issuer.
 
-    The sheet has no year column, so the caller supplies `plan_year`.
-    Raises `BatchRejectedError` if any quality gate fails.
+    The sheet read is the one named for `plan_year`, so a year that does not match the file
+    is rejected. Raises `BatchRejectedError` if any quality gate fails.
     Reading the full file takes a few seconds.
     """
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    sheet_name = SHEET_NAME_TEMPLATE.format(plan_year=plan_year)
     try:
-        if SHEET_NAME not in workbook.sheetnames:
-            raise BatchRejectedError([f"sheet {SHEET_NAME!r} not found"])
-        sheet_rows = workbook[SHEET_NAME].iter_rows(min_row=HEADER_ROW, values_only=True)
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except (BadZipFile, InvalidFileException) as exc:
+        raise BatchRejectedError(["not a readable .xlsx workbook"]) from exc
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise BatchRejectedError([f"sheet {sheet_name!r} not found"])
+        sheet_rows = workbook[sheet_name].iter_rows(min_row=HEADER_ROW, values_only=True)
         header = next(sheet_rows, ())
         positions = {text: index for index, text in enumerate(header)}
         missing = [text for text in SOURCE_HEADERS.values() if text not in positions]
@@ -172,6 +183,12 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
                 continue  # the sheet ends with a long run of blank rows
             padded = cells + (None,) * (len(header) - len(cells))
             raw = {field: padded[positions[text]] for field, text in SOURCE_HEADERS.items()}
+            # The source never leaves a number blank (it uses a legend token), so a blank
+            # means a damaged row, not a missing value.
+            blank = [field for field in NUMERIC_FIELDS if raw[field] is None]
+            if blank:
+                problems.extend(f"row {row_number}: {field}: blank cell" for field in blank)
+                continue
             try:
                 row = IssuerDenialRow.model_validate({"plan_year": plan_year, **raw})
             except ValidationError as exc:

@@ -3,12 +3,21 @@ from alembic.config import Config
 from sqlalchemy import Engine, inspect, text
 
 from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
-from src.db.models import ISSUER_COUNT_COLUMNS, ISSUER_PERCENT_COLUMNS, ExchangeType
+from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0003
+from src.db.models import (
+    ISSUER_COUNT_COLUMNS,
+    ISSUER_PERCENT_COLUMNS,
+    PLAN_COUNT_COLUMNS,
+    ExchangeType,
+    MetalLevel,
+    PlanType,
+)
 
 BUSINESS_TABLES = {"accounts", "users", "claims", "denials"}
-REFERENCE_TABLES = {"issuer_denial_stats"}
+REFERENCE_TABLES = {"issuer_denial_stats", "plan_denial_stats"}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES
 STATS_TABLE = "issuer_denial_stats"
+PLAN_TABLE = "plan_denial_stats"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -52,6 +61,58 @@ def test_migration_0002_lists_the_same_columns_and_values_as_the_model() -> None
     assert migration_0002.COUNT_COLUMNS == ISSUER_COUNT_COLUMNS
     assert migration_0002.PERCENT_COLUMNS == ISSUER_PERCENT_COLUMNS
     assert tuple(member.value for member in ExchangeType) == migration_0002.EXCHANGE_TYPE
+
+
+def test_plan_stats_has_its_key_link_index_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(PLAN_TABLE)}
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(PLAN_TABLE)
+    }
+    indexes = {
+        i["name"]: i["column_names"]
+        for i in inspector.get_indexes(PLAN_TABLE)
+        if not i.get("duplicates_constraint")  # skip the index that backs the unique key
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(PLAN_TABLE)}
+
+    assert unique == {"uq_plan_denial_stats_plan_year": ["plan_id", "plan_year"]}
+    assert foreign == {
+        "fk_plan_denial_stats_issuer_year": (["issuer_id", "plan_year"], STATS_TABLE, "CASCADE")
+    }
+    assert indexes == {"ix_plan_denial_stats_issuer_year": ["issuer_id", "plan_year"]}
+    assert checks == {
+        "ck_plan_denial_stats_plan_id_format",
+        "ck_plan_denial_stats_plan_id_matches_issuer",
+        "ck_plan_denial_stats_counts_non_negative",
+        "ck_plan_denial_stats_unreported_has_no_counts",
+    }
+
+
+def test_migration_0003_lists_the_same_columns_and_values_as_the_model() -> None:
+    assert migration_0003.COUNT_COLUMNS == PLAN_COUNT_COLUMNS
+    assert tuple(member.value for member in PlanType) == migration_0003.PLAN_TYPE
+    assert tuple(member.value for member in MetalLevel) == migration_0003.METAL_LEVEL
+
+
+def test_downgrade_to_0002_removes_plan_stats_table_and_enums(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0002")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert PLAN_TABLE not in tables
+        assert STATS_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname IN ('plan_type', 'metal_level')")
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert PLAN_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0001_removes_issuer_stats_table_and_enum(

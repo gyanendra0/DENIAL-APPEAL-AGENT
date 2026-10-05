@@ -3,19 +3,23 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import (
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
+    PLAN_COUNT_COLUMNS,
     Account,
     Claim,
     Denial,
     DenialStatus,
     ExchangeType,
     IssuerDenialStats,
+    MetalLevel,
+    PlanDenialStats,
+    PlanType,
     User,
     UserRole,
 )
@@ -181,3 +185,135 @@ def test_rejects_unknown_exchange_type(session: Session) -> None:
 
     with pytest.raises(DataError):
         session.execute(insert)
+
+
+def _plan_stats(
+    session: Session, plan_id: str = "00012ZZ0010001", plan_year: int = 2026, **overrides: Any
+) -> PlanDenialStats:
+    """Store a reported plan of issuer 00012 (state ZZ). The issuer row must exist first."""
+    fields: dict[str, Any] = {
+        "plan_year": plan_year,
+        "plan_id": plan_id,
+        "issuer_id": "00012",
+        "state": "ZZ",
+        "plan_type": PlanType.HMO,
+        "metal_level": MetalLevel.SILVER,
+        "is_reported": True,
+        "claims_received_in_network": 3_000_000_000,
+        "claims_denied_in_network": 500,
+        "denied_other": 0,
+    }
+    stats = PlanDenialStats(**(fields | overrides))
+    session.add(stats)
+    session.flush()
+    return stats
+
+
+def test_stores_reported_plan_with_zero_and_suppressed_counts(session: Session) -> None:
+    _issuer_stats(session, "00012", 2026)
+    stats = _plan_stats(session)
+    session.expire_all()
+
+    stored = session.get(PlanDenialStats, stats.id)
+    assert stored is not None
+    assert stored.claims_received_in_network == 3_000_000_000
+    assert stored.denied_other == 0  # a published zero is kept
+    assert stored.denied_services_excluded is None  # suppressed
+    assert stored.plan_type is PlanType.HMO
+    assert stored.metal_level is MetalLevel.SILVER
+    assert stored.created_at is not None
+
+
+def test_stores_unreported_plan_without_counts(session: Session) -> None:
+    _issuer_stats(session, "00012", 2026)
+    counts: dict[str, Any] = dict.fromkeys(PLAN_COUNT_COLUMNS)
+
+    stats = _plan_stats(session, is_reported=False, **counts)
+
+    assert stats.id is not None
+
+
+@pytest.mark.parametrize("column", PLAN_COUNT_COLUMNS)
+def test_rejects_count_on_unreported_plan(session: Session, column: str) -> None:
+    _issuer_stats(session, "00012", 2026)
+    counts: dict[str, Any] = dict.fromkeys(PLAN_COUNT_COLUMNS) | {column: 0}
+
+    with pytest.raises(IntegrityError, match="ck_plan_denial_stats_unreported_has_no_counts"):
+        _plan_stats(session, is_reported=False, **counts)
+
+
+def test_rejects_duplicate_plan_in_same_plan_year(session: Session) -> None:
+    _issuer_stats(session, "00012", 2026)
+    _plan_stats(session)
+
+    with pytest.raises(IntegrityError, match="uq_plan_denial_stats_plan_year"):
+        _plan_stats(session)
+
+
+def test_allows_same_plan_in_different_plan_years(session: Session) -> None:
+    _issuer_stats(session, "00012", 2025)
+    _issuer_stats(session, "00012", 2026)
+
+    _plan_stats(session, plan_year=2025)
+    _plan_stats(session, plan_year=2026)
+
+
+@pytest.mark.parametrize("plan_id", ["00012ZZ001", "00012zz0010001", "00012ZZ00100AB"])
+def test_rejects_plan_id_in_the_wrong_format(session: Session, plan_id: str) -> None:
+    _issuer_stats(session, "00012", 2026)
+
+    with pytest.raises(IntegrityError, match="ck_plan_denial_stats_plan_id_format"):
+        _plan_stats(session, plan_id)
+
+
+@pytest.mark.parametrize("plan_id", ["00099ZZ0010001", "00012YY0010001"])
+def test_rejects_plan_id_that_does_not_match_issuer_and_state(
+    session: Session, plan_id: str
+) -> None:
+    _issuer_stats(session, "00012", 2026)
+
+    with pytest.raises(IntegrityError, match="ck_plan_denial_stats_plan_id_matches_issuer"):
+        _plan_stats(session, plan_id)
+
+
+@pytest.mark.parametrize("column", PLAN_COUNT_COLUMNS)
+def test_rejects_negative_plan_count(session: Session, column: str) -> None:
+    _issuer_stats(session, "00012", 2026)
+
+    negative: dict[str, Any] = {column: -1}
+
+    with pytest.raises(IntegrityError, match="ck_plan_denial_stats_counts_non_negative"):
+        _plan_stats(session, **negative)
+
+
+def test_rejects_plan_without_its_issuer_row(session: Session) -> None:
+    _issuer_stats(session, "00012", 2025)  # same issuer, another year
+
+    with pytest.raises(IntegrityError, match="fk_plan_denial_stats_issuer_year"):
+        _plan_stats(session, plan_year=2026)
+
+
+def test_deleting_an_issuer_row_removes_its_plans(session: Session) -> None:
+    issuer = _issuer_stats(session, "00012", 2026)
+    _plan_stats(session)
+
+    session.delete(issuer)
+    session.flush()
+
+    assert session.scalars(select(PlanDenialStats)).all() == []
+
+
+@pytest.mark.parametrize(("column", "value"), [("plan_type", "XYZ"), ("metal_level", "Diamond")])
+def test_rejects_unknown_plan_type_or_metal_level(
+    session: Session, column: str, value: str
+) -> None:
+    _issuer_stats(session, "00012", 2026)
+    values = {"plan_type": "HMO", "metal_level": "Silver"} | {column: value}
+    insert = text(
+        "INSERT INTO plan_denial_stats "
+        "(plan_year, plan_id, issuer_id, state, plan_type, metal_level, is_reported) "
+        "VALUES (2026, '00012ZZ0010001', '00012', 'ZZ', :plan_type, :metal_level, false)"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, values)

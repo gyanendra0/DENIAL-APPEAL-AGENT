@@ -1,13 +1,21 @@
 """Loader tests. The fixture workbook is tiny and made up: 3 issuers on 6 plan rows (4 to 9)."""
 
 import logging
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
-from src.db.models import ISSUER_COUNT_COLUMNS, ISSUER_PERCENT_COLUMNS, ExchangeType
+from src.db.models import (
+    ISSUER_COUNT_COLUMNS,
+    ISSUER_PERCENT_COLUMNS,
+    ExchangeType,
+    IssuerDenialStats,
+)
 from src.ingest.marketplace_denials import (
     HEADER_ROW,
     MAX_PROBLEMS_IN_MESSAGE,
@@ -15,6 +23,7 @@ from src.ingest.marketplace_denials import (
     BatchRejectedError,
     IssuerDenialRow,
     read_issuer_denial_rows,
+    upsert_issuer_denial_rows,
 )
 
 CellValue = int | float | str
@@ -189,3 +198,82 @@ def test_long_rejection_message_is_shortened() -> None:
 
     assert "... and 5 more" in str(error)
     assert error.problems == problems
+
+
+def _stored(session: Session) -> list[IssuerDenialStats]:
+    """Every stored row, read fresh from the database."""
+    session.expire_all()
+    query = select(IssuerDenialStats).order_by(
+        IssuerDenialStats.plan_year, IssuerDenialStats.issuer_id
+    )
+    return list(session.scalars(query))
+
+
+def test_first_load_inserts_one_row_per_issuer(session: Session) -> None:
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+
+    written = upsert_issuer_denial_rows(session, rows)
+
+    assert written == 3
+    assert [stats.issuer_id for stats in _stored(session)] == ["11111", "22222", "33333"]
+
+
+def test_stores_the_values_that_were_read(session: Session) -> None:
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+
+    upsert_issuer_denial_rows(session, rows)
+
+    for row, stats in zip(rows, _stored(session), strict=True):
+        for field, value in row.model_dump().items():
+            assert getattr(stats, field) == value, field
+
+
+def test_loading_twice_keeps_the_same_rows(session: Session) -> None:
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_issuer_denial_rows(session, rows)
+    ids_after_first_load = [stats.id for stats in _stored(session)]
+
+    upsert_issuer_denial_rows(session, rows)
+
+    assert [stats.id for stats in _stored(session)] == ids_after_first_load
+
+
+def test_reload_updates_a_changed_value(session: Session) -> None:
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_issuer_denial_rows(session, rows)
+    corrected = rows[0].model_copy(
+        update={"claims_denied_in_network": 9001, "issuer_name": "Renamed Health Plan"}
+    )
+
+    upsert_issuer_denial_rows(session, [corrected])
+
+    first = _stored(session)[0]
+    assert first.claims_denied_in_network == 9001
+    assert first.issuer_name == "Renamed Health Plan"
+
+
+def test_reload_advances_updated_at_and_keeps_created_at(session: Session) -> None:
+    # now() is fixed for the whole test transaction, so age the rows first.
+    long_ago = datetime(2000, 1, 1, tzinfo=UTC)
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+    upsert_issuer_denial_rows(session, rows)
+    session.execute(update(IssuerDenialStats).values(created_at=long_ago, updated_at=long_ago))
+
+    upsert_issuer_denial_rows(session, rows)
+
+    for stats in _stored(session):
+        assert stats.created_at == long_ago
+        assert stats.updated_at > long_ago
+
+
+def test_another_plan_year_adds_new_rows(session: Session) -> None:
+    upsert_issuer_denial_rows(session, read_issuer_denial_rows(FIXTURE, 2025))
+
+    upsert_issuer_denial_rows(session, read_issuer_denial_rows(FIXTURE, 2026))
+
+    assert [stats.plan_year for stats in _stored(session)] == [2025] * 3 + [2026] * 3
+
+
+def test_empty_batch_writes_nothing(session: Session) -> None:
+    assert upsert_issuer_denial_rows(session, []) == 0
+    assert _stored(session) == []

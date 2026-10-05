@@ -1,8 +1,9 @@
-"""Read issuer-level denial statistics from the CMS Transparency in Coverage PUF (xlsx).
+"""Load issuer-level denial statistics from the CMS Transparency in Coverage PUF (xlsx).
 
 One sheet row is one plan. The issuer-level columns repeat on every plan row of the same
 issuer, so the rows are collapsed to one per issuer. A file that fails any quality gate is
-rejected outright: nothing is returned.
+rejected outright: nothing is returned. Validated rows are then upserted into
+`issuer_denial_stats`, a public reference table (no `account_id`).
 """
 
 import logging
@@ -19,8 +20,16 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
 
-from src.db.models import ISSUER_COUNT_COLUMNS, ISSUER_PERCENT_COLUMNS, ExchangeType
+from src.db.models import (
+    ISSUER_COUNT_COLUMNS,
+    ISSUER_PERCENT_COLUMNS,
+    ExchangeType,
+    IssuerDenialStats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +39,8 @@ HEADER_ROW = 3
 MISSING_TOKENS = frozenset({"*", "**", "***", "N/A"})
 YES_NO = {"Yes": True, "No": False}
 MAX_PROBLEMS_IN_MESSAGE = 20
+UPSERT_CONSTRAINT = "uq_issuer_denial_stats_issuer_year"
+UPSERT_KEY_COLUMNS = ("issuer_id", "plan_year")
 
 # Row model field -> exact header text in the sheet.
 SOURCE_HEADERS = {
@@ -184,6 +195,29 @@ def read_issuer_denial_rows(path: Path, plan_year: int) -> list[IssuerDenialRow]
     _warn_denied_above_received(rows)
     logger.info("read %d issuer rows for plan year %d", len(rows), plan_year)
     return rows
+
+
+def upsert_issuer_denial_rows(session: Session, rows: list[IssuerDenialRow]) -> int:
+    """Insert `rows` into `issuer_denial_stats`, updating any issuer + plan year already there.
+
+    Loading the same rows twice changes nothing except `updated_at`. Returns the number of
+    rows written. Does not commit: the caller owns the transaction.
+    """
+    if not rows:
+        return 0
+    statement = insert(IssuerDenialStats).values([row.model_dump() for row in rows])
+    new_values = {
+        name: statement.excluded[name]
+        for name in IssuerDenialRow.model_fields
+        if name not in UPSERT_KEY_COLUMNS
+    }
+    session.execute(
+        statement.on_conflict_do_update(
+            constraint=UPSERT_CONSTRAINT, set_={**new_values, "updated_at": func.now()}
+        )
+    )
+    logger.info("upserted %d issuer rows", len(rows))
+    return len(rows)
 
 
 def _describe(row_number: int, exc: ValidationError) -> list[str]:

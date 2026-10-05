@@ -8,6 +8,8 @@ from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import (
+    ISSUER_COUNT_COLUMNS,
+    ISSUER_PERCENT_COLUMNS,
     Account,
     Claim,
     Denial,
@@ -135,7 +137,7 @@ def test_keeps_suppressed_issuer_counts_as_null(session: Session) -> None:
 def test_rejects_duplicate_issuer_in_same_plan_year(session: Session) -> None:
     _issuer_stats(session, "00012", 2026)
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="uq_issuer_denial_stats_issuer_year"):
         _issuer_stats(session, "00012", 2026)
 
 
@@ -146,23 +148,27 @@ def test_allows_same_issuer_in_different_plan_years(session: Session) -> None:
 
 @pytest.mark.parametrize("issuer_id", ["12", "1234A", "    1"])
 def test_rejects_issuer_id_that_is_not_five_digits(session: Session, issuer_id: str) -> None:
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ck_issuer_denial_stats_issuer_id_format"):
         _issuer_stats(session, issuer_id, 2026)
 
 
-def test_rejects_negative_issuer_count(session: Session) -> None:
-    with pytest.raises(IntegrityError):
-        _issuer_stats(session, "00012", 2026, external_appeals_filed=-1)
+@pytest.mark.parametrize("column", ISSUER_COUNT_COLUMNS)
+def test_rejects_negative_issuer_count(session: Session, column: str) -> None:
+    with pytest.raises(IntegrityError, match="ck_issuer_denial_stats_counts_non_negative"):
+        _issuer_stats(session, "00012", 2026, **{column: -1})
 
 
+@pytest.mark.parametrize("column", ISSUER_PERCENT_COLUMNS)
 @pytest.mark.parametrize("percent", [Decimal("-0.01"), Decimal("100.01")])
-def test_rejects_issuer_percent_outside_0_to_100(session: Session, percent: Decimal) -> None:
-    with pytest.raises(IntegrityError):
-        _issuer_stats(session, "00012", 2026, external_appeals_overturned_pct=percent)
+def test_rejects_issuer_percent_outside_0_to_100(
+    session: Session, column: str, percent: Decimal
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_issuer_denial_stats_percents_in_range"):
+        _issuer_stats(session, "00012", 2026, **{column: percent})
 
 
 def test_rejects_issuer_stats_without_state(session: Session) -> None:
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match='null value in column "state"'):
         _issuer_stats(session, "00012", 2026, state=None)
 
 

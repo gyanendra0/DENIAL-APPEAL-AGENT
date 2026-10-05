@@ -2,6 +2,9 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, inspect, text
 
+from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
+from src.db.models import ISSUER_COUNT_COLUMNS, ISSUER_PERCENT_COLUMNS, ExchangeType
+
 BUSINESS_TABLES = {"accounts", "users", "claims", "denials"}
 REFERENCE_TABLES = {"issuer_denial_stats"}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES
@@ -42,6 +45,13 @@ def test_issuer_stats_has_the_unique_key_and_check_constraints(engine: Engine) -
         "ck_issuer_denial_stats_counts_non_negative",
         "ck_issuer_denial_stats_percents_in_range",
     }
+
+
+def test_migration_0002_lists_the_same_columns_and_values_as_the_model() -> None:
+    # Both files build the CHECK rules and the enum from their own copy of these lists.
+    assert migration_0002.COUNT_COLUMNS == ISSUER_COUNT_COLUMNS
+    assert migration_0002.PERCENT_COLUMNS == ISSUER_PERCENT_COLUMNS
+    assert tuple(member.value for member in ExchangeType) == migration_0002.EXCHANGE_TYPE
 
 
 def test_downgrade_to_0001_removes_issuer_stats_table_and_enum(

@@ -4,7 +4,10 @@ from sqlalchemy import Engine, inspect, text
 
 from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
 from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0003
+from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
 from src.db.models import (
+    CLAIM_LINE_AMOUNT_COLUMNS,
+    CLAIM_LINE_MAX_NUMBER,
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
@@ -14,10 +17,17 @@ from src.db.models import (
 )
 
 BUSINESS_TABLES = {"accounts", "users", "claims", "denials"}
-REFERENCE_TABLES = {"issuer_denial_stats", "plan_denial_stats"}
+REFERENCE_TABLES = {
+    "issuer_denial_stats",
+    "plan_denial_stats",
+    "claim_samples",
+    "claim_sample_lines",
+}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
+CLAIM_TABLE = "claim_samples"
+LINE_TABLE = "claim_sample_lines"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -94,6 +104,56 @@ def test_migration_0003_lists_the_same_columns_and_values_as_the_model() -> None
     assert migration_0003.COUNT_COLUMNS == PLAN_COUNT_COLUMNS
     assert tuple(member.value for member in PlanType) == migration_0003.PLAN_TYPE
     assert tuple(member.value for member in MetalLevel) == migration_0003.METAL_LEVEL
+
+
+def test_claim_samples_has_its_unique_key_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(CLAIM_TABLE)}
+    checks = {c["name"] for c in inspector.get_check_constraints(CLAIM_TABLE)}
+
+    assert unique == {"uq_claim_samples_source_claim_id": ["source_claim_id"]}
+    assert checks == {
+        "ck_claim_samples_source_claim_id_format",
+        "ck_claim_samples_from_not_after_thru",
+    }
+
+
+def test_claim_sample_lines_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(LINE_TABLE)}
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(LINE_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(LINE_TABLE)}
+
+    assert unique == {"uq_claim_sample_lines_claim_line": ["source_claim_id", "line_number"]}
+    assert foreign == {"fk_claim_sample_lines_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")}
+    assert checks == {
+        "ck_claim_sample_lines_line_number_in_range",
+        "ck_claim_sample_lines_processing_indicator_one_char",
+        "ck_claim_sample_lines_amounts_non_negative",
+    }
+
+
+def test_migration_0004_lists_the_same_columns_and_limit_as_the_model() -> None:
+    assert migration_0004.AMOUNT_COLUMNS == CLAIM_LINE_AMOUNT_COLUMNS
+    assert migration_0004.MAX_LINE_NUMBER == CLAIM_LINE_MAX_NUMBER
+
+
+def test_downgrade_to_0003_removes_both_claim_sample_tables(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0003")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert CLAIM_TABLE not in tables
+        assert LINE_TABLE not in tables
+        assert PLAN_TABLE in tables
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert {CLAIM_TABLE, LINE_TABLE} <= set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0002_removes_plan_stats_table_and_enums(

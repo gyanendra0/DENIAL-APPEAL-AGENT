@@ -24,9 +24,65 @@ Candidate public sources. **Verify each before relying on it.**
 |---|---|---|
 | CMS public use files (Medicare claims samples) | De-identified claim lines, amounts, payment status | Base table, money amounts |
 | CMS Transparency in Coverage / payer transparency files | Payer-level rates and coverage terms | Payer behaviour features |
-| Healthcare.gov Marketplace issuer data | Issuer-level claim denial rates and reasons | Denial-rate priors per payer |
+| Healthcare.gov Marketplace issuer data | Issuer-level claim denial rates and reasons | Denial-rate priors per payer. **Loaded**, see 2.2.1 |
 | HCUP / public discharge summaries | Diagnosis and procedure mixes | Realistic clinical context |
 | Hugging Face healthcare/insurance tabular sets | Extra volume | Augmentation only |
+
+### 2.2.1 Loaded source: Marketplace Transparency in Coverage PUF
+
+The first Layer A source that is actually loaded. It is a public use file published by CMS
+on its Marketplace public use files page. It holds counts per issuer and per plan; it has
+no claim lines and no patient data.
+
+| Item | Value |
+|---|---|
+| File | One `.xlsx` workbook, kept under `data/raw/marketplace/` (never committed) |
+| Sheet read | `Transparency 2026 - Ind QHP` (individual market medical plans) |
+| Header row | Row 3. Rows 1 and 2 are a title and a legend |
+| Grain in the file | One row per plan |
+| Grain we store | One row per issuer and plan year |
+| Lands in | `issuer_denial_stats` (public reference table, no `account_id`) |
+
+**What is loaded.** The issuer identity (id, name, state, exchange type, new to the
+exchange or not) and the issuer-level counts: claims received, denied and resubmitted, in
+and out of network; internal and external appeals filed and overturned, with the two
+overturned percentages. These columns repeat on every plan row of an issuer, so the loader
+keeps one row per issuer.
+
+**What is not loaded.** The dental (`Ind SADP`) and small-business (`SHOP`) sheets, and the
+plan-level columns, including the denial-reason breakdown. The reasons are needed for the
+labels and get their own loader.
+
+**Missing values.** The file never leaves a number blank. It uses legend tokens instead:
+`*` (not available), `**` (suppressed, small cell size), `***` (not required for the plan
+type) and `N/A` (issuer new to the Exchange). All four are stored as empty (`NULL`).
+
+**Plan year.** The sheet has no year column; the year appears only in the sheet name. The
+loader takes the plan year as an argument.
+
+**Quality gates.** The file is rejected as a whole, and nothing is written, if any of
+these fail:
+
+| Gate | Action |
+|---|---|
+| The sheet or a required header is missing or renamed | Reject |
+| There are no data rows | Reject |
+| Issuer id is not five digits, state is not two letters, or exchange type is unknown | Reject |
+| A count is negative or not a whole number; a percent is outside 0 to 100 or has more than two decimals | Reject |
+| A cell holds text that is neither a number nor a legend token | Reject |
+| Appeals overturned is greater than appeals filed | Reject |
+| Two plan rows of one issuer disagree on an issuer-level value | Reject |
+| Out-of-network claims denied is greater than claims received | Warn only; this occurs in the published file |
+
+**How to load.** With the database running and migrated:
+
+```text
+python3 -m pipelines.load_marketplace_denials data/raw/marketplace/<file>.xlsx --plan-year 2026
+```
+
+Exit code 0 means loaded, 1 means the file was rejected (the problems are listed, with
+their row numbers), 2 means a bad argument. Running the command again is safe: rows are
+matched on issuer and plan year and updated in place.
 
 **Label definition.** The ML target is:
 

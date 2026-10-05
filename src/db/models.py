@@ -7,6 +7,7 @@ from enum import StrEnum
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     Enum,
     ForeignKey,
@@ -96,6 +97,21 @@ class Denial(AccountScopedMixin, TimestampMixin, Base):
     )
 
 
+ISSUER_COUNT_COLUMNS = (
+    "claims_received_out_of_network",
+    "claims_received_in_network",
+    "claims_denied_out_of_network",
+    "claims_denied_in_network",
+    "claims_resubmitted_out_of_network",
+    "claims_resubmitted_in_network",
+    "internal_appeals_filed",
+    "internal_appeals_overturned",
+    "external_appeals_filed",
+    "external_appeals_overturned",
+)
+ISSUER_PERCENT_COLUMNS = ("internal_appeals_overturned_pct", "external_appeals_overturned_pct")
+
+
 class IssuerDenialStats(TimestampMixin, Base):
     """Issuer-level claim and appeal counts from the CMS Transparency in Coverage PUF.
 
@@ -106,6 +122,15 @@ class IssuerDenialStats(TimestampMixin, Base):
     __tablename__ = "issuer_denial_stats"
     __table_args__ = (
         UniqueConstraint("issuer_id", "plan_year", name="uq_issuer_denial_stats_issuer_year"),
+        CheckConstraint("issuer_id ~ '^[0-9]{5}$'", name="ck_issuer_denial_stats_issuer_id_format"),
+        CheckConstraint(
+            " AND ".join(f"{column} >= 0" for column in ISSUER_COUNT_COLUMNS),
+            name="ck_issuer_denial_stats_counts_non_negative",
+        ),
+        CheckConstraint(
+            " AND ".join(f"{column} BETWEEN 0 AND 100" for column in ISSUER_PERCENT_COLUMNS),
+            name="ck_issuer_denial_stats_percents_in_range",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

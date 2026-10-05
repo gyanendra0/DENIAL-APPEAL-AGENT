@@ -50,6 +50,17 @@ def upgrade() -> None:
             "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
         sa.UniqueConstraint("issuer_id", "plan_year", name="uq_issuer_denial_stats_issuer_year"),
+        sa.CheckConstraint(
+            "issuer_id ~ '^[0-9]{5}$'", name="ck_issuer_denial_stats_issuer_id_format"
+        ),
+        sa.CheckConstraint(
+            " AND ".join(f"{name} >= 0" for name in COUNT_COLUMNS),
+            name="ck_issuer_denial_stats_counts_non_negative",
+        ),
+        sa.CheckConstraint(
+            " AND ".join(f"{name} BETWEEN 0 AND 100" for name in PERCENT_COLUMNS),
+            name="ck_issuer_denial_stats_percents_in_range",
+        ),
     )
 
 

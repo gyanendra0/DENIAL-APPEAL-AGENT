@@ -1,8 +1,10 @@
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import pytest
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -37,18 +39,21 @@ def _claim(session: Session, account: Account, number: str = "C-1") -> Claim:
     return claim
 
 
-def _issuer_stats(session: Session, issuer_id: str, plan_year: int) -> IssuerDenialStats:
-    stats = IssuerDenialStats(
-        plan_year=plan_year,
-        issuer_id=issuer_id,
-        issuer_name="Example Health Plan",
-        state="ZZ",
-        exchange_type=ExchangeType.SBE_FP,
-        is_new_to_exchange=False,
-        claims_received_in_network=3_000_000_000,
-        claims_denied_in_network=500,
-        internal_appeals_overturned_pct=Decimal("39.86"),
-    )
+def _issuer_stats(
+    session: Session, issuer_id: str, plan_year: int, **overrides: Any
+) -> IssuerDenialStats:
+    fields: dict[str, Any] = {
+        "plan_year": plan_year,
+        "issuer_id": issuer_id,
+        "issuer_name": "Example Health Plan",
+        "state": "ZZ",
+        "exchange_type": ExchangeType.SBE_FP,
+        "is_new_to_exchange": False,
+        "claims_received_in_network": 3_000_000_000,
+        "claims_denied_in_network": 500,
+        "internal_appeals_overturned_pct": Decimal("39.86"),
+    }
+    stats = IssuerDenialStats(**(fields | overrides))
     session.add(stats)
     session.flush()
     return stats
@@ -137,3 +142,36 @@ def test_rejects_duplicate_issuer_in_same_plan_year(session: Session) -> None:
 def test_allows_same_issuer_in_different_plan_years(session: Session) -> None:
     _issuer_stats(session, "00012", 2025)
     _issuer_stats(session, "00012", 2026)
+
+
+@pytest.mark.parametrize("issuer_id", ["12", "1234A", "    1"])
+def test_rejects_issuer_id_that_is_not_five_digits(session: Session, issuer_id: str) -> None:
+    with pytest.raises(IntegrityError):
+        _issuer_stats(session, issuer_id, 2026)
+
+
+def test_rejects_negative_issuer_count(session: Session) -> None:
+    with pytest.raises(IntegrityError):
+        _issuer_stats(session, "00012", 2026, external_appeals_filed=-1)
+
+
+@pytest.mark.parametrize("percent", [Decimal("-0.01"), Decimal("100.01")])
+def test_rejects_issuer_percent_outside_0_to_100(session: Session, percent: Decimal) -> None:
+    with pytest.raises(IntegrityError):
+        _issuer_stats(session, "00012", 2026, external_appeals_overturned_pct=percent)
+
+
+def test_rejects_issuer_stats_without_state(session: Session) -> None:
+    with pytest.raises(IntegrityError):
+        _issuer_stats(session, "00012", 2026, state=None)
+
+
+def test_rejects_unknown_exchange_type(session: Session) -> None:
+    insert = text(
+        "INSERT INTO issuer_denial_stats "
+        "(plan_year, issuer_id, issuer_name, state, exchange_type, is_new_to_exchange) "
+        "VALUES (2026, '00012', 'Example Health Plan', 'ZZ', 'UNKNOWN', false)"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert)

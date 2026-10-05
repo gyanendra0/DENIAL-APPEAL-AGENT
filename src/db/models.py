@@ -11,6 +11,8 @@ from sqlalchemy import (
     Date,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     Numeric,
     String,
@@ -39,6 +41,21 @@ class ExchangeType(StrEnum):
     FFE = "FFE"
     SPE = "SPE"
     SBE_FP = "SBE-FP"
+
+
+class PlanType(StrEnum):
+    HMO = "HMO"
+    EPO = "EPO"
+    PPO = "PPO"
+    POS = "POS"
+
+
+class MetalLevel(StrEnum):
+    BRONZE = "Bronze"
+    SILVER = "Silver"
+    GOLD = "Gold"
+    PLATINUM = "Platinum"
+    CATASTROPHIC = "Catastrophic"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -154,3 +171,91 @@ class IssuerDenialStats(TimestampMixin, Base):
     external_appeals_filed: Mapped[int | None] = mapped_column(BigInteger)
     external_appeals_overturned: Mapped[int | None] = mapped_column(BigInteger)
     external_appeals_overturned_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+
+PLAN_COUNT_COLUMNS = (
+    "claims_received_out_of_network",
+    "claims_received_in_network",
+    "claims_denied_out_of_network",
+    "claims_denied_in_network",
+    "claims_resubmitted_out_of_network",
+    "claims_resubmitted_in_network",
+    "denied_referral_required",
+    "denied_out_of_network",
+    "denied_services_excluded",
+    "denied_not_medically_necessary_non_bh",
+    "denied_not_medically_necessary_bh",
+    "denied_benefit_limit_reached",
+    "denied_member_not_covered",
+    "denied_investigational_experimental_cosmetic",
+    "denied_administrative_reason",
+    "denied_other",
+)
+
+
+class PlanDenialStats(TimestampMixin, Base):
+    """Plan-level claim counts and denial reasons from the CMS Transparency in Coverage PUF.
+
+    Public reference table shared by all accounts, so it has no `account_id`.
+    `is_reported` is false for a plan that is new to the Exchange: all its counts are NULL.
+    On a reported plan, a NULL count means the source suppressed it (a small number, not zero).
+    The denial reasons overlap: their sum can be larger than the claims denied.
+    """
+
+    __tablename__ = "plan_denial_stats"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "plan_year", name="uq_plan_denial_stats_plan_year"),
+        ForeignKeyConstraint(
+            ["issuer_id", "plan_year"],
+            ["issuer_denial_stats.issuer_id", "issuer_denial_stats.plan_year"],
+            name="fk_plan_denial_stats_issuer_year",
+            ondelete="CASCADE",
+        ),
+        Index("ix_plan_denial_stats_issuer_year", "issuer_id", "plan_year"),
+        CheckConstraint(
+            "plan_id ~ '^[0-9]{5}[A-Z]{2}[0-9]{7}$'", name="ck_plan_denial_stats_plan_id_format"
+        ),
+        CheckConstraint(
+            "left(plan_id, 5) = issuer_id AND substr(plan_id, 6, 2) = state",
+            name="ck_plan_denial_stats_plan_id_matches_issuer",
+        ),
+        CheckConstraint(
+            " AND ".join(f"{column} >= 0" for column in PLAN_COUNT_COLUMNS),
+            name="ck_plan_denial_stats_counts_non_negative",
+        ),
+        CheckConstraint(
+            "is_reported OR ("
+            + " AND ".join(f"{column} IS NULL" for column in PLAN_COUNT_COLUMNS)
+            + ")",
+            name="ck_plan_denial_stats_unreported_has_no_counts",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(14), nullable=False)
+    issuer_id: Mapped[str] = mapped_column(String(5), nullable=False)
+    state: Mapped[str] = mapped_column(String(2), nullable=False)
+    plan_type: Mapped[PlanType] = mapped_column(
+        Enum(PlanType, name="plan_type", values_callable=_values), nullable=False
+    )
+    metal_level: Mapped[MetalLevel] = mapped_column(
+        Enum(MetalLevel, name="metal_level", values_callable=_values), nullable=False
+    )
+    is_reported: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    claims_received_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_received_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_denied_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_denied_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_resubmitted_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    claims_resubmitted_in_network: Mapped[int | None] = mapped_column(BigInteger)
+    denied_referral_required: Mapped[int | None] = mapped_column(BigInteger)
+    denied_out_of_network: Mapped[int | None] = mapped_column(BigInteger)
+    denied_services_excluded: Mapped[int | None] = mapped_column(BigInteger)
+    denied_not_medically_necessary_non_bh: Mapped[int | None] = mapped_column(BigInteger)
+    denied_not_medically_necessary_bh: Mapped[int | None] = mapped_column(BigInteger)
+    denied_benefit_limit_reached: Mapped[int | None] = mapped_column(BigInteger)
+    denied_member_not_covered: Mapped[int | None] = mapped_column(BigInteger)
+    denied_investigational_experimental_cosmetic: Mapped[int | None] = mapped_column(BigInteger)
+    denied_administrative_reason: Mapped[int | None] = mapped_column(BigInteger)
+    denied_other: Mapped[int | None] = mapped_column(BigInteger)

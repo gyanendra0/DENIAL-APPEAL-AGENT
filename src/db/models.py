@@ -197,7 +197,8 @@ class PlanDenialStats(TimestampMixin, Base):
     """Plan-level claim counts and denial reasons from the CMS Transparency in Coverage PUF.
 
     Public reference table shared by all accounts, so it has no `account_id`.
-    `is_reported` is false for a plan that is new to the Exchange: all its counts are NULL.
+    `is_reported` is false for a plan with no published figures (`N/A`, `***` or `*` in every
+    count cell, typically a plan new to the Exchange): all its counts are NULL.
     On a reported plan, a NULL count means the source suppressed it (a small number, not zero).
     The denial reasons overlap: their sum can be larger than the claims denied.
     """

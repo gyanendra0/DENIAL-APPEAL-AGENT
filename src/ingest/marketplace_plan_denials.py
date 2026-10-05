@@ -36,6 +36,7 @@ SUPPRESSED_MARK = "**"
 # Legend tokens that mean the plan has no figures: new to the Exchange, not required,
 # or not available.
 NOT_REPORTED_TOKENS = frozenset({"N/A", "***", "*"})
+MAX_PLAN_IDS_IN_WARNING = 10
 PLAN_UPSERT_CONSTRAINT = "uq_plan_denial_stats_plan_year"
 PLAN_UPSERT_KEY_COLUMNS = ("plan_id", "plan_year")
 REASON_COLUMNS = tuple(name for name in PLAN_COUNT_COLUMNS if name.startswith("denied_"))
@@ -228,6 +229,9 @@ def _warn_implausible(rows: list[PlanDenialRow]) -> None:
         "denial reasons that add up to less than the claims denied": _reasons_below_denied,
     }
     for label, is_odd in checks.items():
-        count = sum(1 for row in rows if is_odd(row))
-        if count:
-            logger.warning("%d plan(s) report %s", count, label)
+        odd = [row.plan_id for row in rows if is_odd(row)]
+        if odd:
+            shown = ", ".join(odd[:MAX_PLAN_IDS_IN_WARNING])
+            hidden = len(odd) - MAX_PLAN_IDS_IN_WARNING
+            more = f" and {hidden} more" if hidden > 0 else ""
+            logger.warning("%d plan(s) report %s: %s%s", len(odd), label, shown, more)

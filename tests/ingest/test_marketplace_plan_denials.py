@@ -17,7 +17,7 @@ from src.db.models import (
     PlanDenialStats,
     PlanType,
 )
-from src.ingest import marketplace_denials
+from src.ingest import marketplace_denials, marketplace_plan_denials
 from src.ingest.marketplace_denials import (
     BatchRejectedError,
     read_issuer_denial_rows,
@@ -209,7 +209,22 @@ def test_warns_but_loads_when_numbers_look_implausible(
         rows = read_plan_denial_rows(path, PLAN_YEAR)
 
     assert len(rows) == 6
-    assert expected in caplog.text
+    assert f"{expected}: 11111TX0010001" in caplog.text
+
+
+def test_warning_names_only_the_first_few_plans(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(marketplace_plan_denials, "MAX_PLAN_IDS_IN_WARNING", 2)
+    path = edited_copy(tmp_path, {"AA4": 5000, "AA5": 5000, "AA6": 5000})
+
+    with caplog.at_level(logging.WARNING):
+        read_plan_denial_rows(path, PLAN_YEAR)
+
+    assert (
+        "3 plan(s) report more claims denied than received: "
+        "11111TX0010001, 11111TX0010002 and 1 more"
+    ) in caplog.text
 
 
 def _load_issuers(session: Session) -> None:

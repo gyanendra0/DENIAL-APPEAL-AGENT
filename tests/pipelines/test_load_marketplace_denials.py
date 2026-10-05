@@ -4,17 +4,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
 from sqlalchemy import Engine, delete, func, select
 
+from pipelines import load_marketplace_denials
 from pipelines.load_marketplace_denials import main
 from src.config.settings import get_settings
 from src.db.base import Base
 from src.db.models import IssuerDenialStats, PlanDenialStats
-from src.ingest.marketplace_denials import SHEET_NAME_TEMPLATE
-
-FIXTURE = Path(__file__).parents[1] / "ingest" / "fixtures" / "tc_puf_sample.xlsx"
-SHEET_NAME = SHEET_NAME_TEMPLATE.format(plan_year=2026)
+from tests.ingest.helpers import FIXTURE, edited_copy
 
 
 @pytest.fixture
@@ -66,10 +63,7 @@ def test_running_twice_keeps_the_same_rows(database: Engine) -> None:
 def test_rejected_file_exits_1_and_writes_nothing(
     database: Engine, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    workbook = load_workbook(FIXTURE)
-    workbook[SHEET_NAME]["E4"] = 123  # issuer id that is not five digits
-    bad_file = tmp_path / "bad.xlsx"
-    workbook.save(bad_file)
+    bad_file = edited_copy(tmp_path, {"E4": 123})  # issuer id that is not five digits
 
     exit_code = main([str(bad_file), "--plan-year", "2026"])
 
@@ -81,16 +75,28 @@ def test_rejected_file_exits_1_and_writes_nothing(
 def test_bad_plan_row_exits_1_and_changes_neither_table(
     database: Engine, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    workbook = load_workbook(FIXTURE)
-    workbook[SHEET_NAME]["I4"] = "XYZ"  # unknown plan type: the issuer part of the row is fine
-    bad_file = tmp_path / "bad_plan.xlsx"
-    workbook.save(bad_file)
+    # Unknown plan type: the issuer part of the row is fine.
+    bad_file = edited_copy(tmp_path, {"I4": "XYZ"})
 
     exit_code = main([str(bad_file), "--plan-year", "2026"])
 
     assert exit_code == 1
     assert "row 4: plan_type" in capsys.readouterr().err
     assert _stored_counts(database) == (0, 0)
+
+
+def test_failure_while_writing_plans_also_undoes_the_issuers(
+    database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*_: object) -> int:
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(load_marketplace_denials, "upsert_plan_denial_rows", fail)
+
+    with pytest.raises(RuntimeError, match="database went away"):
+        main([str(FIXTURE), "--plan-year", "2026"])
+
+    assert _stored_counts(database) == (0, 0)  # the issuer rows were written, then rolled back
 
 
 def test_missing_file_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

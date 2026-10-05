@@ -32,7 +32,7 @@ Candidate public sources. **Verify each before relying on it.**
 
 The first Layer A source that is actually loaded. It is a public use file published by CMS
 on its Marketplace public use files page. It holds counts per issuer and per plan; it has
-no claim lines and no patient data.
+no claim lines and no patient data. Both levels are loaded.
 
 | Item | Value |
 |---|---|
@@ -40,29 +40,53 @@ no claim lines and no patient data.
 | Sheet read | `Transparency <plan year> - Ind QHP` (individual market medical plans) |
 | Header row | Row 3. Rows 1 and 2 are a title and a legend |
 | Grain in the file | One row per plan |
-| Grain we store | One row per issuer and plan year |
-| Lands in | `issuer_denial_stats` (public reference table, no `account_id`) |
+| Grain we store | One row per issuer and plan year; one row per plan and plan year |
+| Lands in | `issuer_denial_stats` and `plan_denial_stats` (public reference tables, no `account_id`) |
 
-**What is loaded.** The issuer identity (id, name, state, exchange type, new to the
-exchange or not) and the issuer-level counts: claims received, denied and resubmitted, in
-and out of network; internal and external appeals filed and overturned, with the two
-overturned percentages. These columns repeat on every plan row of an issuer, so the loader
-keeps one row per issuer.
+**What is loaded, issuer level.** The issuer identity (id, name, state, exchange type, new
+to the exchange or not) and the issuer-level counts: claims received, denied and
+resubmitted, in and out of network; internal and external appeals filed and overturned,
+with the two overturned percentages. These columns repeat on every plan row of an issuer,
+so the loader keeps one row per issuer.
 
-**What is not loaded.** The dental (`Ind SADP`) and small-business (`SHOP`) sheets, and the
-plan-level columns, including the denial-reason breakdown. The reasons are needed for the
-labels and get their own loader.
+**What is loaded, plan level.** The plan identity (plan id, issuer id, state, plan type,
+metal level) and the plan-level counts: claims received, denied and resubmitted, in and out
+of network, and ten denial-reason counts (referral required, out of network, services
+excluded, not medically necessary with and without behavioural health, benefit limit
+reached, member not covered, investigational or cosmetic, administrative, other). Each plan
+row points at its issuer row for the same plan year.
+
+**What is not loaded.** The dental (`Ind SADP`) and small-business (`SHOP`) sheets, the
+average monthly enrollment and disenrollment columns, and the URL columns.
 
 **Missing values.** The file never leaves a number blank. It uses legend tokens instead:
 `*` (not available), `**` (suppressed, small cell size), `***` (not required for the plan
-type) and `N/A` (issuer new to the Exchange). All four are stored as empty (`NULL`).
+type) and `N/A` (issuer or plan new to the Exchange).
+
+- Issuer level: all four tokens are stored as empty (`NULL`).
+- Plan level: a plan is either reported or not, and the table records which
+  (`is_reported`). A plan whose count cells are all `N/A`, `***` or `*` is not reported and
+  has no counts. On a reported plan, `**` is stored as empty, meaning suppressed, and a
+  published `0` is kept as `0`. The two are different and must not be merged. Whether the
+  issuer is new does not tell you whether a plan is reported: most unreported plans belong
+  to existing issuers.
+
+**Reading the plan-level numbers.** Two things in the published file are easy to get wrong:
+
+- The denial reasons overlap. On most plans their sum is larger than the claims denied, so
+  one claim appears to be counted under several reasons. A reason count is not a share of
+  the denied total.
+- Plan counts do not add up to the issuer counts. Where every plan of an issuer is
+  reported, the plan total is usually lower than the issuer figure.
 
 **Plan year.** The sheet has no year column; the year appears only in the sheet name. The
 loader takes the plan year as an argument and reads the sheet named for that year, so a
 year that does not match the file is rejected.
 
-**Quality gates.** The file is rejected as a whole, and nothing is written, if any of
-these fail:
+**Quality gates.** The file is rejected as a whole, and nothing is written to either
+table, if any of these fail.
+
+File and issuer rows:
 
 | Gate | Action |
 |---|---|
@@ -77,15 +101,33 @@ these fail:
 | Two plan rows of one issuer disagree on an issuer-level value | Reject |
 | Out-of-network claims denied is greater than claims received | Warn only; this occurs in the published file |
 
+Plan rows:
+
+| Gate | Action |
+|---|---|
+| Plan id is not five digits, two letters and seven digits, or does not start with the row's issuer id and state | Reject |
+| The same plan id appears twice | Reject |
+| Plan type or metal level is unknown | Reject |
+| A count is negative, not a whole number, blank, TRUE/FALSE, or text that is not a legend token | Reject |
+| A row mixes reported values (numbers, `**`) with `N/A`, `***` or `*` | Reject |
+| Claims denied is greater than claims received, in or out of network | Warn only; this occurs in the published file |
+| Claims resubmitted is greater than claims received, in or out of network | Warn only; this occurs in the published file |
+| One denial reason is greater than the total claims denied | Warn only; this occurs in the published file |
+| The denial reasons add up to less than the claims denied | Warn only |
+
 **How to load.** With the database running and migrated:
 
 ```text
 python3 -m pipelines.load_marketplace_denials data/raw/marketplace/<file>.xlsx --plan-year 2026
 ```
 
-Exit code 0 means loaded, 1 means the file was rejected (the first 20 problems are
-listed, with their row numbers), 2 means a bad argument. Running the command again is
-safe: rows are matched on issuer and plan year and updated in place.
+The command checks the issuer rows and the plan rows before it writes anything, then
+writes the issuers and the plans in one transaction, so the two tables always come from
+the same file. Exit code 0 means loaded, 1 means the file was rejected (the first 20
+problems are listed, with their row numbers), 2 means a bad argument. Running the command
+again is safe: issuer rows are matched on issuer and plan year, plan rows on plan id and
+plan year, and both are updated in place. Rows are never removed: an issuer or plan that
+a later version of the file drops stays in the table.
 
 **Label definition.** The ML target is:
 

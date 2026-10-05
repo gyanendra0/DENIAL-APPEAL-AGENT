@@ -61,7 +61,6 @@ Denial document
 | 4 | [Product & Dashboard](docs/04-product-and-dashboard.md) | Screens, users, permissions |
 | 5 | [Build Plan](docs/05-build-plan.md) | Stages, what each produces, when it is done |
 | 6 | [Coding Conventions](docs/06-conventions.md) | Naming, structure and rules all code follows |
-| - | [Learning Notes](docs/learning.md) | Why every decision was made, and what we rejected |
 
 ## Status
 

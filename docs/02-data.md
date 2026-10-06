@@ -187,21 +187,25 @@ not stored.
   cells hold placeholder words such as `XX000` or `OTHER`. A line's diagnosis is usually not
   one of the claim's diagnoses.
 - CMS did no cleaning on the file, so oddities are expected.
+- Many procedure codes are CPT codes. The CMS codebook notes that CPT codes and their
+  descriptions are covered by an agreement between CMS and the American Medical Association,
+  which holds the copyright. Only the codes are stored here, not their descriptions.
 
 **Quality gates.** The file is rejected as a whole, and nothing is written to either table,
 if any of these fail. They are checked on the rows that are read (see "How to load").
 
 | Gate | Action |
 |---|---|
-| The file is not a readable `.zip`, does not hold exactly one `.csv`, or is not UTF-8 text | Reject |
+| The file is not a readable `.zip` (damaged, encrypted), does not hold exactly one `.csv`, is not UTF-8 text, or cannot be parsed as csv | Reject |
 | The header is not the expected 142 column names in order | Reject |
 | A row does not have 142 fields; or there are no data rows | Reject |
+| A cell has leading or trailing whitespace | Reject |
 | Claim id is not 15 digits, or appears twice | Reject |
 | A date is not a valid `YYYYMMDD` date, is outside 2008 to 2010, or from is after thru | Reject |
-| An amount on a used line is blank, not a number, negative, or has more than two decimals | Reject |
+| An amount on a used line is not plain digits with exactly two decimals (such as `50.00`), or has more than 12 digits | Reject |
 | A claim has no used line, or its used lines do not run from line 1 without a gap | Reject |
 | A line has a tax number without an indicator, or an indicator without a tax number | Reject |
-| An unused line slot holds a code or an amount other than zero | Reject |
+| An unused line slot holds a code or an amount other than `0.00` | Reject |
 | The indicator is not exactly one character; a procedure code is not 5 characters; a diagnosis code is longer than 5 | Reject |
 | The indicator is not in the CMS codebook list | Warn only; this occurs in the published file |
 | The payment is above the allowed charge | Warn only; this occurs in the published file |
@@ -222,7 +226,7 @@ anything, then writes the claims and their lines in one transaction. Exit code 0
 loaded, 1 means the file was rejected (the first 20 problems are listed, with their row
 numbers), 2 means a bad argument. Running the command again is safe: claims are matched on
 the claim id and lines on the claim id and line number, and both are updated in place. Rows
-are never removed. Loading 50,000 claims takes about half a minute.
+are never removed. Loading 50,000 claims takes about 40 seconds.
 
 Because only the first rows are read, the gates say nothing about the rest of the file: a
 duplicate claim id or a damaged row further down is not noticed.

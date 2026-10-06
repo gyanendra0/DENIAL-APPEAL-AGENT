@@ -1,16 +1,22 @@
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, text
+from alembic.migration import MigrationContext
+from sqlalchemy import CheckConstraint, Engine, inspect, text
 
+from src.db.base import Base
 from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
 from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0003
 from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
+from src.db.migrations.versions import rev_0005_claim_sample_labels as migration_0005
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
+    DatasetSplit,
+    DenialReasonCategory,
     ExchangeType,
     MetalLevel,
     PlanType,
@@ -22,12 +28,14 @@ REFERENCE_TABLES = {
     "plan_denial_stats",
     "claim_samples",
     "claim_sample_lines",
+    "claim_sample_labels",
 }
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
 CLAIM_TABLE = "claim_samples"
 LINE_TABLE = "claim_sample_lines"
+LABEL_TABLE = "claim_sample_labels"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -139,6 +147,80 @@ def test_claim_sample_lines_has_its_key_link_and_check_constraints(engine: Engin
 def test_migration_0004_lists_the_same_columns_and_limit_as_the_model() -> None:
     assert migration_0004.AMOUNT_COLUMNS == CLAIM_LINE_AMOUNT_COLUMNS
     assert migration_0004.MAX_LINE_NUMBER == CLAIM_LINE_MAX_NUMBER
+
+
+def test_claim_sample_labels_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(LABEL_TABLE)}
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(LABEL_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(LABEL_TABLE)}
+
+    assert unique == {"uq_claim_sample_labels_source_claim_id": ["source_claim_id"]}
+    assert foreign == {
+        "fk_claim_sample_labels_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")
+    }
+    assert checks == {
+        "ck_claim_sample_labels_denied_fields_match",
+        "ck_claim_sample_labels_rule_version_not_empty",
+    }
+
+
+def test_migration_0005_lists_the_same_values_as_the_model() -> None:
+    assert (
+        tuple(member.value for member in DenialReasonCategory)
+        == migration_0005.DENIAL_REASON_CATEGORY
+    )
+    assert tuple(member.value for member in DatasetSplit) == migration_0005.DATASET_SPLIT
+
+
+def test_migration_0005_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[LABEL_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_claim_sample_labels_denied_fields_match": migration_0005.DENIED_FIELDS_MATCH,
+        "ck_claim_sample_labels_rule_version_not_empty": migration_0005.RULE_VERSION_NOT_EMPTY,
+    }
+
+
+def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
+    engine: Engine,
+) -> None:
+    # Alembic compares tables, columns, types, nullability, unique keys, links and indexes.
+    # It does not compare CHECK rules or enum values; the per-migration tests above do.
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        differences = compare_metadata(context, Base.metadata)
+
+    assert differences == []
+
+
+def test_downgrade_to_0004_removes_labels_table_and_enums(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0004")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert LABEL_TABLE not in tables
+        assert CLAIM_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text(
+                    "SELECT count(*) FROM pg_type"
+                    " WHERE typname IN ('denial_reason_category', 'dataset_split')"
+                )
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert LABEL_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0003_removes_both_claim_sample_tables(

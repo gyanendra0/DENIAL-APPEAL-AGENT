@@ -60,6 +60,21 @@ class MetalLevel(StrEnum):
     CATASTROPHIC = "Catastrophic"
 
 
+class DenialReasonCategory(StrEnum):
+    NONCOVERED = "noncovered"
+    MEDICAL_NECESSITY = "medical_necessity"
+    DUPLICATE = "duplicate"
+    BENEFITS_EXHAUSTED = "benefits_exhausted"
+    COORDINATION_OF_BENEFITS = "coordination_of_benefits"
+    OTHER = "other"
+
+
+class DatasetSplit(StrEnum):
+    TRAIN = "train"
+    VALIDATION = "validation"
+    TEST = "test"
+
+
 def _values(enum_cls: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_cls]
 
@@ -346,3 +361,48 @@ class ClaimSampleLine(TimestampMixin, Base):
     primary_payer_paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     coinsurance_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     allowed_charge_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+
+class ClaimSampleLabel(TimestampMixin, Base):
+    """The proxy label and the dataset split of one `ClaimSample`.
+
+    Public reference table, no `account_id`. One row per claim; a new rule version replaces
+    the row. Nothing here is an observed outcome: the source has no appeals, so
+    `appeal_success_proxy` comes from a documented rule, named by `label_rule_version`.
+    A denied claim has a reason category and a proxy value; a claim that is not denied has
+    neither.
+    """
+
+    __tablename__ = "claim_sample_labels"
+    __table_args__ = (
+        UniqueConstraint("source_claim_id", name="uq_claim_sample_labels_source_claim_id"),
+        CheckConstraint(
+            "is_denied = (denial_reason_category IS NOT NULL)"
+            " AND is_denied = (appeal_success_proxy IS NOT NULL)",
+            name="ck_claim_sample_labels_denied_fields_match",
+        ),
+        CheckConstraint(
+            "label_rule_version <> ''", name="ck_claim_sample_labels_rule_version_not_empty"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey(
+            "claim_samples.source_claim_id",
+            name="fk_claim_sample_labels_claim",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    is_denied: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    denial_reason_category: Mapped[DenialReasonCategory | None] = mapped_column(
+        Enum(DenialReasonCategory, name="denial_reason_category", values_callable=_values)
+    )
+    appeal_success_proxy: Mapped[bool | None] = mapped_column(Boolean)
+    label_rule_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    split: Mapped[DatasetSplit] = mapped_column(
+        Enum(DatasetSplit, name="dataset_split", values_callable=_values), nullable=False
+    )
+    split_seed: Mapped[int] = mapped_column(Integer, nullable=False)

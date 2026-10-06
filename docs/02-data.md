@@ -366,6 +366,135 @@ Rules for generation:
 - Store the generator version and the seed with every document, so any file can be
   reproduced exactly.
 
+Built so far: the denial letter (2.4.1). The clinical note, the prior-authorisation record
+and the noise are not built yet, so today every letter is clean text.
+
+### 2.4.1 Generated so far: denial letters v1
+
+**Every letter is fabricated.** The claim it describes comes from the synthetic claims sample
+(2.2.2), and every name, id and letter date added on top is made up by the generator. No real
+patient, provider or insurer appears in a letter.
+
+**Which claims get a letter.** Only claims that label rule v1 calls denied (2.2.3), one letter
+each. A claim that is not denied gets no document: on the default load that is 44,675 of the
+50,000 claims.
+
+**What comes from the claims sample.** These values are printed as they are stored:
+
+| In the letter | Source |
+|---|---|
+| Claim number | `claim_samples.source_claim_id` |
+| Date(s) of service | `claim_from_date` and `claim_thru_date`; one date when they are equal |
+| Diagnosis codes | `diagnosis_codes`, in source order |
+| One row per denied line | `line_number`, `hcpcs_code`, `allowed_charge_amount`, `payment_amount`, and a reason worded from the line's processing indicator |
+| Claim totals | The allowed charge and the payment, each summed over all the claim's lines, paid ones included |
+| Headline denial reason | The label's `denial_reason_category`, so the letter and the label always agree |
+
+- A denied line is the label rule's denied line: indicator not `A` and payment 0. Paid lines
+  are not listed one by one; they only count in the totals.
+- A line with no procedure code is printed as "not provided". No code is made up. A claim
+  with no diagnosis code gets the same wording (none of the denied claims loaded today).
+- No money is made up either. The file has no billed amount, so the letter shows none, and a
+  total of 0.00 is printed as 0.00.
+- Codes are printed as codes, without descriptions (CPT descriptions are copyrighted, see
+  2.2.2).
+- The reason is one generic sentence per category, for example "the service is not covered".
+  No policy text is quoted: that would be an invented policy statement.
+
+**What is fabricated.** Picked by the seed from small word lists kept in the code:
+
+| Field | How it is made |
+|---|---|
+| Patient name | One of 20 first names and one of 20 last names |
+| Member id | 3 capital letters and 8 digits |
+| Provider name | One of 8 made-up practice names |
+| Payer name | One of 6 made-up insurer names |
+| Reference number | `DL-` and 8 digits |
+| Letter date | The last service date plus 7 to 45 days |
+| Appeal deadline | The letter date plus 180 days |
+
+The 180 days is made up like the rest. It is not the appeal window of any real plan or law.
+The 14 payer and practice names were searched on the web on 2026-10-06 and none matched an
+organisation of that exact name. A search cannot prove a name is unused, so check again
+whenever a name is added.
+
+**What a letter never shows.** The appeal-success proxy, its chance, the amount band, and the
+train / validation / test split. Printing any of them would let the Stage 3 model read its
+target off the page.
+
+**Templates.** Four layouts, one picked per letter: `formal_letter` (paragraphs),
+`benefits_table` (an explanation of benefits with a table of lines), `short_notice` and
+`two_section` (the decision, then the appeal rights). All four print the same fields, in a
+different order, under different labels, and with different date formats (`March 5, 2009`,
+`03/05/2009`, `2009-03-05`), so an extractor cannot rely on one fixed position.
+
+**The seed rule.** A run has one seed (default 42, from 0 to 2^31 - 1). Each choice in a
+letter (the template, each name, each id, the letter date) is its own repeatable draw: a
+number from 0 up to 1 made from the first 8 bytes of the SHA-256 hash of the text
+`doc:<generator version>:<seed>:denial_letter:<claim id>:<name of the choice>`, divided by
+2^64. So:
+
+- A letter depends only on its claim, the seed and the generator version. The same three
+  always give the same text, whichever other claims are generated and in whatever order.
+- A different seed gives different made-up values for the same claim. The values taken from
+  the claim do not change.
+- The generator has a version, `v1`. Any change to a word list, a template, a date rule or
+  the draw text needs a new version, because the same seed would no longer give the same
+  text.
+
+**The answer key.** Every value a letter prints, real or fabricated, is also stored as
+structured fields beside the text. The generator builds the answer key first and writes the
+text from it alone, so the text cannot hold a value the key lacks. Stage 3 marks the
+extractor against the key; without it the made-up values would exist only inside the text
+and could not be checked.
+
+**Where it lands.** `generated_documents`, a public reference table (no `account_id`): it is
+built only from the synthetic sample and holds no customer data. One row per claim and
+document type, with `text`, `answer_key` (JSON; dates and amounts stored as text),
+`template_id`, `seed` and `generator_version`. Nothing is written under `data/`: the letters
+are plain text in the database, with no files and no PDF.
+
+**Generating.** With the claims loaded and labelled by the pipeline (2.9):
+
+```text
+python3 -m pipelines.generate_documents
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--seed` | 42 | Seed of every made-up value in the documents |
+
+The command takes no file: it reads the claims, lines and labels already stored. It writes a
+letter for every claim labelled denied and replaces the documents in one transaction: every
+existing row of `generated_documents` is removed and the letters of this run are stored. So
+the table always comes from one run, with one seed and one generator version, and a claim
+that is no longer denied does not keep an old letter.
+
+Exit code 0 means generated, 1 means the stored labels cannot be used (no claim is labelled
+denied, the labels were made by another label rule version, or a claim is labelled denied
+but its stored lines no longer hold a denied line; nothing is written or removed), 2 means a
+bad argument. On exit code 1, run the pipeline (2.9) again first. Running it again with the
+same seed leaves the same rows. Run it again after every pipeline run, because new labels can
+change which claims are denied.
+
+**Measured on the first 50,000 claims** (the default load, seed 42):
+
+| Measure | Value |
+|---|---|
+| Letters | 5,325, one per denied claim, no two with the same text |
+| Time | About 3 seconds |
+| Letters with a total allowed charge of 0.00 | 566 |
+| Letters with no procedure code on the first denied line | 468 |
+
+**Known limits.**
+
+- The letters are less realistic on money than a real one: the allowed charge is 0 on about
+  88% of denied lines, because that is what the file holds.
+- The reason wording comes from a one-character indicator, so it is generic, and two
+  categories (`other`, `noncovered`) are the headline reason of almost nine in ten letters.
+- There are only four layouts and no noise yet, so extraction from these letters is easier
+  than from real, scanned ones.
+
 ## 2.5 Splits
 
 | Split | Share | Purpose |
@@ -430,12 +559,15 @@ data/
   raw/          downloaded public files, never edited by hand
   interim/      cleaned and joined tables
   processed/    model-ready features and splits
-  documents/    generated denial letters and notes
+  documents/    generated documents kept as files (none yet, see below)
   evidence/     policy corpus, chunked and embedded
 ```
 
 `data/` is never stored with the project. Everything in it must be
 reproducible by running a loader script.
+
+The generated denial letters are not files under `documents/`: they are stored as text in
+the `generated_documents` table (2.4.1).
 
 ## 2.9 Running the whole pipeline
 
@@ -501,3 +633,8 @@ compared.
 The two single-source commands in 2.2.1 and 2.2.2 still work on their own; they load without
 labelling. Loading claims that way after a pipeline run can change a claim's lines without
 changing its label, so run the pipeline again afterwards.
+
+The pipeline does not generate documents. That is a second command,
+`python3 -m pipelines.generate_documents` (2.4.1), which reads what this one stored. Run it
+after every pipeline run: the letters are written from the stored claims and labels, so they
+go out of date when those change.

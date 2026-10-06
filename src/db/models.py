@@ -3,6 +3,7 @@
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -20,7 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import AccountScopedMixin, Base, TimestampMixin
@@ -73,6 +74,12 @@ class DatasetSplit(StrEnum):
     TRAIN = "train"
     VALIDATION = "validation"
     TEST = "test"
+
+
+class DocumentType(StrEnum):
+    DENIAL_LETTER = "denial_letter"
+    CLINICAL_NOTE = "clinical_note"
+    PRIOR_AUTH = "prior_auth"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -406,3 +413,46 @@ class ClaimSampleLabel(TimestampMixin, Base):
         Enum(DatasetSplit, name="dataset_split", values_callable=_values), nullable=False
     )
     split_seed: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class GeneratedDocument(TimestampMixin, Base):
+    """One fabricated document written for a `ClaimSample`.
+
+    Public reference table, no `account_id`: it is built only from the synthetic claims sample
+    and holds no customer data. One row per claim and document type; a new run replaces the
+    rows. `text` is the document as plain text. `answer_key` holds every value printed in it
+    as structured fields, so an extractor can be marked against them. The same claim, `seed`
+    and `generator_version` always give the same text.
+    """
+
+    __tablename__ = "generated_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_claim_id", "document_type", name="uq_generated_documents_claim_type"
+        ),
+        CheckConstraint("template_id <> ''", name="ck_generated_documents_template_id_not_empty"),
+        CheckConstraint("seed >= 0", name="ck_generated_documents_seed_not_negative"),
+        CheckConstraint(
+            "generator_version <> ''", name="ck_generated_documents_generator_version_not_empty"
+        ),
+        CheckConstraint("text <> ''", name="ck_generated_documents_text_not_empty"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey(
+            "claim_samples.source_claim_id",
+            name="fk_generated_documents_claim",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    document_type: Mapped[DocumentType] = mapped_column(
+        Enum(DocumentType, name="document_type", values_callable=_values), nullable=False
+    )
+    template_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    generator_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_key: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

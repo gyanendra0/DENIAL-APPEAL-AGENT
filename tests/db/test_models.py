@@ -21,7 +21,9 @@ from src.db.models import (
     Denial,
     DenialReasonCategory,
     DenialStatus,
+    DocumentType,
     ExchangeType,
+    GeneratedDocument,
     IssuerDenialStats,
     MetalLevel,
     PlanDenialStats,
@@ -599,3 +601,120 @@ def test_rejects_unknown_split_or_reason_category(
 
     with pytest.raises(DataError):
         session.execute(insert, values)
+
+
+ANSWER_KEY: dict[str, Any] = {
+    "claim_number": SAMPLE_CLAIM_ID,
+    "payer_name": "Example Mutual Health",
+    "diagnosis_codes": ["4019", "V5869"],
+    "total_payment_amount": "0.00",
+}
+
+
+def _generated_document(session: Session, **overrides: Any) -> GeneratedDocument:
+    """Store a denial letter for the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "document_type": DocumentType.DENIAL_LETTER,
+        "template_id": "formal_letter",
+        "seed": 42,
+        "generator_version": "v1",
+        "text": "Made-up denial letter text.",
+        "answer_key": ANSWER_KEY,
+    }
+    document = GeneratedDocument(**(fields | overrides))
+    session.add(document)
+    session.flush()
+    return document
+
+
+def test_stores_generated_document_with_text_and_answer_key(session: Session) -> None:
+    _claim_sample(session)
+    document = _generated_document(session)
+    session.expire_all()
+
+    stored = session.get(GeneratedDocument, document.id)
+    assert stored is not None
+    assert stored.document_type is DocumentType.DENIAL_LETTER
+    assert stored.template_id == "formal_letter"
+    assert stored.seed == 42
+    assert stored.generator_version == "v1"
+    assert stored.text == "Made-up denial letter text."
+    assert stored.answer_key == ANSWER_KEY
+    assert stored.created_at is not None
+
+
+def test_rejects_second_document_of_the_same_type_for_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _generated_document(session)
+
+    with pytest.raises(IntegrityError, match="uq_generated_documents_claim_type"):
+        _generated_document(session, seed=7)
+
+
+def test_allows_documents_of_different_types_for_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _generated_document(session)
+    _generated_document(session, document_type=DocumentType.CLINICAL_NOTE)
+
+    assert len(session.scalars(select(GeneratedDocument)).all()) == 2
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("template_id", "", "ck_generated_documents_template_id_not_empty"),
+        ("seed", -1, "ck_generated_documents_seed_not_negative"),
+        ("generator_version", "", "ck_generated_documents_generator_version_not_empty"),
+        ("text", "", "ck_generated_documents_text_not_empty"),
+    ],
+)
+def test_rejects_document_with_an_empty_field_or_negative_seed(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    _claim_sample(session)
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _generated_document(session, **bad)
+
+
+def test_rejects_document_without_an_answer_key(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
+        " generator_version, text) VALUES (:source_claim_id, 'denial_letter', 'formal_letter',"
+        " 42, 'v1', 'Made-up text.')"
+    )
+
+    with pytest.raises(IntegrityError, match="answer_key"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID})
+
+
+def test_rejects_document_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_generated_documents_claim"):
+        _generated_document(session)
+
+
+def test_deleting_a_claim_sample_removes_its_documents(session: Session) -> None:
+    sample = _claim_sample(session)
+    _generated_document(session)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(GeneratedDocument)).all() == []
+
+
+def test_rejects_unknown_document_type(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
+        " generator_version, text, answer_key) VALUES (:source_claim_id, 'fax_cover',"
+        " 'formal_letter', 42, 'v1', 'Made-up text.', '{}')"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID})

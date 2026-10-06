@@ -9,6 +9,7 @@ from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration
 from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0003
 from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
 from src.db.migrations.versions import rev_0005_claim_sample_labels as migration_0005
+from src.db.migrations.versions import rev_0006_generated_documents as migration_0006
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -17,6 +18,7 @@ from src.db.models import (
     PLAN_COUNT_COLUMNS,
     DatasetSplit,
     DenialReasonCategory,
+    DocumentType,
     ExchangeType,
     MetalLevel,
     PlanType,
@@ -29,6 +31,7 @@ REFERENCE_TABLES = {
     "claim_samples",
     "claim_sample_lines",
     "claim_sample_labels",
+    "generated_documents",
 }
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES
 STATS_TABLE = "issuer_denial_stats"
@@ -36,6 +39,7 @@ PLAN_TABLE = "plan_denial_stats"
 CLAIM_TABLE = "claim_samples"
 LINE_TABLE = "claim_sample_lines"
 LABEL_TABLE = "claim_sample_labels"
+DOCUMENT_TABLE = "generated_documents"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -189,6 +193,50 @@ def test_migration_0005_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_generated_documents_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"] for u in inspector.get_unique_constraints(DOCUMENT_TABLE)
+    }
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(DOCUMENT_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(DOCUMENT_TABLE)}
+
+    assert unique == {"uq_generated_documents_claim_type": ["source_claim_id", "document_type"]}
+    assert foreign == {
+        "fk_generated_documents_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")
+    }
+    assert checks == {
+        "ck_generated_documents_template_id_not_empty",
+        "ck_generated_documents_seed_not_negative",
+        "ck_generated_documents_generator_version_not_empty",
+        "ck_generated_documents_text_not_empty",
+    }
+
+
+def test_migration_0006_lists_the_same_values_as_the_model() -> None:
+    assert tuple(member.value for member in DocumentType) == migration_0006.DOCUMENT_TYPE
+
+
+def test_migration_0006_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[DOCUMENT_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_generated_documents_template_id_not_empty": migration_0006.TEMPLATE_ID_NOT_EMPTY,
+        "ck_generated_documents_seed_not_negative": migration_0006.SEED_NOT_NEGATIVE,
+        "ck_generated_documents_generator_version_not_empty": (
+            migration_0006.GENERATOR_VERSION_NOT_EMPTY
+        ),
+        "ck_generated_documents_text_not_empty": migration_0006.TEXT_NOT_EMPTY,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -199,6 +247,25 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0005_removes_documents_table_and_enum(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0005")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert DOCUMENT_TABLE not in tables
+        assert LABEL_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'document_type'")
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert DOCUMENT_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0004_removes_labels_table_and_enums(

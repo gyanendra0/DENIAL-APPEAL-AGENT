@@ -7,7 +7,9 @@ Usage:
 The first file is the CMS Transparency in Coverage PUF workbook, the second the CMS DE-SynPUF
 carrier claims file. Both are checked, and the labels are built and checked, before anything
 is written; then all five tables are written in one transaction and a quality report is
-printed. The appeal-success label is a proxy, not an observed outcome.
+printed. Issuers, plans, claims and lines are updated in place and never removed. The labels
+are replaced: afterwards only the claims of this run have a label. The appeal-success label
+is a proxy, not an observed outcome.
 
 Exit codes: 0 loaded, 1 a file or the class balance was rejected by a quality gate (nothing
 written), 2 bad arguments.
@@ -29,7 +31,7 @@ from src.ingest.marketplace_denials import (
     upsert_issuer_denial_rows,
 )
 from src.ingest.marketplace_plan_denials import read_plan_denial_rows, upsert_plan_denial_rows
-from src.ml.claim_labels import build_claim_label_rows, upsert_claim_label_rows
+from src.ml.claim_labels import build_claim_label_rows, replace_claim_label_rows
 from src.ml.quality_report import build_label_quality_report
 from src.ml.splits import MAX_SPLIT_SEED
 
@@ -109,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             issuers = upsert_issuer_denial_rows(session, issuer_rows)
             plans = upsert_plan_denial_rows(session, plan_rows)  # after the issuers they point at
             claims, lines = upsert_claim_sample_batch(session, batch)
-            labels = upsert_claim_label_rows(session, label_rows)  # after the claims
+            labels = replace_claim_label_rows(session, label_rows)  # after the claims
     finally:
         engine.dispose()
     print(

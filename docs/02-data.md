@@ -320,8 +320,9 @@ amount × prior authorisation. Version 1 uses two of the four:
 **Where it lands.** `claim_sample_labels`, a public reference table (no `account_id`) with
 one row per claim: `is_denied`, `denial_reason_category`, `appeal_success_proxy`,
 `label_rule_version`, and the split with its seed (see 2.5). A claim that is not denied has
-an empty category and an empty proxy; the table refuses any other combination. A new rule
-version overwrites the row.
+an empty category and an empty proxy; the table refuses any other combination. The pipeline
+replaces every label on each run (see 2.9), so the table always holds one rule version and
+one split seed.
 
 **Measured on the first 50,000 claims** (the default load):
 
@@ -382,7 +383,9 @@ made from a seed and the claim id (the first 8 bytes of the SHA-256 hash of the 
 the rest is test. So:
 
 - The same claim and seed always give the same split, however many other claims are loaded.
-  A claim never moves from train to test when the data grows.
+  As long as the seed stays the same, a claim never moves from train to test when the data
+  grows. A different seed gives a different split: on the first 1,000 claims, changing the
+  seed from 42 to 7 moves 426 of them.
 - The seed is stored with the split on every row of `claim_sample_labels`. The default is 42.
 - The split does not depend on the label: its hash input differs from the label draw's.
 - The split is not stratified, so the share of denied claims differs a little between splits.
@@ -466,12 +469,14 @@ What it does, in order:
    the quality report.
 4. Applies the class balance gate (2.6).
 5. Only if everything passed, writes `issuer_denial_stats`, `plan_denial_stats`,
-   `claim_samples`, `claim_sample_lines` and `claim_sample_labels` in one transaction.
+   `claim_samples`, `claim_sample_lines` and `claim_sample_labels` in one transaction. The
+   first four are updated in place and rows are never removed. The labels are replaced:
+   every existing label is removed and the labels of this run are stored.
 
 Exit code 0 means loaded, 1 means a file or the class balance was rejected, 2 means a bad
-argument. On exit code 1 nothing is written to any table. Running the command again is safe:
-every row is matched on its key and updated in place. With the default 50,000 claims it
-takes about 50 seconds.
+argument. On exit code 1 nothing is written to or removed from any table. Running the
+command again with the same files and options is safe: it leaves the same rows. With the
+default 50,000 claims it takes about 50 seconds.
 
 The report for the default run:
 
@@ -487,6 +492,12 @@ all: 50,000 (100.00%) | 5,325 (10.65%) | 1,888 (35.46%)
 class balance gate (proxy true among denied claims, 20% to 80%): 35.46%, passes
 ```
 
-Only the claims read in a run get a label. Claims loaded earlier with a larger
-`--max-claims` keep the label they had, or none. The two single-source commands in 2.2.1 and
-2.2.2 still work on their own; they load without labelling.
+Because the labels are replaced, the labels table always comes from one run: one rule
+version, one seed, and only the claims that run read. A run with a smaller `--max-claims`
+therefore leaves the claims beyond its limit in `claim_samples` without a label, and a run
+with another seed re-splits every claim it reads. Use one seed for everything that is later
+compared.
+
+The two single-source commands in 2.2.1 and 2.2.2 still work on their own; they load without
+labelling. Loading claims that way after a pipeline run can change a claim's lines without
+changing its label, so run the pipeline again afterwards.

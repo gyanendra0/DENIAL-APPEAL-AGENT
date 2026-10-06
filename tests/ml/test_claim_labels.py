@@ -9,7 +9,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import ClaimSample, ClaimSampleLabel, DatasetSplit, DenialReasonCategory
-from src.ml.claim_labels import ClaimLabelRow, build_claim_label_rows, upsert_claim_label_rows
+from src.ml.claim_labels import (
+    ClaimLabelRow,
+    build_claim_label_rows,
+    replace_claim_label_rows,
+    upsert_claim_label_rows,
+)
 from src.ml.splits import MAX_SPLIT_SEED
 
 SEED = 42
@@ -175,3 +180,33 @@ def test_upsert_rejects_a_label_whose_claim_is_not_stored(session: Session) -> N
 
     with pytest.raises(IntegrityError, match="fk_claim_sample_labels_claim"):
         upsert_claim_label_rows(session, _rows())
+
+
+def test_replace_leaves_only_the_given_rows(session: Session) -> None:
+    _store_claims(session, PAID_CLAIM, DENIED_CLAIM)
+    upsert_claim_label_rows(session, _rows())  # an earlier run: both claims, seed 42
+    later_run = build_claim_label_rows([PAID_CLAIM], LINES[1:2], 7)
+
+    written = replace_claim_label_rows(session, later_run)
+
+    stored = _stored(session)
+    assert written == 1
+    assert set(stored) == {PAID_CLAIM}  # the other claim's label, made with seed 42, is gone
+    assert stored[PAID_CLAIM].split_seed == 7
+
+
+def test_replace_with_no_rows_empties_the_table(session: Session) -> None:
+    _store_claims(session, PAID_CLAIM, DENIED_CLAIM)
+    upsert_claim_label_rows(session, _rows())
+
+    assert replace_claim_label_rows(session, []) == 0
+    assert _stored(session) == {}
+
+
+def test_replace_keeps_the_claims_themselves(session: Session) -> None:
+    _store_claims(session, PAID_CLAIM, DENIED_CLAIM)
+    upsert_claim_label_rows(session, _rows())
+
+    replace_claim_label_rows(session, [])
+
+    assert session.scalar(select(func.count()).select_from(ClaimSample)) == 2

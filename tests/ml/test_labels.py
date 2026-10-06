@@ -5,7 +5,13 @@ import pytest
 from pydantic import ValidationError
 
 from src.db.models import DenialReasonCategory
-from src.ml.labels import LABEL_RULE_VERSION, ClaimLabel, appeal_success_chance, label_claim
+from src.ml.labels import (
+    COORDINATION_OF_BENEFITS_INDICATORS,
+    LABEL_RULE_VERSION,
+    ClaimLabel,
+    appeal_success_chance,
+    label_claim,
+)
 
 CLAIM_ID = "800000000000001"
 
@@ -88,6 +94,14 @@ def test_reason_category_comes_from_the_denied_lines_indicator(
     label = label_claim(CLAIM_ID, [_line(1, indicator, "0.00")])
 
     assert label.denial_reason_category is category
+
+
+def test_every_secondary_payer_code_of_the_codebook_is_coordination_of_benefits() -> None:
+    # S, the lettered "MSP cost avoided" codes, and their twelve one-character symbol codes.
+    assert frozenset("SQTUVXY!@#$*()+<>%&") == COORDINATION_OF_BENEFITS_INDICATORS
+    for indicator in COORDINATION_OF_BENEFITS_INDICATORS:
+        label = label_claim(CLAIM_ID, [_line(1, indicator, "0.00")])
+        assert label.denial_reason_category is DenialReasonCategory.COORDINATION_OF_BENEFITS
 
 
 def test_reason_category_comes_from_the_first_denied_line_whatever_the_order() -> None:

@@ -1,6 +1,7 @@
 """CLI tests. The command really commits, so each test cleans the tables afterwards."""
 
 from collections.abc import Iterable, Iterator
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from src.db.models import (
     PlanDenialStats,
 )
 from src.ingest.claims_sample import ClaimSampleBatch, read_claim_sample_rows
+from src.ml import claim_labels
 from src.ml.claim_labels import ClaimLabelRow, ClaimLine, build_claim_label_rows
 from src.ml.splits import MAX_SPLIT_SEED
 from tests.ingest.helpers import FIXTURE, claims_zip, edited_copy
@@ -66,6 +68,23 @@ def _stored_counts(engine: Engine) -> tuple[int, ...]:
         return tuple(
             connection.scalar(select(func.count()).select_from(table)) or 0 for table in TABLES
         )
+
+
+def _last_updates(engine: Engine) -> tuple[datetime | None, ...]:
+    """The newest `updated_at` of each table, in the order of `TABLES`."""
+    with engine.connect() as connection:
+        return tuple(
+            connection.scalar(select(func.max(table.__table__.c.updated_at))) for table in TABLES
+        )
+
+
+def _label_seeds(engine: Engine) -> dict[str, int]:
+    """Stored labels as {claim id: split seed}."""
+    with engine.connect() as connection:
+        rows = connection.execute(
+            select(ClaimSampleLabel.source_claim_id, ClaimSampleLabel.split_seed)
+        )
+        return {claim_id: seed for claim_id, seed in rows}
 
 
 def _args(claims: Path, marketplace: Path = FIXTURE) -> list[str]:
@@ -116,7 +135,7 @@ def test_stores_each_claims_label_with_the_rule_version_split_and_seed(
     assert labels["800000000000003"].appeal_success_proxy is None
     assert {row.label_rule_version for row in labels.values()} == {"v1"}
     assert {row.split_seed for row in labels.values()} == {DEFAULT_SPLIT_SEED} == {42}
-    assert {row.split for row in labels.values()} <= {split.value for split in DatasetSplit}
+    assert labels["800000000000001"].split == DatasetSplit.TRAIN
 
 
 def test_running_twice_keeps_the_same_rows(database: Engine, tmp_path: Path) -> None:
@@ -152,6 +171,61 @@ def test_split_seed_and_max_claims_are_passed_on(
     assert _stored_counts(database) == (3, 6, 2, 4, 2)
     with database.connect() as connection:
         assert set(connection.scalars(select(ClaimSampleLabel.split_seed))) == {7}
+
+
+def test_a_later_run_replaces_the_labels_of_the_earlier_run(
+    database: Engine, tmp_path: Path
+) -> None:
+    args = _args(claims_zip(tmp_path, BALANCED))
+    main(args)  # six claims, seed 42
+
+    exit_code = main([*args, "--max-claims", "2", "--split-seed", "7"])
+
+    assert exit_code == 0
+    # Only the two claims of the later run have a label, both with its seed. No label from
+    # the earlier run is left, so the table never mixes two seeds.
+    assert _label_seeds(database) == {"800000000000001": 7, "800000000000002": 7}
+    assert _stored_counts(database) == (3, 6, 6, 9, 2)  # claims and lines are never removed
+
+
+@pytest.mark.parametrize(
+    "bad_edits",
+    [{}, BALANCED | {(7, "LINE_NCH_PMT_AMT_1"): "-550.00"}],
+    ids=["class balance fails", "claims file is invalid"],
+)
+def test_rejected_run_leaves_already_loaded_tables_exactly_as_they_were(
+    database: Engine, tmp_path: Path, bad_edits: dict[tuple[int, str], str]
+) -> None:
+    good_dir, bad_dir = tmp_path / "good", tmp_path / "bad"
+    good_dir.mkdir()
+    bad_dir.mkdir()
+    main(_args(claims_zip(good_dir, BALANCED)))
+    before = (_stored_counts(database), _last_updates(database), _label_seeds(database))
+
+    exit_code = main([*_args(claims_zip(bad_dir, bad_edits)), "--split-seed", "7"])
+
+    assert exit_code == 1
+    assert (_stored_counts(database), _last_updates(database), _label_seeds(database)) == before
+
+
+def test_failure_after_the_old_labels_are_removed_brings_them_back(
+    database: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _args(claims_zip(tmp_path, BALANCED))
+    main(args)
+    before = _label_seeds(database)
+
+    def fail(*_: object) -> int:
+        raise RuntimeError("database went away")
+
+    # `replace_claim_label_rows` removes the old labels, then calls this to store the new ones.
+    monkeypatch.setattr(claim_labels, "upsert_claim_label_rows", fail)
+
+    with pytest.raises(RuntimeError, match="database went away"):
+        main([*args, "--split-seed", "7"])
+
+    assert len(before) == 6
+    assert _label_seeds(database) == before  # still the six labels made with seed 42
 
 
 def test_failed_class_balance_exits_1_and_writes_nothing(
@@ -199,7 +273,7 @@ def test_failure_while_writing_labels_undoes_the_other_four_tables(
     def fail(*_: object) -> int:
         raise RuntimeError("database went away")
 
-    monkeypatch.setattr(run_data_pipeline, "upsert_claim_label_rows", fail)
+    monkeypatch.setattr(run_data_pipeline, "replace_claim_label_rows", fail)
 
     with pytest.raises(RuntimeError, match="database went away"):
         main(_args(claims_zip(tmp_path, BALANCED)))

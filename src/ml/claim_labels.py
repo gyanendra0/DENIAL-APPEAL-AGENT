@@ -1,7 +1,8 @@
 """Build the label rows of a batch of claims and store them in `claim_sample_labels`.
 
 One row per claim: the proxy label from `src.ml.labels` and the split from `src.ml.splits`.
-`claim_sample_labels` is a public reference table (no `account_id`).
+`claim_sample_labels` is a public reference table (no `account_id`). Labels are derived
+data: they can always be rebuilt from the claims, the rule version and the seed.
 """
 
 import logging
@@ -9,6 +10,7 @@ from collections.abc import Iterable
 from typing import Protocol
 
 from pydantic import Field
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from src.db.models import ClaimSampleLabel, DatasetSplit
@@ -69,3 +71,15 @@ def upsert_claim_label_rows(session: Session, rows: list[ClaimLabelRow]) -> int:
     written = upsert_rows(session, ClaimSampleLabel, rows, UPSERT_CONSTRAINT, UPSERT_KEY_COLUMNS)
     logger.info("upserted %d claim labels", written)
     return written
+
+
+def replace_claim_label_rows(session: Session, rows: list[ClaimLabelRow]) -> int:
+    """Make `claim_sample_labels` hold exactly `rows`: remove every label, then store `rows`.
+
+    The table then always comes from one run, with one rule version and one split seed. With
+    an upsert alone, a run on fewer claims or with another seed would leave the other claims
+    on their old split. Returns the number of rows written. Does not commit: the caller owns
+    the transaction, so a failure brings the old labels back.
+    """
+    session.execute(delete(ClaimSampleLabel))
+    return upsert_claim_label_rows(session, rows)

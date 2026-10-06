@@ -24,6 +24,11 @@ DENIAL_REASON_CATEGORY = (
     "other",
 )
 DATASET_SPLIT = ("train", "validation", "test")
+DENIED_FIELDS_MATCH = (
+    "is_denied = (denial_reason_category IS NOT NULL)"
+    " AND is_denied = (appeal_success_proxy IS NOT NULL)"
+)
+RULE_VERSION_NOT_EMPTY = "label_rule_version <> ''"
 
 
 def upgrade() -> None:
@@ -54,13 +59,9 @@ def upgrade() -> None:
             name="fk_claim_sample_labels_claim",
             ondelete="CASCADE",
         ),
+        sa.CheckConstraint(DENIED_FIELDS_MATCH, name="ck_claim_sample_labels_denied_fields_match"),
         sa.CheckConstraint(
-            "is_denied = (denial_reason_category IS NOT NULL)"
-            " AND is_denied = (appeal_success_proxy IS NOT NULL)",
-            name="ck_claim_sample_labels_denied_fields_match",
-        ),
-        sa.CheckConstraint(
-            "label_rule_version <> ''", name="ck_claim_sample_labels_rule_version_not_empty"
+            RULE_VERSION_NOT_EMPTY, name="ck_claim_sample_labels_rule_version_not_empty"
         ),
     )
 

@@ -1,7 +1,10 @@
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, text
+from alembic.migration import MigrationContext
+from sqlalchemy import CheckConstraint, Engine, inspect, text
 
+from src.db.base import Base
 from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
 from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0003
 from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
@@ -171,6 +174,31 @@ def test_migration_0005_lists_the_same_values_as_the_model() -> None:
         == migration_0005.DENIAL_REASON_CATEGORY
     )
     assert tuple(member.value for member in DatasetSplit) == migration_0005.DATASET_SPLIT
+
+
+def test_migration_0005_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[LABEL_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_claim_sample_labels_denied_fields_match": migration_0005.DENIED_FIELDS_MATCH,
+        "ck_claim_sample_labels_rule_version_not_empty": migration_0005.RULE_VERSION_NOT_EMPTY,
+    }
+
+
+def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
+    engine: Engine,
+) -> None:
+    # Alembic compares tables, columns, types, nullability, unique keys, links and indexes.
+    # It does not compare CHECK rules or enum values; the per-migration tests above do.
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        differences = compare_metadata(context, Base.metadata)
+
+    assert differences == []
 
 
 def test_downgrade_to_0004_removes_labels_table_and_enums(

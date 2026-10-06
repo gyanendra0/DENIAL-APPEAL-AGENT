@@ -76,9 +76,9 @@ def test_split_does_not_depend_on_the_proxy_label() -> None:
         assert true_by_split[split] / total_by_split[split] == pytest.approx(0.45, abs=0.05)
 
 
-@pytest.mark.parametrize("seed", [0, MAX_SPLIT_SEED])
-def test_accepts_the_smallest_and_largest_seed(seed: int) -> None:
-    assert assign_split("800000000000001", seed) in DatasetSplit
+def test_accepts_the_smallest_and_largest_seed() -> None:
+    assert assign_split("800000000000001", 0) is DatasetSplit.TRAIN
+    assert assign_split("800000000000001", MAX_SPLIT_SEED) is DatasetSplit.TRAIN
 
 
 @pytest.mark.parametrize("seed", [-1, MAX_SPLIT_SEED + 1])

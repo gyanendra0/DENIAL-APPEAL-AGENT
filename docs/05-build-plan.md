@@ -45,8 +45,9 @@ condition holds and a release tag is pushed.
 - Split logic — train / validation / test, split by claim, never by document.
 - A pipeline script that runs the whole sequence end to end.
 
-**Done when:** one command downloads, cleans, validates and loads the data, and the
-quality report passes.
+**Done when:** one command cleans, validates and loads the downloaded source files, and
+the quality report passes. The source files are downloaded once by hand; the links are in
+[02-data.md, section 2.9](02-data.md#29-running-the-whole-pipeline).
 
 **Tag:** `v0.2.0`
 

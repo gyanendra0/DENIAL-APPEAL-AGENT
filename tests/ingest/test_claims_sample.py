@@ -8,6 +8,7 @@ import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from zipfile import ZIP_STORED, ZipFile
 
 import pytest
 from sqlalchemy import func, select, update
@@ -109,6 +110,12 @@ def test_max_claims_stops_after_that_many_rows(tmp_path: Path) -> None:
     assert len(batch.lines) == 4
 
 
+@pytest.mark.parametrize("max_claims", [0, -1])
+def test_refuses_a_max_claims_below_one(tmp_path: Path, max_claims: int) -> None:
+    with pytest.raises(ValueError, match="max_claims must be 1 or more"):
+        read_claim_sample_rows(claims_zip(tmp_path), max_claims)
+
+
 def test_rows_past_max_claims_are_not_checked(tmp_path: Path) -> None:
     path = claims_zip(tmp_path, {(4, "CLM_ID"): "not-an-id"})
 
@@ -147,6 +154,19 @@ def test_rejects_a_zip_with_damaged_content(tmp_path: Path) -> None:
     for index in range(200, 260):
         damaged[index] ^= 0xFF
     path.write_bytes(bytes(damaged))
+
+    assert _rejected(path) == ["not a readable .zip file"]
+
+
+def test_rejects_an_encrypted_zip(tmp_path: Path) -> None:
+    path = tmp_path / "claims.zip"
+    with ZipFile(path, "w", ZIP_STORED) as archive:
+        archive.writestr("claims.csv", CLAIMS_FIXTURE.read_bytes())
+    data = bytearray(path.read_bytes())
+    # Set the "encrypted" flag bit in the member's two headers; zipfile then asks for a password.
+    data[6] |= 0x01
+    data[data.rindex(b"PK\x01\x02") + 8] |= 0x01
+    path.write_bytes(bytes(data))
 
     assert _rejected(path) == ["not a readable .zip file"]
 
@@ -239,13 +259,33 @@ def test_rejects_a_claim_that_ends_before_it_starts(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("family", AMOUNT_FAMILIES.values())
-@pytest.mark.parametrize("text", ["", "abc", "-10.00", "10.005"])
+@pytest.mark.parametrize(
+    "text", ["", "abc", "-10.00", "10.005", "1e2", "5_0.00", "+50.00", "50", "50.0", "-0.00"]
+)
 def test_rejects_a_bad_amount_on_a_used_line(tmp_path: Path, family: str, text: str) -> None:
     problems = _rejected(claims_zip(tmp_path, {(3, f"{family}_2"): text}))
 
     assert len(problems) == 1
     assert problems[0].startswith("row 3: line 2: ")
     assert "_amount: " in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("header", "text"),
+    [
+        ("TAX_NUM_1", " "),  # would otherwise mark the line as used
+        ("TAX_NUM_2", " "),  # would otherwise turn an unused slot into a line
+        ("LINE_PRCSG_IND_CD_1", " "),
+        ("HCPCS_CD_1", "     "),
+        ("LINE_NCH_PMT_AMT_1", " 50.00"),
+        ("CLM_ID", "800000000000001 "),
+        ("ICD9_DGNS_CD_3", "\t"),
+    ],
+)
+def test_rejects_a_cell_with_surrounding_whitespace(tmp_path: Path, header: str, text: str) -> None:
+    assert _rejected(claims_zip(tmp_path, {(2, header): text})) == [
+        "row 2: a cell has leading or trailing whitespace"
+    ]
 
 
 def test_rejects_a_claim_with_no_used_line(tmp_path: Path) -> None:
@@ -289,6 +329,8 @@ def test_rejects_a_line_with_only_one_of_tax_number_and_indicator(tmp_path: Path
         ("PRF_PHYSN_NPI_2", "1000000001"),
         ("LINE_ICD9_DGNS_CD_13", "4019"),
         ("LINE_NCH_PMT_AMT_2", "10.00"),
+        ("LINE_NCH_PMT_AMT_2", "0"),
+        ("LINE_NCH_PMT_AMT_2", "-0.00"),
         ("LINE_ALOWD_CHRG_AMT_13", ""),
     ],
 )
@@ -455,6 +497,14 @@ def test_upsert_refuses_lines_without_their_claim(session: Session, tmp_path: Pa
 
     with pytest.raises(IntegrityError, match="fk_claim_sample_lines_claim"):
         upsert_claim_sample_batch(session, orphans)
+
+
+def test_upsert_refuses_a_batch_that_repeats_a_claim(session: Session, tmp_path: Path) -> None:
+    batch = read_claim_sample_rows(claims_zip(tmp_path))
+    repeated = ClaimSampleBatch(claims=[*batch.claims, batch.claims[0]], lines=batch.lines)
+
+    with pytest.raises(ValueError, match="claim_samples: two rows to upsert have the same key"):
+        upsert_claim_sample_batch(session, repeated)
 
 
 def test_upsert_of_an_empty_batch_writes_nothing(session: Session) -> None:

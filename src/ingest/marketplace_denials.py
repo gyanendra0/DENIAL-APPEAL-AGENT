@@ -261,10 +261,14 @@ def upsert_rows(
     `constraint` is the unique constraint that defines the key and `key_columns` its columns.
     Every other field of the row model is overwritten and `updated_at` is set. Rows are sent
     in batches. Returns the number of rows written. Does not commit: the caller owns the
-    transaction.
+    transaction. Raises `ValueError` if two rows have the same key.
     """
     if not rows:
         return 0
+    keys = {tuple(getattr(row, name) for name in key_columns) for row in rows}
+    if len(keys) != len(rows):
+        # Each row is its own statement, so the database would let the later row win silently.
+        raise ValueError(f"{table.__tablename__}: two rows to upsert have the same key")
     # The plain table, with the rows passed as parameters: one short statement run for many
     # rows. Putting every row into the statement itself is several times slower to build.
     statement = insert(Base.metadata.tables[table.__tablename__])

@@ -56,7 +56,7 @@ def upgrade() -> None:
         sa.Column("hcpcs_code", sa.String(5), nullable=True),
         sa.Column("line_diagnosis_code", sa.String(5), nullable=True),
         sa.Column("processing_indicator", sa.String(1), nullable=False),
-        *(sa.Column(name, sa.Numeric(10, 2), nullable=False) for name in AMOUNT_COLUMNS),
+        *(sa.Column(name, sa.Numeric(12, 2), nullable=False) for name in AMOUNT_COLUMNS),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),

@@ -11,10 +11,12 @@ columns are not kept.
 import csv
 import io
 import logging
+import re
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
+from contextlib import closing
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from itertools import islice
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -79,6 +81,10 @@ EXPECTED_HEADER = (
 COLUMN = {name: index for index, name in enumerate(EXPECTED_HEADER)}
 
 SOURCE_DATE_FORMAT = "%Y%m%d"
+SOURCE_DATE_PATTERN = re.compile(r"[0-9]{8}")
+# The file writes every amount as plain digits with two decimals, such as 50.00. Anything
+# else a number parser would accept (1e2, +50.00, 5_0.00, 50) means a damaged cell.
+SOURCE_AMOUNT_PATTERN = re.compile(r"[0-9]+\.[0-9]{2}")
 # The file covers claims from 2008 to 2010.
 MIN_CLAIM_DATE = date(2008, 1, 1)
 MAX_CLAIM_DATE = date(2010, 12, 31)
@@ -90,14 +96,15 @@ MAX_PROBLEMS_COLLECTED = 1000
 HEADER_ROW = 1
 UNREADABLE_ZIP = "not a readable .zip file"
 # Raised for damaged content. The csv is read as a stream, so these can surface when the
-# file is opened or while rows are read.
-DAMAGED_ZIP_ERRORS = (BadZipFile, zlib.error, EOFError)
+# file is opened or while rows are read. zipfile raises RuntimeError for an encrypted member
+# and NotImplementedError (a RuntimeError) for a compression method it does not support.
+DAMAGED_ZIP_ERRORS = (BadZipFile, zlib.error, EOFError, RuntimeError)
 CLAIM_UPSERT_CONSTRAINT = "uq_claim_samples_source_claim_id"
 CLAIM_UPSERT_KEY_COLUMNS = ("source_claim_id",)
 LINE_UPSERT_CONSTRAINT = "uq_claim_sample_lines_claim_line"
 LINE_UPSERT_KEY_COLUMNS = ("source_claim_id", "line_number")
 
-Amount = Annotated[Decimal, Field(ge=0, max_digits=10, decimal_places=2)]
+Amount = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]
 ClaimId = Annotated[str, Field(pattern=r"^[0-9]{15}$")]
 DiagnosisCode = Annotated[str, Field(min_length=1, max_length=5)]
 ClaimDate = Annotated[date, Field(ge=MIN_CLAIM_DATE, le=MAX_CLAIM_DATE)]
@@ -118,7 +125,7 @@ class ClaimSampleRow(BaseModel):
     def _source_text_to_date(cls, value: Any) -> Any:
         # The file writes dates as 8 digits, which would otherwise be read as a timestamp.
         if isinstance(value, str):
-            if len(value) != 8 or not value.isdecimal():
+            if not SOURCE_DATE_PATTERN.fullmatch(value):
                 raise ValueError("must be a date written as YYYYMMDD")
             try:
                 return datetime.strptime(value, SOURCE_DATE_FORMAT).date()
@@ -152,6 +159,13 @@ class ClaimSampleLineRow(BaseModel):
     coinsurance_amount: Amount
     allowed_charge_amount: Amount
 
+    @field_validator(*AMOUNT_FAMILIES, mode="before")
+    @classmethod
+    def _source_text_is_a_plain_amount(cls, value: Any) -> Any:
+        if isinstance(value, str) and not SOURCE_AMOUNT_PATTERN.fullmatch(value):
+            raise ValueError("must be a number written with two decimals, such as 50.00")
+        return value
+
 
 class ClaimSampleBatch(BaseModel):
     """The claims read from one file, with their service lines."""
@@ -165,45 +179,53 @@ class ClaimSampleBatch(BaseModel):
 def read_claim_sample_rows(path: Path, max_claims: int | None = None) -> ClaimSampleBatch:
     """Read the carrier claims zip at `path` and return its validated claims and lines.
 
-    `max_claims` stops after that many csv rows; the quality gates then cover only the rows
-    read. Raises `BatchRejectedError` if any gate fails. Reading 50,000 claims takes about
-    ten seconds; the full file (2.4 million claims) takes minutes and several gigabytes of
-    memory.
+    `max_claims` (1 or more) stops after that many csv rows; the quality gates then cover
+    only the rows read. Raises `BatchRejectedError` if any gate fails. Reading 50,000 claims
+    takes about ten seconds; the full file (2.4 million claims) takes minutes and several
+    gigabytes of memory.
     """
+    if max_claims is not None and max_claims < 1:
+        raise ValueError("max_claims must be 1 or more")
     problems: list[str] = []
     claims: list[ClaimSampleRow] = []
     lines: list[ClaimSampleLineRow] = []
     seen: set[str] = set()
     rows_read = 0
-    for row_number, cells in islice(_csv_rows(path), max_claims):
-        rows_read += 1
-        if len(problems) >= MAX_PROBLEMS_COLLECTED:
-            break
-        if len(cells) != len(EXPECTED_HEADER):
-            problems.append(
-                f"row {row_number}: has {len(cells)} fields, expected {len(EXPECTED_HEADER)}"
-            )
-            continue
-        used = [slot for slot in LINE_SLOTS if _used(cells, slot)]
-        layout_problems = _line_layout_problems(cells, used)
-        if layout_problems:
-            problems.extend(f"row {row_number}: {problem}" for problem in layout_problems)
-            continue
-        try:
-            claim = ClaimSampleRow.model_validate(_claim_fields(cells))
-        except ValidationError as exc:
-            problems.extend(describe_validation_error(row_number, exc))
-            continue
-        row_lines, line_problems = _validated_lines(cells, used, row_number)
-        if line_problems:
-            problems.extend(line_problems)
-            continue
-        if claim.source_claim_id in seen:
-            problems.append(f"row {row_number}: claim id appears more than once in the file")
-            continue
-        seen.add(claim.source_claim_id)
-        claims.append(claim)
-        lines.extend(row_lines)
+    # Closing the generator closes the zip, also when reading stops before the end.
+    with closing(_csv_rows(path)) as rows:
+        for row_number, cells in islice(rows, max_claims):
+            rows_read += 1
+            if len(problems) >= MAX_PROBLEMS_COLLECTED:
+                break
+            if len(cells) != len(EXPECTED_HEADER):
+                problems.append(
+                    f"row {row_number}: has {len(cells)} fields, expected {len(EXPECTED_HEADER)}"
+                )
+                continue
+            if any(cell != cell.strip() for cell in cells):
+                # Otherwise a cell holding only spaces would count as filled.
+                problems.append(f"row {row_number}: a cell has leading or trailing whitespace")
+                continue
+            used = [slot for slot in LINE_SLOTS if _used(cells, slot)]
+            layout_problems = _line_layout_problems(cells, used)
+            if layout_problems:
+                problems.extend(f"row {row_number}: {problem}" for problem in layout_problems)
+                continue
+            try:
+                claim = ClaimSampleRow.model_validate(_claim_fields(cells))
+            except ValidationError as exc:
+                problems.extend(describe_validation_error(row_number, exc))
+                continue
+            row_lines, line_problems = _validated_lines(cells, used, row_number)
+            if line_problems:
+                problems.extend(line_problems)
+                continue
+            if claim.source_claim_id in seen:
+                problems.append(f"row {row_number}: claim id appears more than once in the file")
+                continue
+            seen.add(claim.source_claim_id)
+            claims.append(claim)
+            lines.extend(row_lines)
     if not rows_read:
         problems.append("no data rows")
     if problems:
@@ -221,7 +243,7 @@ def upsert_claim_sample_batch(session: Session, batch: ClaimSampleBatch) -> tupl
     are written first because the lines point at them. Loading the same batch twice changes
     nothing except `updated_at`. Rows are never removed. Returns (claims, lines) written.
     Does not commit: the caller owns the transaction. Writing 50,000 claims takes about
-    twenty seconds.
+    half a minute.
     """
     claims = upsert_rows(
         session, ClaimSample, batch.claims, CLAIM_UPSERT_CONSTRAINT, CLAIM_UPSERT_KEY_COLUMNS
@@ -233,7 +255,7 @@ def upsert_claim_sample_batch(session: Session, batch: ClaimSampleBatch) -> tupl
     return claims, lines
 
 
-def _csv_rows(path: Path) -> Iterator[tuple[int, list[str]]]:
+def _csv_rows(path: Path) -> Generator[tuple[int, list[str]], None, None]:
     """Yield (row number, cells) for every data row of the one csv inside the zip.
 
     Raises `BatchRejectedError` for an unreadable zip, a zip that does not hold exactly one
@@ -284,10 +306,7 @@ def _used(cells: Sequence[str], slot: int) -> bool:
 
 
 def _is_zero(text: str) -> bool:
-    try:
-        return Decimal(text) == 0
-    except InvalidOperation:
-        return False
+    return bool(SOURCE_AMOUNT_PATTERN.fullmatch(text)) and Decimal(text) == 0
 
 
 def _line_layout_problems(cells: Sequence[str], used: list[int]) -> list[str]:

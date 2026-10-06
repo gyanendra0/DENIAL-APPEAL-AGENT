@@ -33,7 +33,7 @@ def _positive_int(text: str) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     """Read, validate and upsert the first claims of one file in a single transaction.
 
-    With the default of 50,000 claims this takes about half a minute.
+    With the default of 50,000 claims this takes about 40 seconds.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("path", type=Path, help="the carrier claims file (.zip holding one .csv)")

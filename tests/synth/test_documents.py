@@ -24,6 +24,7 @@ from src.synth.denial_letter import (
     MAX_SEED,
     TEMPLATE_IDS,
     DenialLetterAnswerKey,
+    DeniedLineKey,
     generate_denial_letter,
 )
 from src.synth.documents import (
@@ -222,6 +223,20 @@ def test_rejects_labels_made_by_another_rule_version(session: Session) -> None:
         build_denial_letter_rows(session, SEED)
 
 
+def test_rejects_a_denied_claim_whose_stored_lines_hold_no_denied_line(session: Session) -> None:
+    _store_claim(session, DENIED_CLAIM, DENIED_CLAIM_LINES, is_denied=True)
+    # Labelled denied, but its only stored line is paid: the lines changed after the label.
+    _store_claim(session, OTHER_DENIED_CLAIM, PAID_CLAIM_LINES, is_denied=True)
+
+    with pytest.raises(BatchRejectedError) as excinfo:
+        build_denial_letter_rows(session, SEED)
+
+    assert excinfo.value.problems == [
+        f"claim {OTHER_DENIED_CLAIM} is labelled denied but has no denied line: run"
+        " pipelines.run_data_pipeline again"
+    ]
+
+
 @pytest.mark.parametrize("seed", [-1, MAX_SEED + 1])
 def test_rejects_a_seed_that_does_not_fit_the_integer_column(session: Session, seed: int) -> None:
     _store_all(session)
@@ -258,6 +273,19 @@ def test_replace_stores_the_rows_and_the_answer_key_reads_back(session: Session)
     assert (key.service_from_date, key.service_thru_date) == (FROM_DATE, THRU_DATE)
     assert key.total_payment_amount == Decimal("80.00")
     assert key.model_dump(mode="json") == rows[1].answer_key
+
+
+def test_stored_answer_key_has_exactly_the_fields_of_the_answer_key_model(
+    session: Session,
+) -> None:
+    _store_all(session)
+
+    replace_generated_document_rows(session, build_denial_letter_rows(session, SEED))
+
+    for document in _stored(session).values():
+        assert set(document.answer_key) == set(DenialLetterAnswerKey.model_fields)
+        for line in document.answer_key["denied_lines"]:
+            assert set(line) == set(DeniedLineKey.model_fields)
 
 
 def test_replace_leaves_only_the_given_rows(session: Session) -> None:

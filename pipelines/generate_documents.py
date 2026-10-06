@@ -10,8 +10,9 @@ so it never mixes two seeds or two generator versions. The same claims, seed and
 version always give the same documents. Every name, id and letter date in a document is made
 up.
 
-Exit codes: 0 generated, 1 the stored labels cannot be used (none denied, or made by another
-label rule version; nothing written), 2 bad arguments.
+Exit codes: 0 generated, 1 the stored labels cannot be used (none denied, made by another
+label rule version, or a denied claim whose stored lines hold no denied line; nothing
+written), 2 bad arguments.
 """
 
 import argparse

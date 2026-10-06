@@ -22,7 +22,7 @@ from src.db.models import (
     GeneratedDocument,
 )
 from src.ingest.marketplace_denials import BatchRejectedError, upsert_rows
-from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel
+from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel, is_denied_line
 from src.synth.denial_letter import MAX_SEED, generate_denial_letter
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,9 @@ def build_denial_letter_rows(session: Session, seed: int) -> list[GeneratedDocum
 
     Reads `claim_sample_labels`, `claim_samples` and `claim_sample_lines`; writes nothing.
     The rows come back in claim id order. Raises `BatchRejectedError` if no claim is labelled
-    denied, or if a label was made by a label rule other than `LABEL_RULE_VERSION` (the
-    letters would then disagree with the rule in the code).
+    denied, if a label was made by a label rule other than `LABEL_RULE_VERSION` (the
+    letters would then disagree with the rule in the code), or if a claim is labelled denied
+    but its stored lines hold no denied line (the lines were loaded again after the labels).
     """
     labels = session.scalars(
         select(ClaimSampleLabel)
@@ -91,6 +92,20 @@ def build_denial_letter_rows(session: Session, seed: int) -> list[GeneratedDocum
         .where(is_denied_claim)
     ):
         lines_by_claim[line.source_claim_id].append(line)
+
+    stale = [
+        label.source_claim_id
+        for label in labels
+        if not any(is_denied_line(line) for line in lines_by_claim[label.source_claim_id])
+    ]
+    if stale:
+        raise BatchRejectedError(
+            [
+                f"claim {claim_id} is labelled denied but has no denied line: run"
+                " pipelines.run_data_pipeline again"
+                for claim_id in stale
+            ]
+        )
 
     rows: list[GeneratedDocumentRow] = []
     for label in labels:

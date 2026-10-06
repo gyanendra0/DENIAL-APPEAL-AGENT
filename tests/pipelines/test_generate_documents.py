@@ -182,6 +182,31 @@ def test_labels_of_another_rule_version_exit_1_and_keep_the_old_documents(
     assert _documents(loaded) == before
 
 
+def test_denied_claim_without_a_denied_line_exits_1_and_keeps_the_old_documents(
+    loaded: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main([])
+    before = _documents(loaded)
+    capsys.readouterr()  # drop the first run's own output
+    # The claim's lines are loaded again as paid, but its label still says denied.
+    with loaded.begin() as connection:
+        connection.execute(
+            update(ClaimSampleLine)
+            .where(ClaimSampleLine.source_claim_id == "800000000000005")
+            .values(processing_indicator="A")
+        )
+
+    exit_code = main(["--seed", "7"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "claim 800000000000005 is labelled denied but has no denied line" in captured.err
+    assert "run pipelines.run_data_pipeline again" in captured.err
+    assert captured.out == ""
+    assert len(before) == 3
+    assert _documents(loaded) == before
+
+
 def test_failure_after_the_old_documents_are_removed_brings_them_back(
     loaded: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

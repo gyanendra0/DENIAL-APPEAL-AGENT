@@ -392,7 +392,8 @@ each. A claim that is not denied gets no document: on the default load that is 4
 
 - A denied line is the label rule's denied line: indicator not `A` and payment 0. Paid lines
   are not listed one by one; they only count in the totals.
-- A line with no procedure code is printed as "not provided". No code is made up.
+- A line with no procedure code is printed as "not provided". No code is made up. A claim
+  with no diagnosis code gets the same wording (none of the denied claims loaded today).
 - No money is made up either. The file has no billed amount, so the letter shows none, and a
   total of 0.00 is printed as 0.00.
 - Codes are printed as codes, without descriptions (CPT descriptions are copyrighted, see
@@ -470,8 +471,9 @@ the table always comes from one run, with one seed and one generator version, an
 that is no longer denied does not keep an old letter.
 
 Exit code 0 means generated, 1 means the stored labels cannot be used (no claim is labelled
-denied, or the labels were made by another label rule version; nothing is written or
-removed), 2 means a bad argument. Running it again with the same seed leaves the same rows.
+denied, the labels were made by another label rule version, or a claim is labelled denied
+but its stored lines no longer hold a denied line; nothing is written or removed), 2 means a
+bad argument. On exit code 1, run the pipeline (2.9) again first. Running it again with the same seed leaves the same rows.
 Run it again after every pipeline run, because new labels can change which claims are denied.
 
 **Measured on the first 50,000 claims** (the default load, seed 42):
@@ -556,14 +558,15 @@ data/
   raw/          downloaded public files, never edited by hand
   interim/      cleaned and joined tables
   processed/    model-ready features and splits
-  documents/    generated denial letters and notes
+  documents/    generated documents kept as files (none yet, see below)
   evidence/     policy corpus, chunked and embedded
 ```
 
 `data/` is never stored with the project. Everything in it must be
 reproducible by running a loader script.
 
-The generated denial letters are not files under `documents/`: they are stored as text in the `generated_documents` table (2.4.1).
+The generated denial letters are not files under `documents/`: they are stored as text in
+the `generated_documents` table (2.4.1).
 
 ## 2.9 Running the whole pipeline
 

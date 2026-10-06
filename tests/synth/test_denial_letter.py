@@ -1,3 +1,5 @@
+import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -26,6 +28,8 @@ from src.synth.denial_letter import (
 CLAIM_ID = "800000000000001"
 SEED = 42
 SEEDS_TO_SEARCH = 200
+# SHA-256 of the full text of `_letter()`: claim 800000000000001, seed 42, generator v1.
+PINNED_TEXT_SHA256 = "d8ff1af3529a899368a4abeb782d4609ade04bd71b6f31f3330b6d014cc77419"
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,13 @@ def _letter_with_template(template_id: str, claim: Claim = CLAIM) -> DenialLette
 def test_same_claim_and_seed_give_the_identical_letter() -> None:
     assert _letter() == _letter()
     assert _letter().text == _letter().text
+
+
+def test_the_text_of_one_letter_is_pinned_to_the_generator_version() -> None:
+    # If this fails, a word list, a template or a rule changed: bump GENERATOR_VERSION, then
+    # update the hash.
+    assert _letter().generator_version == "v1"
+    assert hashlib.sha256(_letter().text.encode()).hexdigest() == PINNED_TEXT_SHA256
 
 
 def test_a_different_seed_gives_different_text() -> None:
@@ -226,6 +237,30 @@ def test_a_missing_procedure_code_is_printed_as_not_provided(template_id: str) -
 
 
 @pytest.mark.parametrize("template_id", TEMPLATE_IDS)
+def test_a_claim_without_diagnosis_codes_prints_not_provided(template_id: str) -> None:
+    letter = _letter_with_template(template_id, replace(CLAIM, diagnosis_codes=()))
+
+    assert letter.answer_key.diagnosis_codes == ()
+    # Once for the diagnosis codes, once for line 3's missing procedure code.
+    assert letter.text.count(CODE_NOT_PROVIDED) == 2
+
+
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
+def test_every_amount_in_the_text_is_an_amount_of_the_answer_key(template_id: str) -> None:
+    letter = _letter_with_template(template_id)
+    key = letter.answer_key
+    known = {key.total_allowed_charge_amount, key.total_payment_amount}
+    for line in key.denied_lines:
+        known |= {line.allowed_charge_amount, line.payment_amount}
+
+    printed = re.findall(r"\$(\d+\.\d\d)(?!\d)", letter.text)
+
+    assert len(printed) == letter.text.count("$")  # every amount has the dollars.cents shape
+    assert {Decimal(amount) for amount in printed} <= known
+    assert "billed" not in letter.text.lower()
+
+
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
 def test_both_service_dates_are_printed_when_they_differ(template_id: str) -> None:
     claim = replace(CLAIM, claim_thru_date=date(2009, 3, 5))
     show = DATE_STYLE[template_id]
@@ -317,11 +352,12 @@ def test_letter_never_mentions_the_proxy_the_chance_the_band_or_the_split(
 ) -> None:
     letter = _letter_with_template(template_id)
     text = letter.text.lower()
-    fields = " ".join(letter.answer_key.model_dump()).lower()
+    # The whole saved answer key: every field name and every value, nested ones included.
+    saved_key = letter.answer_key.model_dump_json().lower()
 
     for word in ("proxy", "chance", "band", "split", "train", "validation", "test"):
         assert word not in text
-        assert word not in fields
+        assert word not in saved_key
 
 
 def test_answer_key_can_be_saved_as_json() -> None:

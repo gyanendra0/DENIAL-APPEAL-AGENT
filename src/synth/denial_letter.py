@@ -180,7 +180,8 @@ class DenialLetterAnswerKey(BaseModel):
     """Every value printed in one denial letter, real or fabricated.
 
     The totals are over all of the claim's lines, paid ones included. The headline
-    `denial_reason_category` is the label's, so the letter and the label always agree.
+    `denial_reason_category` is the label's, so the letter and the label always agree. When
+    `diagnosis_codes` is empty, the letter says "not provided".
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -334,6 +335,10 @@ def _code(line: DeniedLineKey) -> str:
     return line.hcpcs_code or CODE_NOT_PROVIDED
 
 
+def _diagnoses(key: DenialLetterAnswerKey, separator: str) -> str:
+    return separator.join(key.diagnosis_codes) or CODE_NOT_PROVIDED
+
+
 def _formal_letter(key: DenialLetterAnswerKey) -> str:
     denied = [
         f"- Line {line.line_number}, procedure code {_code(line)}: allowed amount "
@@ -357,7 +362,7 @@ def _formal_letter(key: DenialLetterAnswerKey) -> str:
             "",
             f"We have reviewed claim {key.claim_number}, submitted by {key.provider_name} for "
             f"services provided on {_service_dates(key, _long_date)}. The diagnosis codes on "
-            f"the claim are {', '.join(key.diagnosis_codes)}.",
+            f"the claim are {_diagnoses(key, ', ')}.",
             "",
             "We are unable to approve payment for this claim because "
             f"{REASON_WORDING[key.denial_reason_category]}.",
@@ -399,7 +404,7 @@ def _benefits_table(key: DenialLetterAnswerKey) -> str:
             f"Provider:          {key.provider_name}",
             f"Claim number:      {key.claim_number}",
             f"Service date(s):   {_service_dates(key, _us_date)}",
-            f"Diagnosis codes:   {' '.join(key.diagnosis_codes)}",
+            f"Diagnosis codes:   {_diagnoses(key, ' ')}",
             f"Denial reason:     {REASON_WORDING[key.denial_reason_category]}",
             "",
             f"{'Line':<6}{'Procedure':<14}{'Allowed':<14}{'Paid':<14}Remark",
@@ -431,7 +436,7 @@ def _short_notice(key: DenialLetterAnswerKey) -> str:
             f"Claim {key.claim_number} from {key.provider_name}, service date "
             f"{_service_dates(key, _iso_date)}, was denied: "
             f"{REASON_WORDING[key.denial_reason_category]}.",
-            f"Diagnosis: {', '.join(key.diagnosis_codes)}",
+            f"Diagnosis: {_diagnoses(key, ', ')}",
             "Denied lines:",
             *denied,
             f"Claim totals: allowed {_money(key.total_allowed_charge_amount)}, paid "
@@ -461,7 +466,7 @@ def _two_section(key: DenialLetterAnswerKey) -> str:
             f"Claim {key.claim_number} from {key.provider_name}, for services on "
             f"{_service_dates(key, _long_date)}, has been denied. Reason for the decision: "
             f"{REASON_WORDING[key.denial_reason_category]}.",
-            f"Diagnosis codes reported: {', '.join(key.diagnosis_codes)}",
+            f"Diagnosis codes reported: {_diagnoses(key, ', ')}",
             "",
             "Denied services:",
             *denied,

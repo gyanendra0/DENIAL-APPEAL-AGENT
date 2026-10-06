@@ -15,7 +15,6 @@ The rule:
 Any change to a constant or to the hash input needs a new `LABEL_RULE_VERSION`.
 """
 
-import hashlib
 from collections.abc import Sequence
 from decimal import Decimal
 from fractions import Fraction
@@ -24,6 +23,7 @@ from typing import Annotated, Protocol, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.db.models import DenialReasonCategory
+from src.ml.draws import repeatable_draw
 
 LABEL_RULE_VERSION = "v1"
 
@@ -54,9 +54,6 @@ ZERO_BAND_NUDGE = Decimal("-0.10")
 LOW_BAND_NUDGE = Decimal("0.00")
 MID_BAND_NUDGE = Decimal("0.05")
 HIGH_BAND_NUDGE = Decimal("0.10")
-
-DRAW_BYTES = 8
-DRAW_RANGE = 2 ** (8 * DRAW_BYTES)
 
 ClaimId = Annotated[str, Field(pattern=r"^[0-9]{15}$")]
 
@@ -120,11 +117,12 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
     category = CATEGORY_BY_INDICATOR.get(first.processing_indicator, DenialReasonCategory.OTHER)
     total_allowed = sum((line.allowed_charge_amount for line in lines), Decimal(0))
     chance = appeal_success_chance(category, total_allowed)
+    draw = repeatable_draw(f"{LABEL_RULE_VERSION}:{source_claim_id}")
     return ClaimLabel(
         source_claim_id=source_claim_id,
         is_denied=True,
         denial_reason_category=category,
-        appeal_success_proxy=_draw(source_claim_id) < Fraction(chance),
+        appeal_success_proxy=draw < Fraction(chance),
         label_rule_version=LABEL_RULE_VERSION,
     )
 
@@ -147,9 +145,3 @@ def appeal_success_chance(category: DenialReasonCategory, total_allowed_charge: 
 
 def _is_denied(line: LabelLine) -> bool:
     return line.processing_indicator != ALLOWED_INDICATOR and line.payment_amount == 0
-
-
-def _draw(source_claim_id: str) -> Fraction:
-    """A number from 0 up to (not including) 1 that is always the same for the same claim."""
-    digest = hashlib.sha256(f"{LABEL_RULE_VERSION}:{source_claim_id}".encode()).digest()
-    return Fraction(int.from_bytes(digest[:DRAW_BYTES], "big"), DRAW_RANGE)

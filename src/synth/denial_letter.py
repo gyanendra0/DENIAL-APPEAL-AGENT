@@ -14,7 +14,9 @@ How one letter is made:
 - The letter never shows the appeal-success proxy, its chance, the amount band or the split.
 
 Any change to a word list, a template, a date rule or the draw text needs a new
-`GENERATOR_VERSION`, because the same seed would no longer give the same text.
+`GENERATOR_VERSION`, because the same seed would no longer give the same text. One exception
+was made under v1: the "not provided" wording for a claim without diagnosis codes was added
+later, because no v1 letter had such a claim, so no existing text changed.
 """
 
 from collections.abc import Callable, Iterable, Sequence

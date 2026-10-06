@@ -28,8 +28,13 @@ from src.synth.denial_letter import (
 CLAIM_ID = "800000000000001"
 SEED = 42
 SEEDS_TO_SEARCH = 200
-# SHA-256 of the full text of `_letter()`: claim 800000000000001, seed 42, generator v1.
-PINNED_TEXT_SHA256 = "d8ff1af3529a899368a4abeb782d4609ade04bd71b6f31f3330b6d014cc77419"
+# SHA-256 of the full text of `_letter_with_template(template_id)`, generator v1.
+PINNED_TEXT_SHA256 = {
+    "formal_letter": "9b47f1e0b3e247b3560b762ba0f4a72d90b133d207cf58aeb8e9d55f3e9bb7aa",
+    "benefits_table": "5abb63f17dde2b79f961df9f49bff9b3e115ab5df5269ad4fd281fb7a2c447ee",
+    "short_notice": "dbafb4d12417db8807e3bc5e67614b339d27c3fb9f091a4c0b1b326754aa86db",
+    "two_section": "05cf76213c154a09c661743988b07a050e57c64496339cf85de3930df8f4c064",
+}
 
 
 @dataclass(frozen=True)
@@ -129,11 +134,14 @@ def test_same_claim_and_seed_give_the_identical_letter() -> None:
     assert _letter().text == _letter().text
 
 
-def test_the_text_of_one_letter_is_pinned_to_the_generator_version() -> None:
+@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
+def test_the_text_of_every_template_is_pinned_to_the_generator_version(template_id: str) -> None:
     # If this fails, a word list, a template or a rule changed: bump GENERATOR_VERSION, then
-    # update the hash.
-    assert _letter().generator_version == "v1"
-    assert hashlib.sha256(_letter().text.encode()).hexdigest() == PINNED_TEXT_SHA256
+    # update the hashes.
+    letter = _letter_with_template(template_id)
+
+    assert letter.generator_version == "v1"
+    assert hashlib.sha256(letter.text.encode()).hexdigest() == PINNED_TEXT_SHA256[template_id]
 
 
 def test_a_different_seed_gives_different_text() -> None:

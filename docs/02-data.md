@@ -473,8 +473,9 @@ that is no longer denied does not keep an old letter.
 Exit code 0 means generated, 1 means the stored labels cannot be used (no claim is labelled
 denied, the labels were made by another label rule version, or a claim is labelled denied
 but its stored lines no longer hold a denied line; nothing is written or removed), 2 means a
-bad argument. On exit code 1, run the pipeline (2.9) again first. Running it again with the same seed leaves the same rows.
-Run it again after every pipeline run, because new labels can change which claims are denied.
+bad argument. On exit code 1, run the pipeline (2.9) again first. Running it again with the
+same seed leaves the same rows. Run it again after every pipeline run, because new labels can
+change which claims are denied.
 
 **Measured on the first 50,000 claims** (the default load, seed 42):
 

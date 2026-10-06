@@ -223,10 +223,13 @@ def test_rejects_labels_made_by_another_rule_version(session: Session) -> None:
         build_denial_letter_rows(session, SEED)
 
 
-def test_rejects_a_denied_claim_whose_stored_lines_hold_no_denied_line(session: Session) -> None:
+@pytest.mark.parametrize("lines", [PAID_CLAIM_LINES, ()], ids=["only a paid line", "no lines"])
+def test_rejects_a_denied_claim_whose_stored_lines_hold_no_denied_line(
+    session: Session, lines: tuple[Line, ...]
+) -> None:
     _store_claim(session, DENIED_CLAIM, DENIED_CLAIM_LINES, is_denied=True)
-    # Labelled denied, but its only stored line is paid: the lines changed after the label.
-    _store_claim(session, OTHER_DENIED_CLAIM, PAID_CLAIM_LINES, is_denied=True)
+    # Labelled denied, but no stored line is denied: the lines changed after the label.
+    _store_claim(session, OTHER_DENIED_CLAIM, lines, is_denied=True)
 
     with pytest.raises(BatchRejectedError) as excinfo:
         build_denial_letter_rows(session, SEED)

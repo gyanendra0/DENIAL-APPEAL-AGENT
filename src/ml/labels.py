@@ -104,7 +104,7 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
     """Apply label rule v1 to one claim. `lines` are all of the claim's lines, in any order."""
     if not lines:
         raise ValueError(f"claim {source_claim_id} has no lines to label")
-    denied = [line for line in lines if _is_denied(line)]
+    denied = [line for line in lines if is_denied_line(line)]
     if not denied:
         return ClaimLabel(
             source_claim_id=source_claim_id,
@@ -143,5 +143,6 @@ def appeal_success_chance(category: DenialReasonCategory, total_allowed_charge: 
     return BASE_CHANCE[category] + nudge
 
 
-def _is_denied(line: LabelLine) -> bool:
+def is_denied_line(line: LabelLine) -> bool:
+    """Whether the rule counts this line as denied: indicator not `A` and nothing paid."""
     return line.processing_indicator != ALLOWED_INDICATOR and line.payment_amount == 0

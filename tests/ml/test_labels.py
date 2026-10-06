@@ -10,6 +10,7 @@ from src.ml.labels import (
     LABEL_RULE_VERSION,
     ClaimLabel,
     appeal_success_chance,
+    is_denied_line,
     label_claim,
 )
 
@@ -50,6 +51,27 @@ def test_claim_is_not_denied_unless_a_line_has_another_indicator_and_zero_paymen
     assert label.is_denied is False
     assert label.denial_reason_category is None
     assert label.appeal_success_proxy is None
+
+
+@pytest.mark.parametrize(
+    ("line", "denied"),
+    [
+        (_line(1, "C", "0.00"), True),
+        (_line(1, "C", "10.00", "30.00"), False),
+        (_line(1, "A", "0.00"), False),
+        (PAID, False),
+    ],
+    ids=[
+        "other indicator, nothing paid",
+        "other indicator but paid",
+        "allowed, nothing paid",
+        "paid",
+    ],
+)
+def test_a_line_is_denied_only_with_another_indicator_and_zero_payment(
+    line: Line, denied: bool
+) -> None:
+    assert is_denied_line(line) is denied
 
 
 def test_claim_is_denied_when_any_one_line_is_denied() -> None:

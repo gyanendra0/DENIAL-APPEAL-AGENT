@@ -235,7 +235,9 @@ def test_rejects_a_claim_id_that_appears_twice(tmp_path: Path) -> None:
     assert _rejected(path) == ["row 5: claim id appears more than once in the file"]
 
 
-@pytest.mark.parametrize("text", ["", "2009-03-01", "20090231", "2009030", "200903011"])
+@pytest.mark.parametrize(
+    "text", ["", "2009-03-01", "20090231", "2009030", "200903011", "２００９０３０１"]
+)
 def test_rejects_a_date_that_is_not_yyyymmdd(tmp_path: Path, text: str) -> None:
     problems = _rejected(claims_zip(tmp_path, {(2, "CLM_FROM_DT"): text}))
 
@@ -260,7 +262,20 @@ def test_rejects_a_claim_that_ends_before_it_starts(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("family", AMOUNT_FAMILIES.values())
 @pytest.mark.parametrize(
-    "text", ["", "abc", "-10.00", "10.005", "1e2", "5_0.00", "+50.00", "50", "50.0", "-0.00"]
+    "text",
+    [
+        "",
+        "abc",
+        "-10.00",
+        "10.005",
+        "1e2",
+        "5_0.00",
+        "+50.00",
+        "50",
+        "50.0",
+        "-0.00",
+        "99999999999.00",
+    ],
 )
 def test_rejects_a_bad_amount_on_a_used_line(tmp_path: Path, family: str, text: str) -> None:
     problems = _rejected(claims_zip(tmp_path, {(3, f"{family}_2"): text}))
@@ -284,8 +299,24 @@ def test_rejects_a_bad_amount_on_a_used_line(tmp_path: Path, family: str, text: 
 )
 def test_rejects_a_cell_with_surrounding_whitespace(tmp_path: Path, header: str, text: str) -> None:
     assert _rejected(claims_zip(tmp_path, {(2, header): text})) == [
-        "row 2: a cell has leading or trailing whitespace"
+        f"row 2: {header}: leading or trailing whitespace in the cell"
     ]
+
+
+def test_names_only_the_first_column_with_surrounding_whitespace(tmp_path: Path) -> None:
+    edits = {(2, "HCPCS_CD_1"): " 9921", (2, "CLM_ID"): " 80000000000001"}
+
+    assert _rejected(claims_zip(tmp_path, edits)) == [
+        "row 2: CLM_ID: leading or trailing whitespace in the cell"
+    ]
+
+
+def test_keeps_the_largest_amount_the_tables_can_hold(tmp_path: Path) -> None:
+    largest = "9999999999.99"  # 12 digits, like the Numeric(12, 2) columns
+
+    batch = read_claim_sample_rows(claims_zip(tmp_path, {(2, "LINE_ALOWD_CHRG_AMT_1"): largest}))
+
+    assert batch.lines[0].allowed_charge_amount == Decimal(largest)
 
 
 def test_rejects_a_claim_with_no_used_line(tmp_path: Path) -> None:
@@ -331,6 +362,7 @@ def test_rejects_a_line_with_only_one_of_tax_number_and_indicator(tmp_path: Path
         ("LINE_NCH_PMT_AMT_2", "10.00"),
         ("LINE_NCH_PMT_AMT_2", "0"),
         ("LINE_NCH_PMT_AMT_2", "-0.00"),
+        ("LINE_NCH_PMT_AMT_2", "00.00"),
         ("LINE_ALOWD_CHRG_AMT_13", ""),
     ],
 )

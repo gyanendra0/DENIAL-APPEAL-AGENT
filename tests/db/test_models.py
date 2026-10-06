@@ -381,6 +381,15 @@ def test_stores_claim_sample_with_lines_and_exact_amounts(session: Session) -> N
     assert lines[1].processing_indicator == "<"
 
 
+def test_stores_a_twelve_digit_line_amount_exactly(session: Session) -> None:
+    largest = Decimal("9999999999.99")
+    _claim_sample(session)
+    line = _claim_sample_line(session, payment_amount=largest)
+    session.expire_all()
+
+    assert session.get(ClaimSampleLine, line.id).payment_amount == largest  # type: ignore[union-attr]
+
+
 def test_stores_claim_sample_without_diagnosis_codes(session: Session) -> None:
     sample = _claim_sample(session, diagnosis_codes=[])
     session.expire_all()

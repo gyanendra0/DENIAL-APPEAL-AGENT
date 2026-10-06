@@ -85,6 +85,8 @@ SOURCE_DATE_PATTERN = re.compile(r"[0-9]{8}")
 # The file writes every amount as plain digits with two decimals, such as 50.00. Anything
 # else a number parser would accept (1e2, +50.00, 5_0.00, 50) means a damaged cell.
 SOURCE_AMOUNT_PATTERN = re.compile(r"[0-9]+\.[0-9]{2}")
+# What every amount cell of an unused line slot holds.
+UNUSED_AMOUNT = "0.00"
 # The file covers claims from 2008 to 2010.
 MIN_CLAIM_DATE = date(2008, 1, 1)
 MAX_CLAIM_DATE = date(2010, 12, 31)
@@ -96,9 +98,8 @@ MAX_PROBLEMS_COLLECTED = 1000
 HEADER_ROW = 1
 UNREADABLE_ZIP = "not a readable .zip file"
 # Raised for damaged content. The csv is read as a stream, so these can surface when the
-# file is opened or while rows are read. zipfile raises RuntimeError for an encrypted member
-# and NotImplementedError (a RuntimeError) for a compression method it does not support.
-DAMAGED_ZIP_ERRORS = (BadZipFile, zlib.error, EOFError, RuntimeError)
+# file is opened or while rows are read.
+DAMAGED_ZIP_ERRORS = (BadZipFile, zlib.error, EOFError)
 CLAIM_UPSERT_CONSTRAINT = "uq_claim_samples_source_claim_id"
 CLAIM_UPSERT_KEY_COLUMNS = ("source_claim_id",)
 LINE_UPSERT_CONSTRAINT = "uq_claim_sample_lines_claim_line"
@@ -202,9 +203,16 @@ def read_claim_sample_rows(path: Path, max_claims: int | None = None) -> ClaimSa
                     f"row {row_number}: has {len(cells)} fields, expected {len(EXPECTED_HEADER)}"
                 )
                 continue
-            if any(cell != cell.strip() for cell in cells):
+            padded = [
+                header
+                for header, cell in zip(EXPECTED_HEADER, cells, strict=True)
+                if cell != cell.strip()
+            ]
+            if padded:
                 # Otherwise a cell holding only spaces would count as filled.
-                problems.append(f"row {row_number}: a cell has leading or trailing whitespace")
+                problems.append(
+                    f"row {row_number}: {padded[0]}: leading or trailing whitespace in the cell"
+                )
                 continue
             used = [slot for slot in LINE_SLOTS if _used(cells, slot)]
             layout_problems = _line_layout_problems(cells, used)
@@ -259,17 +267,20 @@ def _csv_rows(path: Path) -> Generator[tuple[int, list[str]], None, None]:
     """Yield (row number, cells) for every data row of the one csv inside the zip.
 
     Raises `BatchRejectedError` for an unreadable zip, a zip that does not hold exactly one
-    csv, text that is not UTF-8, or a header that differs from the expected one.
+    csv, text that is not UTF-8 or cannot be parsed as csv, or a header that differs from
+    the expected one.
     """
     try:
         with ZipFile(path) as archive:
             names = archive.namelist()
             if len(names) != 1 or not names[0].lower().endswith(".csv"):
                 raise BatchRejectedError(["the zip must hold exactly one .csv file"])
-            with (
-                archive.open(names[0]) as raw,
-                io.TextIOWrapper(raw, encoding="utf-8", newline="") as text,
-            ):
+            try:
+                raw = archive.open(names[0])
+            except RuntimeError as exc:
+                # zipfile's error for an encrypted member or an unsupported compression method.
+                raise BatchRejectedError([UNREADABLE_ZIP]) from exc
+            with raw, io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
                 reader = csv.reader(text)
                 header_problems = _header_problems(next(reader, []))
                 if header_problems:
@@ -305,10 +316,6 @@ def _used(cells: Sequence[str], slot: int) -> bool:
     return bool(_cell(cells, TAX_NUMBER_FAMILY, slot) or _cell(cells, INDICATOR_FAMILY, slot))
 
 
-def _is_zero(text: str) -> bool:
-    return bool(SOURCE_AMOUNT_PATTERN.fullmatch(text)) and Decimal(text) == 0
-
-
 def _line_layout_problems(cells: Sequence[str], used: list[int]) -> list[str]:
     """Problems with which line slots are filled. Cell values are left out on purpose."""
     if not used:
@@ -322,8 +329,8 @@ def _line_layout_problems(cells: Sequence[str], used: list[int]) -> list[str]:
                 problems.append(f"line {slot}: indicator without a tax number")
             if not _cell(cells, INDICATOR_FAMILY, slot):
                 problems.append(f"line {slot}: tax number without an indicator")
-        elif any(_cell(cells, family, slot) for family in LINE_CODE_FAMILIES) or not all(
-            _is_zero(_cell(cells, family, slot)) for family in AMOUNT_FAMILIES.values()
+        elif any(_cell(cells, family, slot) for family in LINE_CODE_FAMILIES) or any(
+            _cell(cells, family, slot) != UNUSED_AMOUNT for family in AMOUNT_FAMILIES.values()
         ):
             problems.append(f"line {slot}: values in a line with no tax number and no indicator")
     return problems

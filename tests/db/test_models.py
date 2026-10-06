@@ -15,8 +15,11 @@ from src.db.models import (
     Account,
     Claim,
     ClaimSample,
+    ClaimSampleLabel,
     ClaimSampleLine,
+    DatasetSplit,
     Denial,
+    DenialReasonCategory,
     DenialStatus,
     ExchangeType,
     IssuerDenialStats,
@@ -467,3 +470,132 @@ def test_deleting_a_claim_sample_removes_its_lines(session: Session) -> None:
     session.flush()
 
     assert session.scalars(select(ClaimSampleLine)).all() == []
+
+
+def _claim_sample_label(session: Session, **overrides: Any) -> ClaimSampleLabel:
+    """Store a denied label for the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "is_denied": True,
+        "denial_reason_category": DenialReasonCategory.NONCOVERED,
+        "appeal_success_proxy": False,
+        "label_rule_version": "v1",
+        "split": DatasetSplit.TRAIN,
+        "split_seed": 42,
+    }
+    label = ClaimSampleLabel(**(fields | overrides))
+    session.add(label)
+    session.flush()
+    return label
+
+
+NOT_DENIED: dict[str, Any] = {
+    "is_denied": False,
+    "denial_reason_category": None,
+    "appeal_success_proxy": None,
+}
+
+
+def test_stores_denied_label_with_category_proxy_version_and_split(session: Session) -> None:
+    _claim_sample(session)
+    label = _claim_sample_label(session, appeal_success_proxy=True, split=DatasetSplit.VALIDATION)
+    session.expire_all()
+
+    stored = session.get(ClaimSampleLabel, label.id)
+    assert stored is not None
+    assert stored.is_denied is True
+    assert stored.denial_reason_category is DenialReasonCategory.NONCOVERED
+    assert stored.appeal_success_proxy is True
+    assert stored.label_rule_version == "v1"
+    assert stored.split is DatasetSplit.VALIDATION
+    assert stored.split_seed == 42
+    assert stored.created_at is not None
+
+
+def test_stores_not_denied_label_without_category_or_proxy(session: Session) -> None:
+    _claim_sample(session)
+    label = _claim_sample_label(session, **NOT_DENIED)
+    session.expire_all()
+
+    stored = session.get(ClaimSampleLabel, label.id)
+    assert stored is not None
+    assert stored.is_denied is False
+    assert stored.denial_reason_category is None
+    assert stored.appeal_success_proxy is None
+
+
+@pytest.mark.parametrize("column", ["denial_reason_category", "appeal_success_proxy"])
+def test_rejects_denied_label_without_category_or_proxy(session: Session, column: str) -> None:
+    _claim_sample(session)
+    missing: dict[str, Any] = {column: None}
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_labels_denied_fields_match"):
+        _claim_sample_label(session, **missing)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("denial_reason_category", DenialReasonCategory.OTHER), ("appeal_success_proxy", False)],
+)
+def test_rejects_not_denied_label_with_category_or_proxy(
+    session: Session, column: str, value: Any
+) -> None:
+    _claim_sample(session)
+    filled = NOT_DENIED | {column: value}
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_labels_denied_fields_match"):
+        _claim_sample_label(session, **filled)
+
+
+def test_rejects_second_label_for_the_same_claim(session: Session) -> None:
+    _claim_sample(session)
+    _claim_sample_label(session)
+
+    with pytest.raises(IntegrityError, match="uq_claim_sample_labels_source_claim_id"):
+        _claim_sample_label(session, label_rule_version="v2")
+
+
+def test_rejects_empty_label_rule_version(session: Session) -> None:
+    _claim_sample(session)
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_labels_rule_version_not_empty"):
+        _claim_sample_label(session, label_rule_version="")
+
+
+def test_rejects_label_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_claim_sample_labels_claim"):
+        _claim_sample_label(session)
+
+
+def test_deleting_a_claim_sample_removes_its_label(session: Session) -> None:
+    sample = _claim_sample(session)
+    _claim_sample_label(session)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(ClaimSampleLabel)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("column", "value"), [("split", "holdout"), ("denial_reason_category", "fraud")]
+)
+def test_rejects_unknown_split_or_reason_category(
+    session: Session, column: str, value: str
+) -> None:
+    _claim_sample(session)
+    values = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "denial_reason_category": "noncovered",
+        "split": "train",
+    } | {column: value}
+    insert = text(
+        "INSERT INTO claim_sample_labels (source_claim_id, is_denied, denial_reason_category,"
+        " appeal_success_proxy, label_rule_version, split, split_seed)"
+        " VALUES (:source_claim_id, true, :denial_reason_category, false, 'v1', :split, 42)"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, values)

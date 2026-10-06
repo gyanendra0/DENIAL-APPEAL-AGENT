@@ -8,11 +8,14 @@ from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import (
+    CLAIM_LINE_AMOUNT_COLUMNS,
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
     Account,
     Claim,
+    ClaimSample,
+    ClaimSampleLine,
     Denial,
     DenialStatus,
     ExchangeType,
@@ -317,3 +320,150 @@ def test_rejects_unknown_plan_type_or_metal_level(
 
     with pytest.raises(DataError):
         session.execute(insert, values)
+
+
+SAMPLE_CLAIM_ID = "800000000000001"
+
+
+def _claim_sample(
+    session: Session, source_claim_id: str = SAMPLE_CLAIM_ID, **overrides: Any
+) -> ClaimSample:
+    fields: dict[str, Any] = {
+        "source_claim_id": source_claim_id,
+        "claim_from_date": date(2009, 3, 1),
+        "claim_thru_date": date(2009, 3, 2),
+        "diagnosis_codes": ["4019", "V5869"],
+    }
+    sample = ClaimSample(**(fields | overrides))
+    session.add(sample)
+    session.flush()
+    return sample
+
+
+def _claim_sample_line(session: Session, line_number: int = 1, **overrides: Any) -> ClaimSampleLine:
+    """Store a line of the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "line_number": line_number,
+        "hcpcs_code": "99213",
+        "line_diagnosis_code": "4019",
+        "processing_indicator": "A",
+        "payment_amount": Decimal("40.00"),
+        "deductible_amount": Decimal("0.00"),
+        "primary_payer_paid_amount": Decimal("0.00"),
+        "coinsurance_amount": Decimal("10.00"),
+        "allowed_charge_amount": Decimal("70.00"),
+    }
+    line = ClaimSampleLine(**(fields | overrides))
+    session.add(line)
+    session.flush()
+    return line
+
+
+def test_stores_claim_sample_with_lines_and_exact_amounts(session: Session) -> None:
+    sample = _claim_sample(session)
+    _claim_sample_line(session, 1)
+    _claim_sample_line(
+        session, 2, hcpcs_code=None, line_diagnosis_code=None, processing_indicator="<"
+    )
+    session.expire_all()
+
+    stored = session.get(ClaimSample, sample.id)
+    assert stored is not None
+    assert stored.diagnosis_codes == ["4019", "V5869"]  # order is kept
+    assert stored.created_at is not None
+    lines = session.scalars(select(ClaimSampleLine).order_by(ClaimSampleLine.line_number)).all()
+    assert [line.line_number for line in lines] == [1, 2]
+    # The source's amounts do not have to add up: 40 + 10 is not 70.
+    assert lines[0].payment_amount == Decimal("40.00")
+    assert lines[0].allowed_charge_amount == Decimal("70.00")
+    assert lines[1].hcpcs_code is None
+    assert lines[1].processing_indicator == "<"
+
+
+def test_stores_a_twelve_digit_line_amount_exactly(session: Session) -> None:
+    largest = Decimal("9999999999.99")
+    _claim_sample(session)
+    line = _claim_sample_line(session, payment_amount=largest)
+    session.expire_all()
+
+    assert session.get(ClaimSampleLine, line.id).payment_amount == largest  # type: ignore[union-attr]
+
+
+def test_stores_claim_sample_without_diagnosis_codes(session: Session) -> None:
+    sample = _claim_sample(session, diagnosis_codes=[])
+    session.expire_all()
+
+    assert session.get(ClaimSample, sample.id).diagnosis_codes == []  # type: ignore[union-attr]
+
+
+def test_rejects_duplicate_source_claim_id(session: Session) -> None:
+    _claim_sample(session)
+
+    with pytest.raises(IntegrityError, match="uq_claim_samples_source_claim_id"):
+        _claim_sample(session)
+
+
+@pytest.mark.parametrize(
+    "source_claim_id", ["80000000000001", "80000000000000A", " 8000000000001 "]
+)
+def test_rejects_source_claim_id_that_is_not_fifteen_digits(
+    session: Session, source_claim_id: str
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_claim_samples_source_claim_id_format"):
+        _claim_sample(session, source_claim_id)
+
+
+def test_rejects_claim_sample_that_ends_before_it_starts(session: Session) -> None:
+    with pytest.raises(IntegrityError, match="ck_claim_samples_from_not_after_thru"):
+        _claim_sample(session, claim_from_date=date(2009, 3, 2), claim_thru_date=date(2009, 3, 1))
+
+
+def test_rejects_duplicate_line_number_on_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _claim_sample_line(session, 1)
+
+    with pytest.raises(IntegrityError, match="uq_claim_sample_lines_claim_line"):
+        _claim_sample_line(session, 1)
+
+
+@pytest.mark.parametrize("line_number", [0, 14])
+def test_rejects_line_number_outside_1_to_13(session: Session, line_number: int) -> None:
+    _claim_sample(session)
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_lines_line_number_in_range"):
+        _claim_sample_line(session, line_number)
+
+
+def test_rejects_empty_processing_indicator(session: Session) -> None:
+    _claim_sample(session)
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_lines_processing_indicator_one_char"):
+        _claim_sample_line(session, processing_indicator="")
+
+
+@pytest.mark.parametrize("column", CLAIM_LINE_AMOUNT_COLUMNS)
+def test_rejects_negative_line_amount(session: Session, column: str) -> None:
+    _claim_sample(session)
+    negative: dict[str, Any] = {column: Decimal("-0.01")}
+
+    with pytest.raises(IntegrityError, match="ck_claim_sample_lines_amounts_non_negative"):
+        _claim_sample_line(session, **negative)
+
+
+def test_rejects_line_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_claim_sample_lines_claim"):
+        _claim_sample_line(session)
+
+
+def test_deleting_a_claim_sample_removes_its_lines(session: Session) -> None:
+    sample = _claim_sample(session)
+    _claim_sample_line(session, 1)
+    _claim_sample_line(session, 2)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(ClaimSampleLine)).all() == []

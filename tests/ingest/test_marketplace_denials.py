@@ -398,3 +398,14 @@ def test_another_plan_year_adds_new_rows(session: Session) -> None:
 def test_empty_batch_writes_nothing(session: Session) -> None:
     assert upsert_issuer_denial_rows(session, []) == 0
     assert _stored(session) == []
+
+
+def test_upsert_refuses_two_rows_with_the_same_issuer_and_year(session: Session) -> None:
+    rows = read_issuer_denial_rows(FIXTURE, PLAN_YEAR)
+
+    with pytest.raises(
+        ValueError, match="issuer_denial_stats: two rows to upsert have the same key"
+    ):
+        upsert_issuer_denial_rows(session, [*rows, rows[0]])
+
+    assert session.scalars(select(IssuerDenialStats)).all() == []

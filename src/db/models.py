@@ -15,10 +15,12 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import AccountScopedMixin, Base, TimestampMixin
@@ -260,3 +262,87 @@ class PlanDenialStats(TimestampMixin, Base):
     denied_investigational_experimental_cosmetic: Mapped[int | None] = mapped_column(BigInteger)
     denied_administrative_reason: Mapped[int | None] = mapped_column(BigInteger)
     denied_other: Mapped[int | None] = mapped_column(BigInteger)
+
+
+CLAIM_LINE_AMOUNT_COLUMNS = (
+    "payment_amount",
+    "deductible_amount",
+    "primary_payer_paid_amount",
+    "coinsurance_amount",
+    "allowed_charge_amount",
+)
+CLAIM_LINE_MAX_NUMBER = 13
+
+
+class ClaimSample(TimestampMixin, Base):
+    """One synthetic claim from the CMS DE-SynPUF carrier claims file.
+
+    Public reference table shared by all accounts, so it has no `account_id`. The source is
+    fully synthetic: no row is a real person's claim.
+    `diagnosis_codes` holds the claim's ICD-9 codes in source order with empty slots dropped;
+    it can be empty.
+    """
+
+    __tablename__ = "claim_samples"
+    __table_args__ = (
+        UniqueConstraint("source_claim_id", name="uq_claim_samples_source_claim_id"),
+        CheckConstraint(
+            "source_claim_id ~ '^[0-9]{15}$'", name="ck_claim_samples_source_claim_id_format"
+        ),
+        CheckConstraint(
+            "claim_from_date <= claim_thru_date", name="ck_claim_samples_from_not_after_thru"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(String(15), nullable=False)
+    claim_from_date: Mapped[date] = mapped_column(Date, nullable=False)
+    claim_thru_date: Mapped[date] = mapped_column(Date, nullable=False)
+    diagnosis_codes: Mapped[list[str]] = mapped_column(ARRAY(String(5)), nullable=False)
+
+
+class ClaimSampleLine(TimestampMixin, Base):
+    """One service line of a `ClaimSample`.
+
+    Public reference table, no `account_id`. `processing_indicator` is the source's one-character
+    code (`A` means allowed); it is kept as published because the file uses values the CMS
+    codebook does not define. The amounts are kept as published too: they do not have to add
+    up, and a payment can be above the allowed charge.
+    """
+
+    __tablename__ = "claim_sample_lines"
+    __table_args__ = (
+        UniqueConstraint("source_claim_id", "line_number", name="uq_claim_sample_lines_claim_line"),
+        CheckConstraint(
+            f"line_number BETWEEN 1 AND {CLAIM_LINE_MAX_NUMBER}",
+            name="ck_claim_sample_lines_line_number_in_range",
+        ),
+        CheckConstraint(
+            "char_length(processing_indicator) = 1",
+            name="ck_claim_sample_lines_processing_indicator_one_char",
+        ),
+        CheckConstraint(
+            " AND ".join(f"{column} >= 0" for column in CLAIM_LINE_AMOUNT_COLUMNS),
+            name="ck_claim_sample_lines_amounts_non_negative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey(
+            "claim_samples.source_claim_id",
+            name="fk_claim_sample_lines_claim",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    line_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    hcpcs_code: Mapped[str | None] = mapped_column(String(5))
+    line_diagnosis_code: Mapped[str | None] = mapped_column(String(5))
+    processing_indicator: Mapped[str] = mapped_column(String(1), nullable=False)
+    payment_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    deductible_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    primary_payer_paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    coinsurance_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    allowed_charge_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)

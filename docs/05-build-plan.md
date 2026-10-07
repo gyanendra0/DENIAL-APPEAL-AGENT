@@ -64,8 +64,9 @@ the quality report passes. The source files are downloaded once by hand; the lin
 - Noise injection: OCR-style errors, missing fields, layout variation.
 - Seed and generator version stored with every document.
 
-**Done when:** every claim has at least one document, and any document can be regenerated
-identically from its seed.
+**Done when:** every denied claim has at least one document, and any document can be
+regenerated identically from its seed. Claims that are not denied get no document; the rule
+is in [02-data.md, section 2.4.1](02-data.md#241-generated-so-far-denial-letters-v1).
 
 **Tag:** `v0.3.0`
 

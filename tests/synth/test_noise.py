@@ -76,14 +76,17 @@ def _label(claim_id: str, proxy: bool = True) -> ClaimLabel:
     )
 
 
-def _document(document_type: DocumentType, claim_id: str = CLAIM_ID) -> Document:
+def _document(
+    document_type: DocumentType, claim_id: str = CLAIM_ID, proxy: bool = True
+) -> Document:
     """The clean document of one made-up claim, written by the real generator."""
     claim = replace(CLAIM, source_claim_id=claim_id)
+    label = _label(claim_id, proxy)
     if document_type is DocumentType.DENIAL_LETTER:
-        return generate_denial_letter(claim, LINES, _label(claim_id), SEED)
+        return generate_denial_letter(claim, LINES, label, SEED)
     if document_type is DocumentType.CLINICAL_NOTE:
-        return generate_clinical_note(claim, LINES, _label(claim_id), SEED)
-    return generate_prior_auth(claim, LINES, _label(claim_id), SEED)
+        return generate_clinical_note(claim, LINES, label, SEED)
+    return generate_prior_auth(claim, LINES, label, SEED)
 
 
 def _noisy(document: Document, seed: int = SEED) -> NoisyText:
@@ -140,6 +143,23 @@ PINNED_CLAIM_ID = _claim_id_with(DocumentType.DENIAL_LETTER, NoiseLevel.HEAVY, "
 FIELD_AND_TYPE_PAIRS = [
     (document_type, field) for document_type, fields in MISSING_FIELDS.items() for field in fields
 ]
+# The answer-key fields that noise must never blank: Stage 3 scores extraction on them.
+PROTECTED_FIELDS = {
+    "claim_number",
+    "patient_name",
+    "payer_name",
+    "provider_name",
+    "service_from_date",
+    "service_thru_date",
+    "diagnosis_codes",
+    "procedure_codes",
+    "requested_procedure_codes",
+    "denied_lines",
+    "denial_reason_category",
+    "total_allowed_charge_amount",
+    "total_payment_amount",
+    "status",
+}
 
 
 def _printed_forms(value: date | str) -> list[str]:
@@ -525,6 +545,42 @@ def test_the_record_never_mentions_the_proxy_the_chance_the_band_the_split_or_th
             assert word not in saved
         for category in DenialReasonCategory:
             assert category.value not in saved
+
+
+def test_the_missing_field_list_is_the_documented_one() -> None:
+    assert MISSING_FIELDS == {
+        DocumentType.DENIAL_LETTER: (
+            "member_id",
+            "reference_number",
+            "letter_date",
+            "appeal_deadline",
+        ),
+        DocumentType.CLINICAL_NOTE: ("member_id",),
+        DocumentType.PRIOR_AUTH: (
+            "member_id",
+            "authorization_number",
+            "request_date",
+            "decision_date",
+        ),
+    }
+
+
+@pytest.mark.parametrize("document_type", list(DocumentType))
+def test_a_protected_field_is_never_in_the_missing_field_list(
+    document_type: DocumentType,
+) -> None:
+    assert PROTECTED_FIELDS.isdisjoint(MISSING_FIELDS[document_type])
+
+
+@pytest.mark.parametrize("document_type", list(DocumentType))
+def test_noise_is_the_same_whatever_the_appeal_success_proxy(
+    document_type: DocumentType,
+) -> None:
+    for claim_id in _claim_ids()[:40]:
+        won = _document(document_type, claim_id, proxy=True)
+        lost = _document(document_type, claim_id, proxy=False)
+
+        assert _noisy(won) == _noisy(lost)
 
 
 def test_noise_is_the_same_whatever_the_denial_reason_in_the_answer_key() -> None:

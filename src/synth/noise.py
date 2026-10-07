@@ -131,8 +131,9 @@ def apply_noise(
     of a field that goes missing. The same text, claim, type, seed and `NOISE_VERSION` always
     give the same result.
 
-    Raises `ValueError` if the seed is outside the stored range, if `answer_key` does not
-    belong to `document_type`, or if the value of the field to blank is not printed in `text`.
+    Raises `ValueError` if the seed is outside the stored range, if `answer_key` lacks a field
+    that can go missing for `document_type`, or if the value of the field to blank is not
+    printed in `text`.
     """
     check_seed(seed)
     fields = MISSING_FIELDS[document_type]

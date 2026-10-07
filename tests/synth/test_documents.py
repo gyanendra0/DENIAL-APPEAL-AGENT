@@ -31,14 +31,16 @@ from src.synth.denial_letter import (
 )
 from src.synth.documents import (
     GENERATOR_VERSIONS,
-    NOISE_NOT_APPLIED_RECORD,
-    NOISE_NOT_APPLIED_VERSION,
     GeneratedDocumentRow,
     build_document_rows,
+    count_by_noise_level,
     count_by_type,
+    count_denied_claims_without_document,
+    count_missing_fields,
     replace_generated_document_rows,
 )
 from src.synth.identity import MAX_SEED
+from src.synth.noise import NOISE_VERSION, NoiseLevel, NoiseRecord, apply_noise
 from src.synth.prior_auth import PriorAuthAnswerKey, generate_prior_auth
 
 LETTER = DocumentType.DENIAL_LETTER
@@ -93,13 +95,16 @@ class Line:
     allowed_charge_amount: Decimal
 
 
-# One denied line (N, nothing paid) and one paid line, which only counts in the totals.
+# The stored labels below are what label rule v1 gives for these lines (headline reason from
+# the first denied line; the proxy is false for all three denied claims), because a label
+# that does not fit its lines is a rejected run.
+# One denied line (C, nothing paid) and one paid line, which only counts in the totals.
 DENIED_CLAIM_LINES = (
-    Line(2, "99213", "N", Decimal("0.00"), Decimal("0.00")),
+    Line(2, "99213", "C", Decimal("0.00"), Decimal("0.00")),
     Line(1, "71020", "A", Decimal("80.00"), Decimal("100.00")),
 )
 PAID_CLAIM_LINES = (Line(1, "99214", "A", Decimal("40.00"), Decimal("50.00")),)
-OTHER_DENIED_CLAIM_LINES = (Line(1, None, "N", Decimal("0.00"), Decimal("25.00")),)
+OTHER_DENIED_CLAIM_LINES = (Line(1, None, "C", Decimal("0.00"), Decimal("25.00")),)
 # Denied as a duplicate (M): a letter and a note, but no prior-authorisation record.
 DUPLICATE_CLAIM_LINES = (Line(1, "99215", "M", Decimal("0.00"), Decimal("30.00")),)
 
@@ -111,6 +116,7 @@ def _store_claim(
     is_denied: bool,
     rule_version: str = LABEL_RULE_VERSION,
     category: DenialReasonCategory = NONCOVERED,
+    proxy: bool = False,
 ) -> None:
     """Store one made-up claim with its lines and its label."""
     session.add(
@@ -141,7 +147,7 @@ def _store_claim(
             source_claim_id=claim_id,
             is_denied=is_denied,
             denial_reason_category=category if is_denied else None,
-            appeal_success_proxy=False if is_denied else None,
+            appeal_success_proxy=proxy if is_denied else None,
             label_rule_version=rule_version,
             split=DatasetSplit.TRAIN,
             split_seed=SEED,
@@ -184,8 +190,10 @@ def _row(
         generator_version=GENERATOR_VERSION,
         text="A made-up letter.",
         answer_key={"claim_number": claim_id},
-        noise_version=NOISE_NOT_APPLIED_VERSION,
-        noise_record=NOISE_NOT_APPLIED_RECORD,
+        noise_version=NOISE_VERSION,
+        noise_record=NoiseRecord(
+            level=NoiseLevel.NONE, swaps=0, drops=0, missing_field=None, page_width=None
+        ).model_dump(mode="json"),
     )
 
 
@@ -224,11 +232,11 @@ def test_builds_a_letter_and_a_note_per_denied_claim_and_a_record_where_one_is_n
 
 
 @pytest.mark.parametrize("document_type", list(DocumentType))
-def test_a_row_is_the_generators_document_for_the_stored_claim_lines_and_label(
+def test_a_row_is_the_generators_document_after_noise_with_the_clean_answer_key(
     session: Session, document_type: DocumentType
 ) -> None:
     _store_all(session)
-    expected = GENERATORS[document_type](
+    clean = GENERATORS[document_type](
         Claim(DENIED_CLAIM, FROM_DATE, THRU_DATE, DIAGNOSIS_CODES),
         DENIED_CLAIM_LINES,
         ClaimLabel(
@@ -241,11 +249,16 @@ def test_a_row_is_the_generators_document_for_the_stored_claim_lines_and_label(
         SEED,
     )
 
+    noisy = apply_noise(clean.text, clean.answer_key, document_type, DENIED_CLAIM, SEED)
+
     row = _built(session, DENIED_CLAIM, document_type)
 
-    assert row.text == expected.text
-    assert row.template_id == expected.template_id
-    assert row.answer_key == expected.answer_key.model_dump(mode="json")
+    assert row.text == noisy.text
+    assert row.template_id == clean.template_id
+    # The answer key is the truth of the clean document: noise does not change it.
+    assert row.answer_key == clean.answer_key.model_dump(mode="json")
+    assert row.noise_version == NOISE_VERSION
+    assert row.noise_record == noisy.record.model_dump(mode="json")
 
 
 def test_a_claims_documents_use_only_that_claims_lines(session: Session) -> None:
@@ -269,6 +282,10 @@ def test_a_claims_documents_share_one_made_up_identity(session: Session) -> None
 
     for field in ("patient_name", "member_id", "provider_name"):
         assert len({key[field] for key in keys}) == 1
+    # The note prints no payer, so only the letter and the record carry one.
+    payers = {key["payer_name"] for key in keys if "payer_name" in key}
+    assert len(payers) == 1
+    assert sum("payer_name" in key for key in keys) == 2
 
 
 def test_same_seed_gives_identical_rows_and_another_seed_gives_other_text(
@@ -305,13 +322,41 @@ def test_a_type_without_documents_is_counted_as_zero() -> None:
     assert count_by_type([]) == {LETTER: 0, NOTE: 0, PRIOR_AUTH: 0}
 
 
-def test_built_rows_say_that_no_noise_was_applied_yet(session: Session) -> None:
+def test_every_built_row_carries_the_noise_version_and_a_readable_noise_record(
+    session: Session,
+) -> None:
     _store_all(session)
 
     rows = build_document_rows(session, SEED)
 
-    assert {row.noise_version for row in rows} == {NOISE_NOT_APPLIED_VERSION}
-    assert all(row.noise_record == NOISE_NOT_APPLIED_RECORD for row in rows)
+    assert {row.noise_version for row in rows} == {NOISE_VERSION}
+    for row in rows:
+        record = NoiseRecord.model_validate(row.noise_record)
+        assert record.model_dump(mode="json") == row.noise_record
+        # Exactly the model's fields: no proxy, amount band, split or reason can ride along.
+        assert set(row.noise_record) == set(NoiseRecord.model_fields)
+    # The noise really ran: not every document of the run was left clean.
+    assert {row.noise_record["level"] for row in rows} != {NoiseLevel.NONE.value}
+
+
+def test_counts_every_noise_level_and_the_documents_with_a_missing_field(
+    session: Session,
+) -> None:
+    _store_all(session)
+    rows = build_document_rows(session, SEED)
+
+    levels = count_by_noise_level(rows)
+
+    assert list(levels) == list(NoiseLevel)
+    assert sum(levels.values()) == len(rows) == 8
+    assert levels == {
+        level: sum(row.noise_record["level"] == level.value for row in rows) for level in NoiseLevel
+    }
+    assert count_missing_fields(rows) == sum(
+        row.noise_record["missing_field"] is not None for row in rows
+    )
+    assert count_by_noise_level([]) == dict.fromkeys(NoiseLevel, 0)
+    assert count_missing_fields([]) == 0
 
 
 def test_every_document_type_has_a_generator_version() -> None:
@@ -340,38 +385,44 @@ def test_rejects_labels_made_by_another_rule_version(session: Session) -> None:
         build_document_rows(session, SEED)
 
 
-@pytest.mark.parametrize("lines", [PAID_CLAIM_LINES, ()], ids=["only a paid line", "no lines"])
-def test_rejects_a_denied_claim_whose_stored_lines_hold_no_denied_line(
+# Stored for OTHER_DENIED_CLAIM under a label that says "denied, noncovered, proxy false".
+# In each case the label rule gives another label for these lines: they changed after the label.
+STALE_LINES = {
+    "only a paid line": PAID_CLAIM_LINES,
+    "no lines": (),
+    "the only denied line is a duplicate": DUPLICATE_CLAIM_LINES,
+    # A noncovered line is still there, but the first denied line now says medical necessity.
+    "another headline reason, a noncovered line remains": (
+        Line(1, "99213", "N", Decimal("0.00"), Decimal("25.00")),
+        Line(2, "99214", "C", Decimal("0.00"), Decimal("0.00")),
+    ),
+}
+
+
+@pytest.mark.parametrize("lines", list(STALE_LINES.values()), ids=list(STALE_LINES))
+def test_rejects_a_denied_claim_whose_label_no_longer_fits_its_stored_lines(
     session: Session, lines: tuple[Line, ...]
 ) -> None:
     _store_claim(session, DENIED_CLAIM, DENIED_CLAIM_LINES, is_denied=True)
-    # Labelled denied, but no stored line is denied: the lines changed after the label.
     _store_claim(session, OTHER_DENIED_CLAIM, lines, is_denied=True)
 
     with pytest.raises(BatchRejectedError) as excinfo:
         build_document_rows(session, SEED)
 
     assert excinfo.value.problems == [
-        f"claim {OTHER_DENIED_CLAIM} is labelled denied but has no denied line: run"
+        f"claim {OTHER_DENIED_CLAIM}: the stored label no longer fits its stored lines: run"
         " pipelines.run_data_pipeline again"
     ]
 
 
-def test_rejects_a_claim_labelled_for_a_record_whose_stored_lines_hold_no_line_that_qualifies(
+def test_rejects_a_denied_claim_whose_stored_proxy_is_not_the_label_rules(
     session: Session,
 ) -> None:
-    _store_claim(session, DENIED_CLAIM, DENIED_CLAIM_LINES, is_denied=True)
-    # The headline says noncovered, but the only denied line is a duplicate: the lines changed
-    # after the label.
-    _store_claim(session, OTHER_DENIED_CLAIM, DUPLICATE_CLAIM_LINES, is_denied=True)
+    # The rule gives proxy false for these lines; the stored label says true.
+    _store_claim(session, DENIED_CLAIM, DENIED_CLAIM_LINES, is_denied=True, proxy=True)
 
-    with pytest.raises(BatchRejectedError) as excinfo:
+    with pytest.raises(BatchRejectedError, match="no longer fits its stored lines"):
         build_document_rows(session, SEED)
-
-    assert excinfo.value.problems == [
-        f"claim {OTHER_DENIED_CLAIM} is labelled for a prior-authorisation record but has no"
-        " line that qualifies: run pipelines.run_data_pipeline again"
-    ]
 
 
 @pytest.mark.parametrize("seed", [-1, MAX_SEED + 1])
@@ -470,3 +521,50 @@ def test_replace_keeps_the_claims_and_their_labels(session: Session) -> None:
 def test_replace_rejects_a_document_whose_claim_is_not_stored(session: Session) -> None:
     with pytest.raises(IntegrityError, match="fk_generated_documents_claim"):
         replace_generated_document_rows(session, [_row()])
+
+
+def test_replace_stores_the_noise_version_and_the_noise_record(session: Session) -> None:
+    _store_all(session)
+    rows = build_document_rows(session, SEED)
+
+    replace_generated_document_rows(session, rows)
+
+    stored = _stored(session)
+    for row in rows:
+        document = stored[row.source_claim_id, row.document_type]
+        assert document.noise_version == NOISE_VERSION
+        assert document.noise_record == row.noise_record
+        assert set(document.noise_record) == set(NoiseRecord.model_fields)
+
+
+def test_every_denied_claim_has_a_document_after_a_full_run(session: Session) -> None:
+    _store_all(session)
+
+    replace_generated_document_rows(session, build_document_rows(session, SEED))
+
+    assert count_denied_claims_without_document(session) == 0
+
+
+def test_counts_the_denied_claims_that_have_no_document(session: Session) -> None:
+    _store_all(session)
+    rows = build_document_rows(session, SEED)
+
+    # One claim keeps only its note, one claim gets nothing.
+    replace_generated_document_rows(
+        session,
+        [
+            row
+            for row in rows
+            if row.source_claim_id == DUPLICATE_CLAIM
+            or (row.source_claim_id, row.document_type) == (DENIED_CLAIM, NOTE)
+        ],
+    )
+
+    # One document is enough; the paid claim has none and is not counted.
+    assert count_denied_claims_without_document(session) == 1
+
+
+def test_no_stored_document_leaves_every_denied_claim_uncovered(session: Session) -> None:
+    _store_all(session)
+
+    assert count_denied_claims_without_document(session) == 3

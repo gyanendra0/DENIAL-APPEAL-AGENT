@@ -3,9 +3,11 @@
 Every claim that is labelled denied gets a denial letter (`src.synth.denial_letter`) and a
 clinical note (`src.synth.clinical_note`); a claim that `needs_prior_auth` also gets a
 prior-authorisation record (`src.synth.prior_auth`). Each is written from the claim, its lines
-and its label as they are stored. `generated_documents` is a public reference table (no
-`account_id`), like the three tables read here. Documents are derived data: they can always be
-rebuilt from the claims, the labels, the seed and the generator versions.
+and its label as they are stored, and then damaged by the noise step (`src.synth.noise`): the
+stored text is the noisy text, the answer key stays the truth of the clean document.
+`generated_documents` is a public reference table (no `account_id`), like the three tables read
+here. Documents are derived data: they can always be rebuilt from the claims, the labels, the
+seed, the generator versions and the noise version.
 """
 
 import logging
@@ -13,7 +15,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -24,17 +26,13 @@ from src.db.models import (
     GeneratedDocument,
 )
 from src.ingest.marketplace_denials import BatchRejectedError, upsert_rows
-from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel, is_denied_line
+from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel, label_claim
 from src.synth import clinical_note, denial_letter, prior_auth
 from src.synth.clinical_note import ClinicalNote, generate_clinical_note
 from src.synth.denial_letter import DenialLetter, generate_denial_letter
 from src.synth.identity import MAX_SEED
-from src.synth.prior_auth import (
-    PriorAuthRecord,
-    generate_prior_auth,
-    is_requested_line,
-    needs_prior_auth,
-)
+from src.synth.noise import NOISE_VERSION, NoiseLevel, apply_noise
+from src.synth.prior_auth import PriorAuthRecord, generate_prior_auth, needs_prior_auth
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +50,10 @@ GENERATOR_VERSIONS = {
 class GeneratedDocumentRow(BaseModel):
     """One generated document, shaped like the `generated_documents` table.
 
-    `answer_key` is the document's answer key already turned into plain JSON values (dates
-    and amounts as text), because that is what the JSON column stores.
+    `text` is the text after noise. `answer_key` is the answer key of the clean document,
+    already turned into plain JSON values (dates and amounts as text), because that is what the
+    JSON column stores. `noise_record` is the record of what the noise step did, as plain JSON
+    values too.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -65,21 +65,26 @@ class GeneratedDocumentRow(BaseModel):
     generator_version: str = Field(min_length=1, max_length=20)
     text: str = Field(min_length=1)
     answer_key: dict[str, Any] = Field(min_length=1)
+    noise_version: str = Field(min_length=1, max_length=20)
+    noise_record: dict[str, Any] = Field(min_length=1)
 
 
 def build_document_rows(session: Session, seed: int) -> list[GeneratedDocumentRow]:
     """Write the documents of every stored claim that is labelled denied.
 
     Each denied claim gets a denial letter and a clinical note, and a prior-authorisation
-    record too if it `needs_prior_auth`. Reads `claim_sample_labels`, `claim_samples` and
-    `claim_sample_lines`; writes nothing. The rows come back in claim id order, and for one
-    claim in the order letter, note, record.
+    record too if it `needs_prior_auth`. Every document then goes through the noise step.
+    Reads `claim_sample_labels`, `claim_samples` and `claim_sample_lines`; writes nothing. The
+    rows come back in claim id order, and for one claim in the order letter, note, record.
 
     Raises `BatchRejectedError` if no claim is labelled denied, if a label was made by a
     label rule other than `LABEL_RULE_VERSION` (the documents would then disagree with the
     rule in the code), or if a label no longer fits the claim's stored lines (the lines were
-    loaded again after the labels): a claim labelled denied with no denied line, or one
-    labelled for a prior-authorisation record with no line that qualifies.
+    loaded again after the labels): the label rule, applied to the stored lines, must give
+    exactly the stored label.
+
+    With the default load of 50,000 claims this takes about 25 seconds: the noise step makes
+    one hash per character of every damaged document.
     """
     stored_labels = session.scalars(
         select(ClaimSampleLabel)
@@ -132,13 +137,8 @@ def build_document_rows(session: Session, seed: int) -> list[GeneratedDocumentRo
     for label in labels:
         claim_id = label.source_claim_id
         lines = lines_by_claim[claim_id]
-        if not any(is_denied_line(line) for line in lines):
-            stale.append(f"claim {claim_id} is labelled denied but has no denied line")
-        elif needs_prior_auth(label) and not any(is_requested_line(line) for line in lines):
-            stale.append(
-                f"claim {claim_id} is labelled for a prior-authorisation record but has no"
-                " line that qualifies"
-            )
+        if not lines or label_claim(claim_id, lines) != label:
+            stale.append(f"claim {claim_id}: the stored label no longer fits its stored lines")
     if stale:
         raise BatchRejectedError(
             [f"{problem}: run pipelines.run_data_pipeline again" for problem in stale]
@@ -169,6 +169,20 @@ def count_by_type(rows: Iterable[GeneratedDocumentRow]) -> dict[DocumentType, in
     return counts
 
 
+def count_by_noise_level(rows: Iterable[GeneratedDocumentRow]) -> dict[NoiseLevel, int]:
+    """How many of `rows` each noise level has. Every level is listed, a level with no
+    document as 0."""
+    counts = dict.fromkeys(NoiseLevel, 0)
+    for row in rows:
+        counts[NoiseLevel(row.noise_record["level"])] += 1
+    return counts
+
+
+def count_missing_fields(rows: Iterable[GeneratedDocumentRow]) -> int:
+    """How many of `rows` had one field blanked by the noise step."""
+    return sum(row.noise_record["missing_field"] is not None for row in rows)
+
+
 def replace_generated_document_rows(session: Session, rows: list[GeneratedDocumentRow]) -> int:
     """Make `generated_documents` hold exactly `rows`: remove every document, then store `rows`.
 
@@ -185,8 +199,38 @@ def replace_generated_document_rows(session: Session, rows: list[GeneratedDocume
     return written
 
 
+def count_denied_claims_without_document(session: Session) -> int:
+    """How many stored claims are labelled denied and have no row in `generated_documents`.
+
+    0 means every denied claim has at least one document. It reads the stored rows, so it
+    checks what was written, not how the rows were built. Call it after
+    `replace_generated_document_rows`, in the same transaction.
+    """
+    has_document = (
+        select(GeneratedDocument.source_claim_id)
+        .where(GeneratedDocument.source_claim_id == ClaimSampleLabel.source_claim_id)
+        .exists()
+    )
+    count = session.scalar(
+        select(func.count())
+        .select_from(ClaimSampleLabel)
+        .where(ClaimSampleLabel.is_denied, ~has_document)
+    )
+    return count or 0
+
+
 def _row(document: DenialLetter | ClinicalNote | PriorAuthRecord) -> GeneratedDocumentRow:
+    noisy = apply_noise(
+        document.text,
+        document.answer_key,
+        document.document_type,
+        document.source_claim_id,
+        document.seed,
+    )
     return GeneratedDocumentRow(
-        **document.model_dump(exclude={"answer_key"}),
+        **document.model_dump(exclude={"answer_key", "text"}),
+        text=noisy.text,
         answer_key=document.answer_key.model_dump(mode="json"),
+        noise_version=NOISE_VERSION,
+        noise_record=noisy.record.model_dump(mode="json"),
     )

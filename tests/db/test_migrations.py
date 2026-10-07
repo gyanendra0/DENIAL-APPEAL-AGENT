@@ -10,6 +10,7 @@ from src.db.migrations.versions import rev_0003_plan_denial_stats as migration_0
 from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
 from src.db.migrations.versions import rev_0005_claim_sample_labels as migration_0005
 from src.db.migrations.versions import rev_0006_generated_documents as migration_0006
+from src.db.migrations.versions import rev_0007_document_noise as migration_0007
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -213,6 +214,7 @@ def test_generated_documents_has_its_key_link_and_check_constraints(engine: Engi
         "ck_generated_documents_seed_not_negative",
         "ck_generated_documents_generator_version_not_empty",
         "ck_generated_documents_text_not_empty",
+        "ck_generated_documents_noise_version_not_empty",
     }
 
 
@@ -220,7 +222,7 @@ def test_migration_0006_lists_the_same_values_as_the_model() -> None:
     assert tuple(member.value for member in DocumentType) == migration_0006.DOCUMENT_TYPE
 
 
-def test_migration_0006_has_the_same_check_rules_as_the_model() -> None:
+def test_migrations_0006_and_0007_have_the_same_check_rules_as_the_model() -> None:
     model_checks = {
         constraint.name: str(constraint.sqltext)
         for constraint in Base.metadata.tables[DOCUMENT_TABLE].constraints
@@ -234,6 +236,7 @@ def test_migration_0006_has_the_same_check_rules_as_the_model() -> None:
             migration_0006.GENERATOR_VERSION_NOT_EMPTY
         ),
         "ck_generated_documents_text_not_empty": migration_0006.TEXT_NOT_EMPTY,
+        migration_0007.NOISE_VERSION_CHECK: migration_0007.NOISE_VERSION_NOT_EMPTY,
     }
 
 
@@ -247,6 +250,79 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+NOISE_COLUMNS = {"noise_version", "noise_record"}
+MIGRATION_CLAIM_ID = "800000000000077"
+INSERT_CLAIM = (
+    "INSERT INTO claim_samples (source_claim_id, claim_from_date, claim_thru_date,"
+    " diagnosis_codes) VALUES (:claim_id, '2009-03-01', '2009-03-02', ARRAY['4019'])"
+)
+INSERT_DOCUMENT_0006 = (
+    "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
+    " generator_version, text, answer_key) VALUES (:claim_id, 'denial_letter',"
+    " 'formal_letter', 42, 'v1', 'Made-up text.', '{}')"
+)
+INSERT_DOCUMENT_0007 = (
+    "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
+    " generator_version, text, answer_key, noise_version, noise_record) VALUES (:claim_id,"
+    " 'denial_letter', 'formal_letter', 42, 'v1', 'Made-up text.', '{}', 'v1', '{}')"
+)
+DELETE_CLAIM = "DELETE FROM claim_samples WHERE source_claim_id = :claim_id"
+COUNT_DOCUMENTS = "SELECT count(*) FROM generated_documents"
+
+
+def _document_columns(engine: Engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns(DOCUMENT_TABLE)}
+
+
+def test_downgrade_to_0006_removes_the_noise_columns_and_keeps_the_table(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0006")
+    try:
+        assert not NOISE_COLUMNS & _document_columns(engine)
+        checks = {c["name"] for c in inspect(engine).get_check_constraints(DOCUMENT_TABLE)}
+        assert migration_0007.NOISE_VERSION_CHECK not in checks
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert _document_columns(engine) >= NOISE_COLUMNS
+
+
+def test_upgrade_to_0007_removes_documents_written_before_the_noise_step(
+    engine: Engine, alembic_config: Config
+) -> None:
+    claim = {"claim_id": MIGRATION_CLAIM_ID}
+    command.downgrade(alembic_config, "0006")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(INSERT_CLAIM), claim)
+            conn.execute(text(INSERT_DOCUMENT_0006), claim)
+        command.upgrade(alembic_config, "head")
+        with engine.connect() as conn:
+            assert conn.scalar(text(COUNT_DOCUMENTS)) == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text(DELETE_CLAIM), claim)
+
+
+def test_downgrade_to_0006_removes_the_noisy_documents(
+    engine: Engine, alembic_config: Config
+) -> None:
+    claim = {"claim_id": MIGRATION_CLAIM_ID}
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(INSERT_CLAIM), claim)
+            conn.execute(text(INSERT_DOCUMENT_0007), claim)
+        command.downgrade(alembic_config, "0006")
+        with engine.connect() as conn:
+            assert conn.scalar(text(COUNT_DOCUMENTS)) == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text(DELETE_CLAIM), claim)
 
 
 def test_downgrade_to_0005_removes_documents_table_and_enum(

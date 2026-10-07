@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import Engine, delete, select, update
 
-from pipelines import run_data_pipeline
+from pipelines import generate_documents, run_data_pipeline
 from pipelines.generate_documents import DEFAULT_SEED, main
 from src.config.settings import get_settings
 from src.db.base import Base
@@ -26,8 +26,9 @@ from src.db.models import (
 from src.synth import documents
 from src.synth.clinical_note import ClinicalNoteAnswerKey
 from src.synth.denial_letter import DenialLetterAnswerKey
-from src.synth.documents import GENERATOR_VERSIONS
+from src.synth.documents import GENERATOR_VERSIONS, GeneratedDocumentRow, build_document_rows
 from src.synth.identity import MAX_SEED
+from src.synth.noise import NOISE_VERSION, NoiseRecord
 from src.synth.prior_auth import PriorAuthAnswerKey
 from tests.ingest.helpers import FIXTURE, claims_zip
 
@@ -114,10 +115,13 @@ def test_writes_every_document_type_in_one_run_and_commits(
         "  denial_letter: 3 (generator v1)\n"
         "  clinical_note: 3 (generator v1)\n"
         "  prior_auth: 1 (generator v1)\n"
+        "  noise v1: none 1, light 4, heavy 2; 0 with a missing field\n"
     )
 
 
-def test_stores_the_type_seed_generator_version_and_a_readable_answer_key(loaded: Engine) -> None:
+def test_stores_the_seed_the_versions_a_readable_answer_key_and_noise_record(
+    loaded: Engine,
+) -> None:
     main([])
 
     with loaded.connect() as connection:
@@ -125,26 +129,38 @@ def test_stores_the_type_seed_generator_version_and_a_readable_answer_key(loaded
     assert {row.seed for row in rows} == {DEFAULT_SEED} == {42}
     for row in rows:
         assert row.generator_version == GENERATOR_VERSIONS[row.document_type]
+        assert row.noise_version == NOISE_VERSION
+        noise = NoiseRecord.model_validate(row.noise_record)
+        # The text is the noisy text, so a value is only searched in a page left untouched.
+        untouched = noise.swaps == 0 and noise.drops == 0 and noise.missing_field is None
         if row.document_type is LETTER:
             letter = DenialLetterAnswerKey.model_validate(row.answer_key)
             assert letter.claim_number == row.source_claim_id
-            assert letter.claim_number in row.text
+            assert not untouched or letter.claim_number in row.text
         elif row.document_type is NOTE:
-            assert ClinicalNoteAnswerKey.model_validate(row.answer_key).patient_name in row.text
+            note = ClinicalNoteAnswerKey.model_validate(row.answer_key)
+            assert not untouched or note.patient_name in row.text
         else:
             record = PriorAuthAnswerKey.model_validate(row.answer_key)
-            assert record.authorization_number in row.text
+            assert not untouched or record.authorization_number in row.text
 
 
 def test_a_claim_with_no_prior_auth_record_still_prints_a_zero_count(
     loaded: Engine, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Claim 2's headline becomes "other", so no claim needs a record any more.
+    # Claim 2's denied line becomes a duplicate and its label follows (the proxy stays false
+    # under label rule v1), so no claim needs a record any more.
     with loaded.begin() as connection:
+        connection.execute(
+            update(ClaimSampleLine)
+            .where(ClaimSampleLine.source_claim_id == "800000000000002")
+            .where(ClaimSampleLine.processing_indicator == "C")
+            .values(processing_indicator="M")
+        )
         connection.execute(
             update(ClaimSampleLabel)
             .where(ClaimSampleLabel.source_claim_id == "800000000000002")
-            .values(denial_reason_category="other")
+            .values(denial_reason_category="duplicate")
         )
 
     exit_code = main([])
@@ -245,26 +261,42 @@ def test_denied_claim_without_a_denied_line_exits_1_and_keeps_the_old_documents(
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert "claim 800000000000005 is labelled denied but has no denied line" in captured.err
-    assert "run pipelines.run_data_pipeline again" in captured.err
+    assert (
+        "claim 800000000000005: the stored label no longer fits its stored lines: run"
+        " pipelines.run_data_pipeline again"
+    ) in captured.err
     assert captured.out == ""
     assert set(before) == DOCUMENTS
     assert _documents(loaded) == before
 
 
-def test_claim_labelled_for_a_record_without_a_qualifying_line_exits_1_and_keeps_the_old(
-    loaded: Engine, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("line_number", "values"),
+    [
+        # The noncovered line is loaded again as a duplicate: no line qualifies for a record.
+        (2, {"processing_indicator": "M"}),
+        # The paid first line is loaded again as denied for medical necessity: the noncovered
+        # line is still there, but the headline reason is no longer noncovered.
+        (1, {"processing_indicator": "N", "payment_amount": 0}),
+    ],
+    ids=["no qualifying line", "another headline reason"],
+)
+def test_claim_whose_reason_no_longer_fits_its_lines_exits_1_and_keeps_the_old_documents(
+    loaded: Engine,
+    capsys: pytest.CaptureFixture[str],
+    line_number: int,
+    values: dict[str, object],
 ) -> None:
     main([])
     before = _documents(loaded)
     capsys.readouterr()  # drop the first run's own output
-    # Claim 2's denied line is loaded again as a duplicate, but its label still says noncovered.
+    # One of claim 2's lines changes, but its label still says noncovered.
     with loaded.begin() as connection:
         connection.execute(
             update(ClaimSampleLine)
             .where(ClaimSampleLine.source_claim_id == "800000000000002")
-            .where(ClaimSampleLine.processing_indicator == "C")
-            .values(processing_indicator="M")
+            .where(ClaimSampleLine.line_number == line_number)
+            .values(**values)
         )
 
     exit_code = main(["--seed", "7"])
@@ -272,12 +304,36 @@ def test_claim_labelled_for_a_record_without_a_qualifying_line_exits_1_and_keeps
     captured = capsys.readouterr()
     assert exit_code == 1
     assert (
-        "claim 800000000000002 is labelled for a prior-authorisation record but has no line"
-        " that qualifies: run pipelines.run_data_pipeline again"
+        "claim 800000000000002: the stored label no longer fits its stored lines: run"
+        " pipelines.run_data_pipeline again"
     ) in captured.err
     assert captured.out == ""
     assert set(before) == DOCUMENTS
     assert _documents(loaded) == before
+
+
+def test_a_denied_claim_left_without_a_document_exits_1_and_keeps_the_old_documents(
+    loaded: Engine, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main([])
+    before = _documents(loaded)
+    capsys.readouterr()  # drop the first run's own output
+
+    def skip_one_claim(*args: object) -> list[GeneratedDocumentRow]:
+        rows = build_document_rows(*args)  # type: ignore[arg-type]
+        return [row for row in rows if row.source_claim_id != "800000000000005"]
+
+    # A bug in the build that leaves one denied claim out: the check on the stored rows sees it.
+    monkeypatch.setattr(generate_documents, "build_document_rows", skip_one_claim)
+
+    exit_code = main(["--seed", "7"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "1 claims labelled denied have no document: nothing was saved" in captured.err
+    assert captured.out == ""
+    assert set(before) == DOCUMENTS
+    assert _documents(loaded) == before  # the new documents of the other claims are not kept
 
 
 def test_failure_after_the_old_documents_are_removed_brings_them_back(

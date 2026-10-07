@@ -162,9 +162,9 @@ def test_text_shows_no_share_where_there_is_nothing_to_divide_by() -> None:
 
 
 def test_text_separates_thousands() -> None:
-    text = _report(denied=5325, proxy_true=1888, claims=50000).as_text()
+    text = _report(denied=5325, proxy_true=2813, claims=50000).as_text()
 
-    assert "train: 50,000 (100.00%) | 5,325 (10.65%) | 1,888 (35.46%)" in text
+    assert "train: 50,000 (100.00%) | 5,325 (10.65%) | 2,813 (52.83%)" in text
 
 
 def test_auc_is_one_when_every_true_claim_scores_above_every_false_one() -> None:

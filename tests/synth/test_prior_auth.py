@@ -20,6 +20,7 @@ from src.synth.prior_auth import (
     PriorAuthRecord,
     PriorAuthStatus,
     generate_prior_auth,
+    is_requested_line,
     needs_prior_auth,
 )
 
@@ -149,6 +150,14 @@ def test_a_claim_that_is_not_denied_needs_no_record() -> None:
 @pytest.mark.parametrize("proxy", [True, False])
 def test_the_rule_does_not_read_the_proxy(proxy: bool) -> None:
     assert needs_prior_auth(_label(proxy=proxy)) is True
+
+
+def test_a_line_is_requested_when_it_is_denied_for_necessity_or_as_noncovered() -> None:
+    assert is_requested_line(DENIED_NONCOVERED) is True
+    assert is_requested_line(DENIED_NECESSITY_NO_CODE) is True
+    assert is_requested_line(DENIED_DUPLICATE) is False  # denied, but for another reason
+    assert is_requested_line(PAID) is False
+    assert is_requested_line(NONCOVERED_BUT_PAID) is False  # the reason fits, but it was paid
 
 
 # --- repeatable ---

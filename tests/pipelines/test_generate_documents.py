@@ -24,8 +24,11 @@ from src.db.models import (
     PlanDenialStats,
 )
 from src.synth import documents
-from src.synth.denial_letter import GENERATOR_VERSION, DenialLetterAnswerKey
+from src.synth.clinical_note import ClinicalNoteAnswerKey
+from src.synth.denial_letter import DenialLetterAnswerKey
+from src.synth.documents import GENERATOR_VERSIONS
 from src.synth.identity import MAX_SEED
+from src.synth.prior_auth import PriorAuthAnswerKey
 from tests.ingest.helpers import FIXTURE, claims_zip
 
 TABLES: tuple[type[Base], ...] = (
@@ -43,6 +46,14 @@ BALANCED: dict[tuple[int, str], str] = {
     (2, "LINE_NCH_PMT_AMT_1"): "0.00",
 }
 DENIED_CLAIMS = {"800000000000001", "800000000000002", "800000000000005"}
+LETTER = DocumentType.DENIAL_LETTER
+NOTE = DocumentType.CLINICAL_NOTE
+PRIOR_AUTH = DocumentType.PRIOR_AUTH
+# A letter and a note per denied claim; only claim 2 is denied as noncovered, so only it gets
+# a prior-authorisation record.
+DOCUMENTS = {(claim_id, kind) for claim_id in DENIED_CLAIMS for kind in (LETTER, NOTE)} | {
+    ("800000000000002", PRIOR_AUTH)
+}
 
 
 @pytest.fixture
@@ -77,25 +88,33 @@ def _empty_tables(engine: Engine) -> None:
             connection.execute(delete(table))
 
 
-def _documents(engine: Engine) -> dict[str, tuple[int, str]]:
-    """Stored documents as {claim id: (seed, text)}."""
+def _documents(engine: Engine) -> dict[tuple[str, DocumentType], tuple[int, str]]:
+    """Stored documents as {(claim id, document type): (seed, text)}."""
     with engine.connect() as connection:
         rows = connection.execute(
             select(
-                GeneratedDocument.source_claim_id, GeneratedDocument.seed, GeneratedDocument.text
+                GeneratedDocument.source_claim_id,
+                GeneratedDocument.document_type,
+                GeneratedDocument.seed,
+                GeneratedDocument.text,
             )
         )
-        return {claim_id: (seed, text) for claim_id, seed, text in rows}
+        return {(claim_id, kind): (seed, text) for claim_id, kind, seed, text in rows}
 
 
-def test_writes_one_letter_per_denied_claim_and_commits(
+def test_writes_every_document_type_in_one_run_and_commits(
     loaded: Engine, capsys: pytest.CaptureFixture[str]
 ) -> None:
     exit_code = main([])
 
     assert exit_code == 0
-    assert set(_documents(loaded)) == DENIED_CLAIMS
-    assert capsys.readouterr().out == "generated 3 denial letters (seed 42, generator v1)\n"
+    assert set(_documents(loaded)) == DOCUMENTS
+    assert capsys.readouterr().out == (
+        "generated 7 documents (seed 42)\n"
+        "  denial_letter: 3 (generator v1)\n"
+        "  clinical_note: 3 (generator v1)\n"
+        "  prior_auth: 1 (generator v1)\n"
+    )
 
 
 def test_stores_the_type_seed_generator_version_and_a_readable_answer_key(loaded: Engine) -> None:
@@ -103,13 +122,36 @@ def test_stores_the_type_seed_generator_version_and_a_readable_answer_key(loaded
 
     with loaded.connect() as connection:
         rows = connection.execute(select(GeneratedDocument.__table__)).all()
-    assert {row.document_type for row in rows} == {DocumentType.DENIAL_LETTER}
     assert {row.seed for row in rows} == {DEFAULT_SEED} == {42}
-    assert {row.generator_version for row in rows} == {GENERATOR_VERSION}
     for row in rows:
-        key = DenialLetterAnswerKey.model_validate(row.answer_key)
-        assert key.claim_number == row.source_claim_id
-        assert key.claim_number in row.text
+        assert row.generator_version == GENERATOR_VERSIONS[row.document_type]
+        if row.document_type is LETTER:
+            letter = DenialLetterAnswerKey.model_validate(row.answer_key)
+            assert letter.claim_number == row.source_claim_id
+            assert letter.claim_number in row.text
+        elif row.document_type is NOTE:
+            assert ClinicalNoteAnswerKey.model_validate(row.answer_key).patient_name in row.text
+        else:
+            record = PriorAuthAnswerKey.model_validate(row.answer_key)
+            assert record.authorization_number in row.text
+
+
+def test_a_claim_with_no_prior_auth_record_still_prints_a_zero_count(
+    loaded: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Claim 2's headline becomes "other", so no claim needs a record any more.
+    with loaded.begin() as connection:
+        connection.execute(
+            update(ClaimSampleLabel)
+            .where(ClaimSampleLabel.source_claim_id == "800000000000002")
+            .values(denial_reason_category="other")
+        )
+
+    exit_code = main([])
+
+    assert exit_code == 0
+    assert "  prior_auth: 0 (generator v1)\n" in capsys.readouterr().out
+    assert PRIOR_AUTH not in {kind for _, kind in _documents(loaded)}
 
 
 def test_running_twice_gives_the_identical_documents(loaded: Engine) -> None:
@@ -132,26 +174,28 @@ def test_a_later_run_with_another_seed_replaces_every_document(
 
     second = _documents(loaded)
     assert exit_code == 0
-    assert "(seed 7, generator v1)" in capsys.readouterr().out
-    assert set(second) == DENIED_CLAIMS
+    assert "generated 7 documents (seed 7)" in capsys.readouterr().out
+    assert set(second) == DOCUMENTS
     # No document of the first run is left, so the table never mixes two seeds.
     assert {seed for seed, _ in second.values()} == {7}
-    assert all(second[claim_id][1] != first[claim_id][1] for claim_id in DENIED_CLAIMS)
+    assert all(second[document][1] != first[document][1] for document in DOCUMENTS)
 
 
-def test_a_claim_that_is_no_longer_denied_loses_its_letter(loaded: Engine) -> None:
+def test_a_claim_that_is_no_longer_denied_loses_all_its_documents(loaded: Engine) -> None:
     main([])
     with loaded.begin() as connection:
         connection.execute(
             update(ClaimSampleLabel)
-            .where(ClaimSampleLabel.source_claim_id == "800000000000005")
+            .where(ClaimSampleLabel.source_claim_id == "800000000000002")
             .values(is_denied=False, denial_reason_category=None, appeal_success_proxy=None)
         )
 
     exit_code = main([])
 
     assert exit_code == 0
-    assert set(_documents(loaded)) == DENIED_CLAIMS - {"800000000000005"}
+    assert set(_documents(loaded)) == {
+        document for document in DOCUMENTS if document[0] != "800000000000002"
+    }
 
 
 def test_no_labelled_claims_exits_1_and_writes_nothing(
@@ -179,7 +223,7 @@ def test_labels_of_another_rule_version_exit_1_and_keep_the_old_documents(
 
     assert exit_code == 1
     assert "rule version v0, the code is at v1" in capsys.readouterr().err
-    assert len(before) == 3
+    assert set(before) == DOCUMENTS
     assert _documents(loaded) == before
 
 
@@ -204,7 +248,35 @@ def test_denied_claim_without_a_denied_line_exits_1_and_keeps_the_old_documents(
     assert "claim 800000000000005 is labelled denied but has no denied line" in captured.err
     assert "run pipelines.run_data_pipeline again" in captured.err
     assert captured.out == ""
-    assert len(before) == 3
+    assert set(before) == DOCUMENTS
+    assert _documents(loaded) == before
+
+
+def test_claim_labelled_for_a_record_without_a_qualifying_line_exits_1_and_keeps_the_old(
+    loaded: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main([])
+    before = _documents(loaded)
+    capsys.readouterr()  # drop the first run's own output
+    # Claim 2's denied line is loaded again as a duplicate, but its label still says noncovered.
+    with loaded.begin() as connection:
+        connection.execute(
+            update(ClaimSampleLine)
+            .where(ClaimSampleLine.source_claim_id == "800000000000002")
+            .where(ClaimSampleLine.processing_indicator == "C")
+            .values(processing_indicator="M")
+        )
+
+    exit_code = main(["--seed", "7"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert (
+        "claim 800000000000002 is labelled for a prior-authorisation record but has no line"
+        " that qualifies: run pipelines.run_data_pipeline again"
+    ) in captured.err
+    assert captured.out == ""
+    assert set(before) == DOCUMENTS
     assert _documents(loaded) == before
 
 
@@ -224,8 +296,8 @@ def test_failure_after_the_old_documents_are_removed_brings_them_back(
     with pytest.raises(RuntimeError, match="database went away"):
         main(["--seed", "7"])
 
-    assert len(before) == 3
-    assert _documents(loaded) == before  # still the three letters made with seed 42
+    assert set(before) == DOCUMENTS
+    assert _documents(loaded) == before  # still every type, made with seed 42
 
 
 @pytest.mark.parametrize("value", ["-1", str(MAX_SEED + 1), "lucky"])

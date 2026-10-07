@@ -1,17 +1,18 @@
-"""Generate the Stage 2 documents: one fabricated denial letter per denied claim.
+"""Generate the Stage 2 documents: the fabricated documents of every denied claim.
 
 Usage:
     python3 -m pipelines.generate_documents [--seed 42]
 
 Run `pipelines.run_data_pipeline` first: this command reads the claims, lines and labels it
-stored. Every claim that is labelled denied gets one denial letter. The documents are
-replaced, all in one transaction: afterwards the table holds only the documents of this run,
-so it never mixes two seeds or two generator versions. The same claims, seed and generator
-version always give the same documents. Every name, id and letter date in a document is made
-up.
+stored. Every claim that is labelled denied gets one denial letter and one clinical note; a
+claim whose headline reason is `medical_necessity` or `noncovered` also gets one
+prior-authorisation record. The documents of every type are replaced, all in one transaction:
+afterwards the table holds only the documents of this run, so it never mixes two seeds or two
+versions of a generator. The same claims, seed and generator versions always give the same
+documents. Every name, id, added date and status in a document is made up.
 
 Exit codes: 0 generated, 1 the stored labels cannot be used (none denied, made by another
-label rule version, or a denied claim whose stored lines hold no denied line; nothing
+label rule version, or a label that no longer fits the claim's stored lines; nothing
 written), 2 bad arguments.
 """
 
@@ -23,8 +24,12 @@ from collections.abc import Sequence
 from src.config.settings import get_settings
 from src.db.session import create_db_engine, create_session_factory, session_scope
 from src.ingest.marketplace_denials import BatchRejectedError
-from src.synth.denial_letter import GENERATOR_VERSION
-from src.synth.documents import build_denial_letter_rows, replace_generated_document_rows
+from src.synth.documents import (
+    GENERATOR_VERSIONS,
+    build_document_rows,
+    count_by_type,
+    replace_generated_document_rows,
+)
 from src.synth.identity import MAX_SEED
 
 EXIT_OK = 0
@@ -40,7 +45,7 @@ def _seed(text: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Write a denial letter for every denied claim and replace the stored documents.
+    """Write the documents of every denied claim and replace the stored documents.
 
     With the default load of 50,000 claims this takes a few seconds.
     """
@@ -57,14 +62,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine = create_db_engine()
     try:
         with session_scope(create_session_factory(engine)) as session:
-            rows = build_denial_letter_rows(session, args.seed)
+            rows = build_document_rows(session, args.seed)
             written = replace_generated_document_rows(session, rows)
     except BatchRejectedError as exc:
         print(exc, file=sys.stderr)
         return EXIT_REJECTED
     finally:
         engine.dispose()
-    print(f"generated {written} denial letters (seed {args.seed}, generator {GENERATOR_VERSION})")
+    print(f"generated {written} documents (seed {args.seed})")
+    for document_type, count in count_by_type(rows).items():
+        print(f"  {document_type.value}: {count} (generator {GENERATOR_VERSIONS[document_type]})")
     return EXIT_OK
 
 

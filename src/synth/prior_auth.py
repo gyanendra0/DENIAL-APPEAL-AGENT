@@ -154,7 +154,7 @@ def generate_prior_auth(
         raise ValueError(f"the label is for claim {label.source_claim_id}, not claim {claim_id}")
     if not needs_prior_auth(label):
         raise ValueError(f"claim {claim_id} gets no prior-authorisation record")
-    requested = sorted(filter(_is_requested_line, lines), key=lambda line: line.line_number)
+    requested = sorted(filter(is_requested_line, lines), key=lambda line: line.line_number)
     if not requested:
         raise ValueError(
             f"claim {claim_id} is labelled for a prior-authorisation record but has no line "
@@ -200,7 +200,9 @@ def generate_prior_auth(
     )
 
 
-def _is_requested_line(line: PriorAuthLine) -> bool:
+def is_requested_line(line: PriorAuthLine) -> bool:
+    """Whether a line is listed on the record: it is denied and its own reason is
+    `medical_necessity` or `noncovered`."""
     category = CATEGORY_BY_INDICATOR.get(line.processing_indicator, DenialReasonCategory.OTHER)
     return is_denied_line(line) and category in PRIOR_AUTH_CATEGORIES
 

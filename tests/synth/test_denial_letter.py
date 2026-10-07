@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -33,6 +34,8 @@ PINNED_TEXT_SHA256 = {
     "short_notice": "dbafb4d12417db8807e3bc5e67614b339d27c3fb9f091a4c0b1b326754aa86db",
     "two_section": "05cf76213c154a09c661743988b07a050e57c64496339cf85de3930df8f4c064",
 }
+# SHA-256 of all six reason wordings, generator v1: the pinned letters only use two of them.
+PINNED_REASON_WORDING_SHA256 = "2d39d24d6f40f202f322ec72b069bea9a0d93e66421515376d82d505a1c1f6b3"
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,15 @@ def test_the_text_of_every_template_is_pinned_to_the_generator_version(template_
     assert hashlib.sha256(letter.text.encode()).hexdigest() == PINNED_TEXT_SHA256[template_id]
 
 
+def test_every_reason_wording_is_pinned_to_the_generator_version() -> None:
+    # If this fails, a wording changed: bump GENERATOR_VERSION, then update the hash.
+    wording = {category.value: text for category, text in REASON_WORDING.items()}
+    digest = hashlib.sha256(json.dumps(wording, sort_keys=True).encode()).hexdigest()
+
+    assert set(REASON_WORDING) == set(DenialReasonCategory)
+    assert digest == PINNED_REASON_WORDING_SHA256
+
+
 def test_a_different_seed_gives_different_text() -> None:
     assert _letter(seed=1).text != _letter(seed=2).text
 
@@ -232,6 +244,20 @@ def test_a_paid_line_is_not_listed_but_counts_in_the_totals(template_id: str) ->
     assert [line.line_number for line in letter.answer_key.denied_lines] == [1, 3]
     assert letter.answer_key.total_allowed_charge_amount == Decimal("154.05")
     assert letter.answer_key.total_payment_amount == Decimal("40.00")
+
+
+def test_no_paid_lines_own_payment_is_printed_only_the_total_paid() -> None:
+    # Two paid lines with different payments, so neither equals the total paid. With one paid
+    # line, a template that wrongly listed that line's payment would print the same amount.
+    lines = [*LINES, _line(4, "36415", "A", "12.50", "20.00")]
+
+    for seed in range(SEEDS_TO_SEARCH):  # enough seeds to meet every template
+        letter = generate_denial_letter(CLAIM, lines, _label(), seed)
+        printed = {Decimal(amount) for amount in re.findall(r"\$(\d+\.\d\d)", letter.text)}
+
+        assert letter.answer_key.total_payment_amount == Decimal("52.50")
+        assert Decimal("52.50") in printed
+        assert not printed & {Decimal("40.00"), Decimal("12.50")}
 
 
 @pytest.mark.parametrize("template_id", TEMPLATE_IDS)

@@ -1,3 +1,5 @@
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -29,6 +31,9 @@ SEED = 42
 SEEDS_TO_SEARCH = 200
 # Just below 1: the highest value a draw can come close to.
 HIGHEST_DRAW = Fraction(2**256 - 1, 2**256)
+# SHA-256 of the four word lists, in order. The pinned document texts only use the names one
+# fixture claim draws; this pins the rest.
+PINNED_WORD_LISTS_SHA256 = "9a642b384aa307fe9e78df8755106021199c071627039fa9f7f86dc8e1dec1f1"
 
 
 @dataclass(frozen=True)
@@ -148,3 +153,11 @@ def test_accepts_the_lowest_and_highest_seed(seed: int) -> None:
     check_seed(seed)
 
     assert claim_identity(CLAIM_ID, seed).patient_name
+
+
+def test_the_word_lists_are_pinned() -> None:
+    # If this fails, a name was added, removed, changed or moved: the same seed no longer
+    # gives the same identity. Bump every generator's GENERATOR_VERSION, then update the hash.
+    word_lists = [FIRST_NAMES, LAST_NAMES, PROVIDER_NAMES, PAYER_NAMES]
+
+    assert hashlib.sha256(json.dumps(word_lists).encode()).hexdigest() == PINNED_WORD_LISTS_SHA256

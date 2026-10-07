@@ -23,8 +23,9 @@ from collections.abc import Sequence
 from src.config.settings import get_settings
 from src.db.session import create_db_engine, create_session_factory, session_scope
 from src.ingest.marketplace_denials import BatchRejectedError
-from src.synth.denial_letter import GENERATOR_VERSION, MAX_SEED
+from src.synth.denial_letter import GENERATOR_VERSION
 from src.synth.documents import build_denial_letter_rows, replace_generated_document_rows
+from src.synth.identity import MAX_SEED
 
 EXIT_OK = 0
 EXIT_REJECTED = 1

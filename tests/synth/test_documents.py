@@ -21,7 +21,6 @@ from src.ingest.marketplace_denials import BatchRejectedError
 from src.ml.labels import LABEL_RULE_VERSION, ClaimLabel
 from src.synth.denial_letter import (
     GENERATOR_VERSION,
-    MAX_SEED,
     TEMPLATE_IDS,
     DenialLetterAnswerKey,
     DeniedLineKey,
@@ -32,6 +31,7 @@ from src.synth.documents import (
     build_denial_letter_rows,
     replace_generated_document_rows,
 )
+from src.synth.identity import MAX_SEED
 
 SEED = 42
 PAID_CLAIM = "800000000000001"

@@ -24,7 +24,8 @@ from src.db.models import (
     PlanDenialStats,
 )
 from src.synth import documents
-from src.synth.denial_letter import GENERATOR_VERSION, MAX_SEED, DenialLetterAnswerKey
+from src.synth.denial_letter import GENERATOR_VERSION, DenialLetterAnswerKey
+from src.synth.identity import MAX_SEED
 from tests.ingest.helpers import FIXTURE, claims_zip
 
 TABLES: tuple[type[Base], ...] = (

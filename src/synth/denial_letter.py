@@ -1,7 +1,8 @@
 """Denial letter generator v1: turn one denied claim into a fabricated letter.
 
 Every letter is made up. The claim numbers, dates, codes and amounts come from the synthetic
-claims sample; every name, id and letter date on top is drawn from the small word lists below.
+claims sample; every name, id and letter date on top is made up. The patient name, member id,
+provider and payer come from `src.synth.identity`, so every document of a claim shares them.
 No real patient, provider or insurer appears in a letter.
 
 How one letter is made:
@@ -23,20 +24,23 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
-from string import ascii_uppercase
-from typing import Protocol, TypeVar
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.db.models import DenialReasonCategory, DocumentType
-from src.ml.draws import repeatable_draw
 from src.ml.labels import CATEGORY_BY_INDICATOR, ClaimId, ClaimLabel, LabelLine, is_denied_line
-
-T = TypeVar("T")
+from src.synth.identity import (
+    MAX_SEED,
+    check_seed,
+    claim_identity,
+    document_draw,
+    made_up_code,
+    pick,
+)
 
 GENERATOR_VERSION = "v1"
 DOCUMENT_TYPE = DocumentType.DENIAL_LETTER
-MAX_SEED = 2**31 - 1  # the seed is stored in an integer column
 
 TEMPLATE_IDS = ("formal_letter", "benefits_table", "short_notice", "two_section")
 
@@ -46,76 +50,10 @@ MAX_LETTER_DELAY_DAYS = 45
 # Made up, like the payer: the appeal deadline is the letter date plus this many days.
 APPEAL_WINDOW_DAYS = 180
 
-MEMBER_ID_LETTERS = 3
-MEMBER_ID_DIGITS = 8
 REFERENCE_PREFIX = "DL-"
 REFERENCE_DIGITS = 8
 CODE_NOT_PROVIDED = "not provided"
 CENT = Decimal("0.01")
-
-FIRST_NAMES = (
-    "Avery",
-    "Casey",
-    "Dana",
-    "Elliot",
-    "Harper",
-    "Jamie",
-    "Jordan",
-    "Kendall",
-    "Logan",
-    "Marlow",
-    "Morgan",
-    "Noel",
-    "Quinn",
-    "Reese",
-    "Riley",
-    "Robin",
-    "Rowan",
-    "Sage",
-    "Sidney",
-    "Taylor",
-)
-LAST_NAMES = (
-    "Ashdown",
-    "Birchall",
-    "Calloway",
-    "Dunmore",
-    "Ellery",
-    "Farrow",
-    "Garrick",
-    "Holloway",
-    "Ingram",
-    "Kestrel",
-    "Lockwood",
-    "Merriman",
-    "Norwood",
-    "Orrin",
-    "Pembroke",
-    "Quimby",
-    "Radley",
-    "Stanhope",
-    "Thackeray",
-    "Whitlock",
-)
-# Made-up practices and insurers. Never add the name of a real one.
-PROVIDER_NAMES = (
-    "Marrowby Family Practice",
-    "Thistledown Medical Group",
-    "Pellwick Orthopedic Associates",
-    "Greywether Internal Medicine",
-    "Sablebrook Clinic",
-    "Hartleap Cardiology Partners",
-    "Ondry Lane Physicians",
-    "Wrenfold Health Center",
-)
-PAYER_NAMES = (
-    "Larkspur Vale Mutual Health Plan",
-    "Cinderfield Health Assurance",
-    "Quillhaven Benefit Trust",
-    "Tamarack Hollow Health Cooperative",
-    "Owlmoor Health Plan",
-    "Fennick and Dray Health Insurance",
-)
 
 # Generic wording only. No policy text is quoted: that would be an invented policy statement.
 REASON_WORDING = {
@@ -228,8 +166,7 @@ def generate_denial_letter(
     same claim, seed and `GENERATOR_VERSION` always give the same letter.
     """
     claim_id = claim.source_claim_id
-    if not 0 <= seed <= MAX_SEED:
-        raise ValueError(f"seed must be from 0 to {MAX_SEED}, got {seed}")
+    check_seed(seed)
     if label.source_claim_id != claim_id:
         raise ValueError(f"the label is for claim {label.source_claim_id}, not claim {claim_id}")
     category = label.denial_reason_category
@@ -240,14 +177,13 @@ def generate_denial_letter(
         raise ValueError(f"claim {claim_id} is labelled denied but has no denied line")
 
     def draw(choice: str) -> Fraction:
-        return repeatable_draw(
-            f"doc:{GENERATOR_VERSION}:{seed}:{DOCUMENT_TYPE.value}:{claim_id}:{choice}"
-        )
+        return document_draw(GENERATOR_VERSION, seed, DOCUMENT_TYPE, claim_id, choice)
 
     delay_days = MIN_LETTER_DELAY_DAYS + int(
         draw("letter_delay_days") * (MAX_LETTER_DELAY_DAYS - MIN_LETTER_DELAY_DAYS + 1)
     )
     letter_date = claim.claim_thru_date + timedelta(days=delay_days)
+    identity = claim_identity(claim_id, seed)
     key = DenialLetterAnswerKey(
         claim_number=claim_id,
         service_from_date=claim.claim_from_date,
@@ -257,18 +193,16 @@ def generate_denial_letter(
         total_allowed_charge_amount=_total(line.allowed_charge_amount for line in lines),
         total_payment_amount=_total(line.payment_amount for line in lines),
         denial_reason_category=category,
-        patient_name=(
-            f"{_pick(FIRST_NAMES, draw('first_name'))} {_pick(LAST_NAMES, draw('last_name'))}"
-        ),
-        member_id=_made_up_code(draw("member_id"), MEMBER_ID_LETTERS, MEMBER_ID_DIGITS),
-        provider_name=_pick(PROVIDER_NAMES, draw("provider_name")),
-        payer_name=_pick(PAYER_NAMES, draw("payer_name")),
+        patient_name=identity.patient_name,
+        member_id=identity.member_id,
+        provider_name=identity.provider_name,
+        payer_name=identity.payer_name,
         reference_number=REFERENCE_PREFIX
-        + _made_up_code(draw("reference_number"), 0, REFERENCE_DIGITS),
+        + made_up_code(draw("reference_number"), 0, REFERENCE_DIGITS),
         letter_date=letter_date,
         appeal_deadline=letter_date + timedelta(days=APPEAL_WINDOW_DAYS),
     )
-    template_id = _pick(TEMPLATE_IDS, draw("template"))
+    template_id = pick(TEMPLATE_IDS, draw("template"))
     return DenialLetter(
         source_claim_id=claim_id,
         document_type=DOCUMENT_TYPE,
@@ -278,21 +212,6 @@ def generate_denial_letter(
         text=_RENDERERS[template_id](key),
         answer_key=key,
     )
-
-
-def _pick(options: Sequence[T], draw: Fraction) -> T:
-    return options[int(draw * len(options))]
-
-
-def _made_up_code(draw: Fraction, letters: int, digits: int) -> str:
-    """Turn one draw into `letters` capital letters followed by `digits` digits."""
-    number = int(draw * len(ascii_uppercase) ** letters * 10**digits)
-    number, digit_part = divmod(number, 10**digits)
-    chars: list[str] = []
-    for _ in range(letters):
-        number, index = divmod(number, len(ascii_uppercase))
-        chars.append(ascii_uppercase[index])
-    return "".join(chars) + f"{digit_part:0{digits}d}"
 
 
 def _total(amounts: Iterable[Decimal]) -> Decimal:

@@ -23,7 +23,8 @@ from src.db.models import (
 )
 from src.ingest.marketplace_denials import BatchRejectedError, upsert_rows
 from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel, is_denied_line
-from src.synth.denial_letter import MAX_SEED, generate_denial_letter
+from src.synth.denial_letter import generate_denial_letter
+from src.synth.identity import MAX_SEED
 
 logger = logging.getLogger(__name__)
 

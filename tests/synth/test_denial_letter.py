@@ -15,15 +15,13 @@ from src.synth.denial_letter import (
     CODE_NOT_PROVIDED,
     GENERATOR_VERSION,
     MAX_LETTER_DELAY_DAYS,
-    MAX_SEED,
     MIN_LETTER_DELAY_DAYS,
-    PAYER_NAMES,
-    PROVIDER_NAMES,
     REASON_WORDING,
     TEMPLATE_IDS,
     DenialLetter,
     generate_denial_letter,
 )
+from src.synth.identity import MAX_SEED, PAYER_NAMES, PROVIDER_NAMES
 
 CLAIM_ID = "800000000000001"
 SEED = 42

@@ -361,13 +361,17 @@ For each row in Layer A, generate:
 Rules for generation:
 
 - Vary layout, tone, and wording across several templates so the extractor cannot cheat.
-- Inject realistic noise: scan artefacts, OCR errors, missing fields, wrong dates.
+- Inject realistic noise: OCR-style character errors, scan-style layout damage and missing
+  fields (2.4.4). Wrong dates are not injected: a wrong date is a contradiction between
+  documents, not scan damage, and the answer key would then need two truths.
 - Never copy a real patient record. All names, IDs and dates are fabricated.
 - Store the generator version and the seed with every document, so any file can be
   reproduced exactly.
 
 Built so far: the denial letter (2.4.1), the clinical note (2.4.2) and the prior-authorisation
-record (2.4.3). The noise is not built yet, so today every document is clean text.
+record (2.4.3), and the noise step that every document then goes through (2.4.4). The stored
+text is the noisy one. Sections 2.4.1 to 2.4.3 describe each document as its generator
+writes it, before noise.
 
 ### 2.4.1 Generated so far: denial letters v1
 
@@ -457,8 +461,13 @@ and could not be checked.
 **Where it lands.** `generated_documents`, a public reference table (no `account_id`): it is
 built only from the synthetic sample and holds no customer data. One row per claim and
 document type, with `text`, `answer_key` (JSON; dates and amounts stored as text),
-`template_id`, `seed` and `generator_version`. Nothing is written under `data/`: every
-document is plain text in the database, with no files and no PDF.
+`template_id`, `seed`, `generator_version`, `noise_version` and `noise_record` (JSON, 2.4.4).
+`text` holds the text after noise; the clean text is not stored. Nothing is written under
+`data/`: every document is plain text in the database, with no files and no PDF.
+
+The two noise columns were added by migration 0007. Both it and its downgrade remove the
+stored documents (a clean row has no noise record to fill in), so run the command below once
+after migrating.
 
 **Generating.** With the claims loaded and labelled by the pipeline (2.9):
 
@@ -472,30 +481,35 @@ python3 -m pipelines.generate_documents
 
 The command takes no file: it reads the claims, lines and labels already stored. One run
 writes all three document types: a letter and a clinical note (2.4.2) for every claim
-labelled denied, and a prior-authorisation record (2.4.3) for the claims that get one. It
+labelled denied, and a prior-authorisation record (2.4.3) for the claims that get one. Each
+document goes through the noise step (2.4.4) before it is stored. The command
 replaces the documents in one transaction: every existing row of `generated_documents`, of
 every type, is removed and the documents of this run are stored. So the table always comes
-from one run, with one seed and one generator version per type, and a claim that is no longer
-denied does not keep an old document.
+from one run, with one seed, one generator version per type and one noise version, and a
+claim that is no longer denied does not keep an old document.
 
-It prints the total and one count per type, with that type's generator version. For the
-default load:
+It prints the total, one count per type with that type's generator version, and one line
+about the noise: the noise version, the documents at each noise level, and how many lost a
+field. For the default load:
 
 ```text
 generated 13067 documents (seed 42)
   denial_letter: 5325 (generator v1)
   clinical_note: 5325 (generator v1)
   prior_auth: 2417 (generator v1)
+  noise v1: none 2591, light 6549, heavy 3927; 1355 with a missing field
 ```
 
-Exit code 0 means generated, 1 means the stored labels cannot be used, 2 means a bad
-argument. The labels cannot be used when:
+Exit code 0 means generated, 1 means the run was rejected, 2 means a bad argument. A run is
+rejected when:
 
 - no claim is labelled denied;
 - the labels were made by another label rule version;
-- a claim is labelled denied but its stored lines no longer hold a denied line;
-- a claim is labelled for a prior-authorisation record but its stored lines no longer hold a
-  line that qualifies (2.4.3).
+- a stored label no longer fits the claim's stored lines: the label rule, applied to the
+  lines as they are stored now, does not give exactly the stored label (the lines were loaded
+  again after the labels were made);
+- after the documents are written, a claim labelled denied has no document (the coverage
+  check, 2.4.4).
 
 On exit code 1 nothing is written or removed; run the pipeline (2.9) again first. Running the
 command again with the same seed leaves the same rows. Run it again after every pipeline run,
@@ -505,8 +519,8 @@ because new labels can change which claims are denied.
 
 | Measure | Value |
 |---|---|
-| Letters | 5,325, one per denied claim, no two with the same text |
-| Time | About 4 seconds for the whole command (all three types, 13,067 documents) |
+| Letters | 5,325, one per denied claim, no two with the same text, before or after noise |
+| Time | About 26 seconds for the whole command (all three types, 13,067 documents); most of it is the noise step (2.4.4) |
 | Letters with a total allowed charge of 0.00 | 566 |
 | Letters with no procedure code on the first denied line | 468 |
 
@@ -516,8 +530,8 @@ because new labels can change which claims are denied.
   88% of denied lines, because that is what the file holds.
 - The reason wording comes from a one-character indicator, so it is generic, and two
   categories (`other`, `noncovered`) are the headline reason of almost nine in ten letters.
-- There are only four layouts and no noise yet, so extraction from these letters is easier
-  than from real, scanned ones.
+- There are only four layouts, and the noise (2.4.4) is text-only with assumed rates, so
+  extraction from these letters is probably still easier than from real, scanned ones.
 
 ### 2.4.2 Generated so far: clinical notes v1
 
@@ -544,6 +558,9 @@ same claims that get a letter.
   copyrighted (2.2.2), so a description would be an invented clinical fact.
 - The wording around the codes is generic, for example "seen for the conditions coded below".
   No symptoms, findings, medicines or history are made up.
+- A line with no procedure code is left out of the list when another line of the claim has
+  one, so the note then lists fewer codes than the claim has lines (1,028 of the 5,325 notes
+  on the default load).
 - A claim with no procedure code on any line, or with no diagnosis code, gets "not provided".
 - The practice signs the note. There is no clinician name.
 
@@ -565,7 +582,8 @@ generator has its own version, `v1`, stored on its rows.
 
 | Measure | Value |
 |---|---|
-| Notes | 5,325, one per denied claim, no two with the same text |
+| Notes | 5,325, one per denied claim, no two with the same text, before or after noise |
+| Notes that leave out a line without a procedure code | 1,028 |
 | Notes with no procedure code at all | 4 |
 | Notes whose patient, member id and provider equal the letter's | all 5,325 |
 
@@ -573,7 +591,8 @@ generator has its own version, `v1`, stored on its rows.
 
 - The note is thin: codes and generic wording only. It gives the extractor fields to find,
   not clinical reasoning. Stage 4 drafting should not expect clinical detail in it.
-- There are only three layouts and no noise yet.
+- There are only three layouts. The notes are short, so the noise (2.4.4) changes them least:
+  half of the notes at level `light` get no character error at all.
 
 ### 2.4.3 Generated so far: prior-authorisation records v1
 
@@ -632,16 +651,170 @@ generator has its own version, `v1`, stored on its rows.
 
 | Measure | Value |
 |---|---|
-| Records | 2,417 (45.4% of the 5,325 denied claims), no two with the same text |
+| Records | 2,417 (45.4% of the 5,325 denied claims), no two with the same text, before or after noise |
 | Headline reason of those claims | `noncovered` 2,222, `medical_necessity` 195 |
 | Status | 1,219 approved, 1,198 denied |
 | Records with a "not provided" line | 287 |
 
 **Known limits.**
 
-- The status is noise (see above), and the half-and-half share is an assumption.
+- The status is random (see above), and the half-and-half share is an assumption.
 - Almost all records belong to `noncovered` claims; `medical_necessity` is rare in the sample.
-- There are only three layouts and no noise yet.
+- There are only three layouts.
+
+### 2.4.4 Noise v1
+
+**Noise makes nothing up.** It only damages text that a generator already wrote: it adds no
+name, code, amount or date. Every document is still fabricated, as in 2.4.1 to 2.4.3.
+
+The generators write clean text, which no scanned page looks like. The noise step turns the
+clean text of each document into the text that is stored, imitating what a poor scan and an
+OCR engine do to a page. It is a separate step after the generators: they stay at `v1` and
+their clean text is unchanged, character for character.
+
+**Noise levels.** Each document draws one level:
+
+| Level | Share | What the document gets |
+|---|---|---|
+| `none` | 20% | No character errors and no layout damage |
+| `light` | 50% | Layout damage, and character errors at the low rates |
+| `heavy` | 30% | Layout damage, and character errors at the high rates |
+
+**Character errors.** Two kinds, each tested once per character:
+
+| Kind | What happens | `light` | `heavy` |
+|---|---|---|---|
+| Swap | A look-alike character becomes its partner | 1% of look-alike characters | 3% |
+| Drop | A character that is not a space or a line break disappears | 0.1% of those characters | 0.5% |
+
+The look-alike pairs are fixed: `0` and `O`, `1` and `l`, `5` and `S`, `8` and `B`, `2` and
+`Z`, `6` and `G`, each in both directions, plus `I` to `l` one way. Nothing else is swapped.
+No character is inserted, and no letter pairs are merged (`rn` read as `m`).
+
+**Layout damage.** Applied to every `light` and `heavy` document, before the character errors:
+
+- A run of two or more spaces becomes one space. This removes the column alignment of the
+  table-style templates and the indent of list lines.
+- Lines longer than the document's page width are broken at a space. The width is drawn per
+  document, from 60 to 100 characters. A word longer than the width stays whole.
+
+Both keep every word. They only move where lines and columns fall. No template is added.
+
+**Missing fields.** One document in ten loses exactly one field. This is its own draw, so it
+can happen at any level, `none` included. The field is drawn from this list, each equally
+likely:
+
+| Document type | Fields that can go missing |
+|---|---|
+| `denial_letter` | member id, reference number, letter date, appeal deadline |
+| `clinical_note` | member id |
+| `prior_auth` | member id, authorisation number, request date, decision date |
+
+- The value is removed wherever it is printed. Its label stays, like a form field left empty.
+- The step finds the value by its printed form: the id itself, or the date in each of the
+  three date formats. If the value is not printed in the text the step stops with an error
+  and guesses nothing.
+- Only fields that are printed in every document of their type, and whose printed form never
+  equals or sits inside another value of the same document, are in the list.
+- Never removed: the claim number, the patient, payer and provider names, the service dates,
+  the diagnosis and procedure codes, the denial reason, the denied lines, the amounts and the
+  prior-authorisation status. A document must stay tied to its claim and its reason. A swap
+  or a drop can still hit any of them.
+
+**The order.** The field is blanked first, then the layout is damaged, then characters are
+dropped and swapped. Blanking first means the value is searched in clean text, where it is
+sure to be found.
+
+**The seed rule.** Noise uses the run's seed (`--seed`, 2.4.1); there is no separate option.
+Each choice (the level, the missing field, the page width, each character test) is a
+repeatable draw as in 2.4.1, made from the text
+`doc:<noise version>:<seed>:<document type>:<claim id>:noise_<name of the choice>`. So:
+
+- The noise of a document depends only on its claim, its type, the seed and the noise
+  version. The same four always give the same stored text.
+- The letter, the note and the record of one claim get different noise: one can be `heavy`
+  and another `none`.
+- Every choice name starts with `noise_`, so a noise draw can never equal a generator's draw.
+- The noise has its own version, `v1`, stored on every row as `noise_version`. Any change to
+  a rate, a share, the look-alike pairs, the list of fields or the draw text needs a new
+  version, because the same seed would no longer give the same text.
+
+**What noise never reads.** The appeal-success proxy, its chance, the amount band, the split
+and the denial reason. The level and the missing field come from the seed, the claim id and
+the document type only. If the damage followed the label, the Stage 3 model could read its
+target from how damaged a page is.
+
+**The answer key and the noise record.** The answer key is not changed by noise. It stays the
+truth of the clean document: a claim number damaged by a swap is still the clean claim number
+in the key, and the extractor is expected to repair it. What was done to the page is stored
+beside it, in `noise_record`:
+
+| Field | Meaning |
+|---|---|
+| `level` | `none`, `light` or `heavy` |
+| `swaps` | How many characters were swapped |
+| `drops` | How many characters were dropped |
+| `missing_field` | The name of the blanked answer-key field, or empty |
+| `page_width` | The drawn page width, or empty at level `none` |
+
+Stage 3 needs the record for two things. A blanked field must be extracted as absent:
+returning the answer-key value there would be a wrong answer. And accuracy can be reported
+per level. The record does not say which values a swap or a drop hit.
+
+**The coverage check.** After the documents are written, and in the same transaction, the
+command (2.4.1) counts the claims labelled denied that have no row in `generated_documents`.
+Above 0 the run is rejected: exit code 1, nothing saved, and the message names the count. The
+check reads the stored rows, so it tests what was written and not how the rows were built.
+
+**Measured on the first 50,000 claims** (the default load, seed 42; 13,067 documents):
+
+| Measure | Value |
+|---|---|
+| Level `none` / `light` / `heavy` | 2,591 / 6,549 / 3,927 (19.8% / 50.1% / 30.1%) |
+| Documents with a missing field | 1,355 (10.4%): 547 letters, 568 notes, 240 records |
+| Of those, at level `none` | 284 |
+| Characters swapped / dropped, all documents | 12,466 / 10,498 |
+| Documents stored exactly as their clean text | 2,996 (22.9%) |
+| `light` and `heavy` documents with at least one broken line | 52.3% |
+| Denied claims with at least one document | 5,325 of 5,325 |
+| Time | About 26 seconds for the whole command (about 4 before noise) |
+
+Character errors (swaps plus drops) per document:
+
+| Level | Type | Median | Mean | 9 in 10 have at most | Highest | With no error |
+|---|---|---|---|---|---|---|
+| `light` | `denial_letter` | 1 | 1.7 | 3 | 10 | 20.6% |
+| `light` | `clinical_note` | 0 | 0.7 | 2 | 5 | 50.8% |
+| `light` | `prior_auth` | 1 | 0.8 | 2 | 5 | 43.6% |
+| `heavy` | `denial_letter` | 6 | 6.1 | 10 | 19 | 0.6% |
+| `heavy` | `clinical_note` | 2 | 2.4 | 5 | 9 | 9.6% |
+| `heavy` | `prior_auth` | 3 | 3.1 | 5 | 11 | 3.5% |
+
+Share of letters where every printed copy of a value is left exactly as written (letters
+where that field was blanked are not counted):
+
+| Field | `light` | `heavy` |
+|---|---|---|
+| Claim number | 87.9% | 69.5% |
+| Reference number | 92.2% | 75.0% |
+| Member id | 93.2% | 79.9% |
+
+**Known limits.**
+
+- The rates and the shares are assumptions. No real scanned denial letter was measured.
+- Whether the Stage 3 target (extraction at or above 85%) can be reached on `heavy`
+  documents is not measured. The claim number is damaged in about three `heavy` letters in
+  ten, so an extractor that copies characters exactly will fail there; it has to repair
+  look-alikes. If the target cannot be reached, these rates are the first thing to revisit,
+  with a new noise version.
+- Noise is text-only: no image, no skew, no stains.
+- Wrong dates are not injected (2.4).
+- A blanked value leaves an odd sentence in the templates written as prose, for example
+  "by ." in a letter. It reads less naturally than a form with an empty box.
+- Collapsed spaces only change the templates that align with spaces. The others only get
+  broken lines, and 2,996 documents are stored with no change at all.
+- The clean text is not stored. To compare a noisy document with its clean form, run the
+  generator again for that claim and seed.
 
 ## 2.5 Splits
 
@@ -716,7 +889,7 @@ reproducible by running a loader script.
 
 The generated documents (denial letters, clinical notes and prior-authorisation records) are
 not files under `documents/`: they are stored as text in the `generated_documents` table
-(2.4.1 to 2.4.3).
+(2.4.1 to 2.4.4).
 
 ## 2.9 Running the whole pipeline
 
@@ -785,6 +958,7 @@ changing its label, so run the pipeline again afterwards.
 
 The pipeline does not generate documents. That is a second command,
 `python3 -m pipelines.generate_documents` (2.4.1), which reads what this one stored and
-writes all three document types (2.4.1 to 2.4.3). Run it after every pipeline run: the
+writes all three document types (2.4.1 to 2.4.3) with noise applied (2.4.4). Run it after
+every pipeline run: the
 documents are written from the stored claims and labels, so they go out of date when those
 change.

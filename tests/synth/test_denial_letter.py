@@ -12,7 +12,6 @@ from src.ml.draws import repeatable_draw
 from src.ml.labels import LABEL_RULE_VERSION, ClaimLabel
 from src.synth.denial_letter import (
     APPEAL_WINDOW_DAYS,
-    CODE_NOT_PROVIDED,
     GENERATOR_VERSION,
     MAX_LETTER_DELAY_DAYS,
     MIN_LETTER_DELAY_DAYS,
@@ -21,6 +20,7 @@ from src.synth.denial_letter import (
     DenialLetter,
     generate_denial_letter,
 )
+from src.synth.formats import CODE_NOT_PROVIDED
 from src.synth.identity import MAX_SEED, PAYER_NAMES, PROVIDER_NAMES
 
 CLAIM_ID = "800000000000001"

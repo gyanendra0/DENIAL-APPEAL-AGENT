@@ -10,13 +10,13 @@ from src.db.models import DenialReasonCategory, DocumentType
 from src.ml.draws import repeatable_draw
 from src.ml.labels import LABEL_RULE_VERSION, ClaimLabel
 from src.synth.clinical_note import (
-    CODE_NOT_PROVIDED,
     GENERATOR_VERSION,
     TEMPLATE_IDS,
     ClinicalNote,
     generate_clinical_note,
 )
 from src.synth.denial_letter import REASON_WORDING, generate_denial_letter
+from src.synth.formats import CODE_NOT_PROVIDED
 from src.synth.identity import MAX_SEED, PAYER_NAMES, claim_identity
 
 CLAIM_ID = "800000000000001"

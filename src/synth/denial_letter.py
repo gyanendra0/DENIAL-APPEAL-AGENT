@@ -30,6 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.db.models import DenialReasonCategory, DocumentType
 from src.ml.labels import CATEGORY_BY_INDICATOR, ClaimId, ClaimLabel, LabelLine, is_denied_line
+from src.synth.formats import (
+    CODE_NOT_PROVIDED,
+    DocumentClaim,
+    iso_date,
+    long_date,
+    service_dates,
+    us_date,
+)
 from src.synth.identity import (
     MAX_SEED,
     check_seed,
@@ -52,7 +60,6 @@ APPEAL_WINDOW_DAYS = 180
 
 REFERENCE_PREFIX = "DL-"
 REFERENCE_DIGITS = 8
-CODE_NOT_PROVIDED = "not provided"
 CENT = Decimal("0.01")
 
 # Generic wording only. No policy text is quoted: that would be an invented policy statement.
@@ -64,36 +71,6 @@ REASON_WORDING = {
     DenialReasonCategory.COORDINATION_OF_BENEFITS: "another payer is primary for the service",
     DenialReasonCategory.OTHER: "the service could not be paid as submitted",
 }
-MONTH_NAMES = (
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-)
-
-
-class LetterClaim(Protocol):
-    """The four fields of a claim that the letter prints."""
-
-    @property
-    def source_claim_id(self) -> str: ...
-
-    @property
-    def claim_from_date(self) -> date: ...
-
-    @property
-    def claim_thru_date(self) -> date: ...
-
-    @property
-    def diagnosis_codes(self) -> Sequence[str]: ...
 
 
 class LetterLine(LabelLine, Protocol):
@@ -158,7 +135,7 @@ class DenialLetter(BaseModel):
 
 
 def generate_denial_letter(
-    claim: LetterClaim, lines: Sequence[LetterLine], label: ClaimLabel, seed: int
+    claim: DocumentClaim, lines: Sequence[LetterLine], label: ClaimLabel, seed: int
 ) -> DenialLetter:
     """Write the denial letter of one denied claim.
 
@@ -230,22 +207,8 @@ def _denied_line_key(line: LetterLine) -> DeniedLineKey:
     )
 
 
-def _long_date(day: date) -> str:
-    return f"{MONTH_NAMES[day.month - 1]} {day.day}, {day.year}"
-
-
-def _us_date(day: date) -> str:
-    return f"{day.month:02d}/{day.day:02d}/{day.year}"
-
-
-def _iso_date(day: date) -> str:
-    return day.isoformat()
-
-
 def _service_dates(key: DenialLetterAnswerKey, show: Callable[[date], str]) -> str:
-    if key.service_from_date == key.service_thru_date:
-        return show(key.service_from_date)
-    return f"{show(key.service_from_date)} to {show(key.service_thru_date)}"
+    return service_dates(key.service_from_date, key.service_thru_date, show)
 
 
 def _money(amount: Decimal) -> str:
@@ -272,7 +235,7 @@ def _formal_letter(key: DenialLetterAnswerKey) -> str:
             key.payer_name,
             "Claims Review Department",
             "",
-            _long_date(key.letter_date),
+            long_date(key.letter_date),
             "",
             f"Reference: {key.reference_number}",
             "",
@@ -282,7 +245,7 @@ def _formal_letter(key: DenialLetterAnswerKey) -> str:
             f"Dear {key.patient_name},",
             "",
             f"We have reviewed claim {key.claim_number}, submitted by {key.provider_name} for "
-            f"services provided on {_service_dates(key, _long_date)}. The diagnosis codes on "
+            f"services provided on {_service_dates(key, long_date)}. The diagnosis codes on "
             f"the claim are {_diagnoses(key, ', ')}.",
             "",
             "We are unable to approve payment for this claim because "
@@ -297,7 +260,7 @@ def _formal_letter(key: DenialLetterAnswerKey) -> str:
             f"{_money(key.total_payment_amount)}.",
             "",
             "You have the right to appeal this decision. We must receive your written appeal "
-            f"by {_long_date(key.appeal_deadline)}. Please quote reference "
+            f"by {long_date(key.appeal_deadline)}. Please quote reference "
             f"{key.reference_number} when you write to us.",
             "",
             "Sincerely,",
@@ -318,13 +281,13 @@ def _benefits_table(key: DenialLetterAnswerKey) -> str:
             "EXPLANATION OF BENEFITS - CLAIM DENIED",
             key.payer_name,
             "",
-            f"Statement date:    {_us_date(key.letter_date)}",
+            f"Statement date:    {us_date(key.letter_date)}",
             f"Reference no.:     {key.reference_number}",
             f"Member:            {key.patient_name}",
             f"Member ID:         {key.member_id}",
             f"Provider:          {key.provider_name}",
             f"Claim number:      {key.claim_number}",
-            f"Service date(s):   {_service_dates(key, _us_date)}",
+            f"Service date(s):   {_service_dates(key, us_date)}",
             f"Diagnosis codes:   {_diagnoses(key, ' ')}",
             f"Denial reason:     {REASON_WORDING[key.denial_reason_category]}",
             "",
@@ -334,7 +297,7 @@ def _benefits_table(key: DenialLetterAnswerKey) -> str:
             f"Total allowed:     {_money(key.total_allowed_charge_amount)}",
             f"Total paid:        {_money(key.total_payment_amount)}",
             "",
-            f"Appeal deadline:   {_us_date(key.appeal_deadline)}",
+            f"Appeal deadline:   {us_date(key.appeal_deadline)}",
             "To appeal, write to us by this date and quote the reference number.",
         ]
     )
@@ -351,18 +314,18 @@ def _short_notice(key: DenialLetterAnswerKey) -> str:
         [
             "NOTICE OF DENIAL",
             "",
-            f"{key.payer_name} | Ref {key.reference_number} | {_iso_date(key.letter_date)}",
+            f"{key.payer_name} | Ref {key.reference_number} | {iso_date(key.letter_date)}",
             "",
             f"To: {key.patient_name} (member {key.member_id})",
             f"Claim {key.claim_number} from {key.provider_name}, service date "
-            f"{_service_dates(key, _iso_date)}, was denied: "
+            f"{_service_dates(key, iso_date)}, was denied: "
             f"{REASON_WORDING[key.denial_reason_category]}.",
             f"Diagnosis: {_diagnoses(key, ', ')}",
             "Denied lines:",
             *denied,
             f"Claim totals: allowed {_money(key.total_allowed_charge_amount)}, paid "
             f"{_money(key.total_payment_amount)}.",
-            f"Appeal by: {_iso_date(key.appeal_deadline)}",
+            f"Appeal by: {iso_date(key.appeal_deadline)}",
         ]
     )
 
@@ -377,7 +340,7 @@ def _two_section(key: DenialLetterAnswerKey) -> str:
     return "\n".join(
         [
             key.payer_name,
-            f"Letter date: {_long_date(key.letter_date)}",
+            f"Letter date: {long_date(key.letter_date)}",
             f"Our reference: {key.reference_number}",
             "",
             f"Re: Claim {key.claim_number} for {key.patient_name}, member ID {key.member_id}",
@@ -385,7 +348,7 @@ def _two_section(key: DenialLetterAnswerKey) -> str:
             "SECTION 1 - OUR DECISION",
             "",
             f"Claim {key.claim_number} from {key.provider_name}, for services on "
-            f"{_service_dates(key, _long_date)}, has been denied. Reason for the decision: "
+            f"{_service_dates(key, long_date)}, has been denied. Reason for the decision: "
             f"{REASON_WORDING[key.denial_reason_category]}.",
             f"Diagnosis codes reported: {_diagnoses(key, ', ')}",
             "",
@@ -398,7 +361,7 @@ def _two_section(key: DenialLetterAnswerKey) -> str:
             "SECTION 2 - YOUR APPEAL RIGHTS",
             "",
             "You may ask us to review this decision. Send your appeal in writing so that it "
-            f"reaches us no later than {_long_date(key.appeal_deadline)}. Include our "
+            f"reaches us no later than {long_date(key.appeal_deadline)}. Include our "
             f"reference {key.reference_number} and the claim number.",
         ]
     )

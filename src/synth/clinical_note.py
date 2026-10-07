@@ -33,44 +33,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.db.models import DocumentType
 from src.ml.labels import ClaimId, ClaimLabel
+from src.synth.formats import (
+    CODE_NOT_PROVIDED,
+    DocumentClaim,
+    iso_date,
+    long_date,
+    service_dates,
+    us_date,
+)
 from src.synth.identity import MAX_SEED, check_seed, claim_identity, document_draw, pick
 
 GENERATOR_VERSION = "v1"
 DOCUMENT_TYPE = DocumentType.CLINICAL_NOTE
 
 TEMPLATE_IDS = ("visit_note", "encounter_summary", "chart_entry")
-
-CODE_NOT_PROVIDED = "not provided"
-MONTH_NAMES = (
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-)
-
-
-class NoteClaim(Protocol):
-    """The four fields of a claim that the note reads."""
-
-    @property
-    def source_claim_id(self) -> str: ...
-
-    @property
-    def claim_from_date(self) -> date: ...
-
-    @property
-    def claim_thru_date(self) -> date: ...
-
-    @property
-    def diagnosis_codes(self) -> Sequence[str]: ...
 
 
 class NoteLine(Protocol):
@@ -117,7 +93,7 @@ class ClinicalNote(BaseModel):
 
 
 def generate_clinical_note(
-    claim: NoteClaim, lines: Sequence[NoteLine], label: ClaimLabel, seed: int
+    claim: DocumentClaim, lines: Sequence[NoteLine], label: ClaimLabel, seed: int
 ) -> ClinicalNote:
     """Write the clinical note of one denied claim.
 
@@ -161,22 +137,8 @@ def generate_clinical_note(
     )
 
 
-def _long_date(day: date) -> str:
-    return f"{MONTH_NAMES[day.month - 1]} {day.day}, {day.year}"
-
-
-def _us_date(day: date) -> str:
-    return f"{day.month:02d}/{day.day:02d}/{day.year}"
-
-
-def _iso_date(day: date) -> str:
-    return day.isoformat()
-
-
 def _service_dates(key: ClinicalNoteAnswerKey, show: Callable[[date], str]) -> str:
-    if key.service_from_date == key.service_thru_date:
-        return show(key.service_from_date)
-    return f"{show(key.service_from_date)} to {show(key.service_thru_date)}"
+    return service_dates(key.service_from_date, key.service_thru_date, show)
 
 
 def _codes(codes: Sequence[str], separator: str) -> str:
@@ -189,11 +151,11 @@ def _visit_note(key: ClinicalNoteAnswerKey) -> str:
             key.provider_name,
             "Visit note",
             "",
-            f"Date of note: {_long_date(key.note_date)}",
+            f"Date of note: {long_date(key.note_date)}",
             f"Patient: {key.patient_name}",
             f"Member ID: {key.member_id}",
             "",
-            f"The patient was seen on {_service_dates(key, _long_date)} for the conditions "
+            f"The patient was seen on {_service_dates(key, long_date)} for the conditions "
             "coded below.",
             "",
             f"Diagnosis codes: {_codes(key.diagnosis_codes, ', ')}",
@@ -212,8 +174,8 @@ def _encounter_summary(key: ClinicalNoteAnswerKey) -> str:
             f"Practice:           {key.provider_name}",
             f"Patient:            {key.patient_name}",
             f"Member ID:          {key.member_id}",
-            f"Date(s) of service: {_service_dates(key, _us_date)}",
-            f"Note date:          {_us_date(key.note_date)}",
+            f"Date(s) of service: {_service_dates(key, us_date)}",
+            f"Note date:          {us_date(key.note_date)}",
             f"Diagnosis codes:    {_codes(key.diagnosis_codes, ' ')}",
             f"Procedure codes:    {_codes(key.procedure_codes, ' ')}",
             "",
@@ -226,9 +188,9 @@ def _encounter_summary(key: ClinicalNoteAnswerKey) -> str:
 def _chart_entry(key: ClinicalNoteAnswerKey) -> str:
     return "\n".join(
         [
-            f"CHART ENTRY | {key.provider_name} | {_iso_date(key.note_date)}",
+            f"CHART ENTRY | {key.provider_name} | {iso_date(key.note_date)}",
             f"Pt: {key.patient_name} (member {key.member_id})",
-            f"DOS: {_service_dates(key, _iso_date)}",
+            f"DOS: {_service_dates(key, iso_date)}",
             f"Dx: {_codes(key.diagnosis_codes, ', ')}",
             f"Px: {_codes(key.procedure_codes, ', ')}",
             f"Seen for the coded conditions above. Entry signed by {key.provider_name}.",

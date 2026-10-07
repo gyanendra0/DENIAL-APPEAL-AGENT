@@ -609,6 +609,7 @@ ANSWER_KEY: dict[str, Any] = {
     "diagnosis_codes": ["4019", "V5869"],
     "total_payment_amount": "0.00",
 }
+NOISE_RECORD: dict[str, Any] = {"level": "light", "swaps": 2, "drops": 0}
 
 
 def _generated_document(session: Session, **overrides: Any) -> GeneratedDocument:
@@ -621,6 +622,8 @@ def _generated_document(session: Session, **overrides: Any) -> GeneratedDocument
         "generator_version": "v1",
         "text": "Made-up denial letter text.",
         "answer_key": ANSWER_KEY,
+        "noise_version": "v1",
+        "noise_record": NOISE_RECORD,
     }
     document = GeneratedDocument(**(fields | overrides))
     session.add(document)
@@ -641,6 +644,8 @@ def test_stores_generated_document_with_text_and_answer_key(session: Session) ->
     assert stored.generator_version == "v1"
     assert stored.text == "Made-up denial letter text."
     assert stored.answer_key == ANSWER_KEY
+    assert stored.noise_version == "v1"
+    assert stored.noise_record == NOISE_RECORD
     assert stored.created_at is not None
 
 
@@ -667,6 +672,7 @@ def test_allows_documents_of_different_types_for_one_claim(session: Session) -> 
         ("seed", -1, "ck_generated_documents_seed_not_negative"),
         ("generator_version", "", "ck_generated_documents_generator_version_not_empty"),
         ("text", "", "ck_generated_documents_text_not_empty"),
+        ("noise_version", "", "ck_generated_documents_noise_version_not_empty"),
     ],
 )
 def test_rejects_document_with_an_empty_field_or_negative_seed(
@@ -691,6 +697,18 @@ def test_rejects_document_without_an_answer_key(session: Session) -> None:
         session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID})
 
 
+def test_rejects_document_without_a_noise_record(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
+        " generator_version, text, answer_key, noise_version) VALUES (:source_claim_id,"
+        " 'denial_letter', 'formal_letter', 42, 'v1', 'Made-up text.', '{}', 'v1')"
+    )
+
+    with pytest.raises(IntegrityError, match="noise_record"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID})
+
+
 def test_rejects_document_without_its_claim(session: Session) -> None:
     _claim_sample(session, "800000000000002")  # another claim
 
@@ -712,8 +730,9 @@ def test_rejects_unknown_document_type(session: Session) -> None:
     _claim_sample(session)
     insert = text(
         "INSERT INTO generated_documents (source_claim_id, document_type, template_id, seed,"
-        " generator_version, text, answer_key) VALUES (:source_claim_id, 'fax_cover',"
-        " 'formal_letter', 42, 'v1', 'Made-up text.', '{}')"
+        " generator_version, text, answer_key, noise_version, noise_record) VALUES"
+        " (:source_claim_id, 'fax_cover', 'formal_letter', 42, 'v1', 'Made-up text.', '{}',"
+        " 'v1', '{}')"
     )
 
     with pytest.raises(DataError):

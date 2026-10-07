@@ -31,6 +31,8 @@ from src.synth.denial_letter import (
 )
 from src.synth.documents import (
     GENERATOR_VERSIONS,
+    NOISE_NOT_APPLIED_RECORD,
+    NOISE_NOT_APPLIED_VERSION,
     GeneratedDocumentRow,
     build_document_rows,
     count_by_type,
@@ -182,6 +184,8 @@ def _row(
         generator_version=GENERATOR_VERSION,
         text="A made-up letter.",
         answer_key={"claim_number": claim_id},
+        noise_version=NOISE_NOT_APPLIED_VERSION,
+        noise_record=NOISE_NOT_APPLIED_RECORD,
     )
 
 
@@ -299,6 +303,15 @@ def test_counts_every_document_type_in_build_order(session: Session) -> None:
 def test_a_type_without_documents_is_counted_as_zero() -> None:
     assert count_by_type([_row()]) == {LETTER: 1, NOTE: 0, PRIOR_AUTH: 0}
     assert count_by_type([]) == {LETTER: 0, NOTE: 0, PRIOR_AUTH: 0}
+
+
+def test_built_rows_say_that_no_noise_was_applied_yet(session: Session) -> None:
+    _store_all(session)
+
+    rows = build_document_rows(session, SEED)
+
+    assert {row.noise_version for row in rows} == {NOISE_NOT_APPLIED_VERSION}
+    assert all(row.noise_record == NOISE_NOT_APPLIED_RECORD for row in rows)
 
 
 def test_every_document_type_has_a_generator_version() -> None:

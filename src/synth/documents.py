@@ -48,12 +48,18 @@ GENERATOR_VERSIONS = {
     DocumentType.PRIOR_AUTH: prior_auth.GENERATOR_VERSION,
 }
 
+# Stopgap until the noise step is wired into the run: the stored text is the clean text, and
+# the row says so. The wiring task replaces both with `src.synth.noise`.
+NOISE_NOT_APPLIED_VERSION = "none"
+NOISE_NOT_APPLIED_RECORD: dict[str, Any] = {"level": "none"}
+
 
 class GeneratedDocumentRow(BaseModel):
     """One generated document, shaped like the `generated_documents` table.
 
     `answer_key` is the document's answer key already turned into plain JSON values (dates
-    and amounts as text), because that is what the JSON column stores.
+    and amounts as text), because that is what the JSON column stores. `noise_record` is the
+    record of what the noise step did, as plain JSON values too.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -65,6 +71,8 @@ class GeneratedDocumentRow(BaseModel):
     generator_version: str = Field(min_length=1, max_length=20)
     text: str = Field(min_length=1)
     answer_key: dict[str, Any] = Field(min_length=1)
+    noise_version: str = Field(min_length=1, max_length=20)
+    noise_record: dict[str, Any] = Field(min_length=1)
 
 
 def build_document_rows(session: Session, seed: int) -> list[GeneratedDocumentRow]:
@@ -189,4 +197,6 @@ def _row(document: DenialLetter | ClinicalNote | PriorAuthRecord) -> GeneratedDo
     return GeneratedDocumentRow(
         **document.model_dump(exclude={"answer_key"}),
         answer_key=document.answer_key.model_dump(mode="json"),
+        noise_version=NOISE_NOT_APPLIED_VERSION,
+        noise_record=NOISE_NOT_APPLIED_RECORD,
     )

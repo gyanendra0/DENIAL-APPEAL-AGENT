@@ -420,9 +420,13 @@ class GeneratedDocument(TimestampMixin, Base):
 
     Public reference table, no `account_id`: it is built only from the synthetic claims sample
     and holds no customer data. One row per claim and document type; a new run replaces the
-    rows. `text` is the document as plain text. `answer_key` holds every value printed in it
-    as structured fields, so an extractor can be marked against them. The same claim, `seed`
-    and `generator_version` always give the same text.
+    rows. `text` is the document as plain text, after the noise step: it can hold look-alike
+    characters, dropped characters, damaged layout and a blanked field. `answer_key` holds
+    every value printed in the clean document as structured fields, so an extractor can be
+    marked against them. `noise_record` says what the noise step did to the text; its contents
+    are not checked by the table. `generator_version` names the generator of the clean text,
+    `noise_version` the noise step. The same claim, `seed`, `generator_version` and
+    `noise_version` always give the same text.
     """
 
     __tablename__ = "generated_documents"
@@ -436,6 +440,9 @@ class GeneratedDocument(TimestampMixin, Base):
             "generator_version <> ''", name="ck_generated_documents_generator_version_not_empty"
         ),
         CheckConstraint("text <> ''", name="ck_generated_documents_text_not_empty"),
+        CheckConstraint(
+            "noise_version <> ''", name="ck_generated_documents_noise_version_not_empty"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -456,3 +463,5 @@ class GeneratedDocument(TimestampMixin, Base):
     generator_version: Mapped[str] = mapped_column(String(20), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     answer_key: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    noise_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    noise_record: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

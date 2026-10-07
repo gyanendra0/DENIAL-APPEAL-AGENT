@@ -366,8 +366,8 @@ Rules for generation:
 - Store the generator version and the seed with every document, so any file can be
   reproduced exactly.
 
-Built so far: the denial letter (2.4.1). The clinical note, the prior-authorisation record
-and the noise are not built yet, so today every letter is clean text.
+Built so far: the denial letter (2.4.1), the clinical note (2.4.2) and the prior-authorisation
+record (2.4.3). The noise is not built yet, so today every document is clean text.
 
 ### 2.4.1 Generated so far: denial letters v1
 
@@ -441,6 +441,12 @@ number from 0 up to 1 made from the first 8 bytes of the SHA-256 hash of the tex
 - The generator has a version, `v1`. Any change to a word list, a template, a date rule or
   the draw text needs a new version, because the same seed would no longer give the same
   text.
+- The patient name, member id, provider name and payer name are the claim's **shared
+  identity**: the clinical note (2.4.2) and the prior-authorisation record (2.4.3) print the
+  same values, so a claim's documents describe the same people. Whichever document asks,
+  these draws always use the letter's text above with version `v1`. A change to a word list
+  or to that text therefore changes all three document types and needs a new version of
+  each generator.
 
 **The answer key.** Every value a letter prints, real or fabricated, is also stored as
 structured fields beside the text. The generator builds the answer key first and writes the
@@ -451,8 +457,8 @@ and could not be checked.
 **Where it lands.** `generated_documents`, a public reference table (no `account_id`): it is
 built only from the synthetic sample and holds no customer data. One row per claim and
 document type, with `text`, `answer_key` (JSON; dates and amounts stored as text),
-`template_id`, `seed` and `generator_version`. Nothing is written under `data/`: the letters
-are plain text in the database, with no files and no PDF.
+`template_id`, `seed` and `generator_version`. Nothing is written under `data/`: every
+document is plain text in the database, with no files and no PDF.
 
 **Generating.** With the claims loaded and labelled by the pipeline (2.9):
 
@@ -464,25 +470,43 @@ python3 -m pipelines.generate_documents
 |---|---|---|
 | `--seed` | 42 | Seed of every made-up value in the documents |
 
-The command takes no file: it reads the claims, lines and labels already stored. It writes a
-letter for every claim labelled denied and replaces the documents in one transaction: every
-existing row of `generated_documents` is removed and the letters of this run are stored. So
-the table always comes from one run, with one seed and one generator version, and a claim
-that is no longer denied does not keep an old letter.
+The command takes no file: it reads the claims, lines and labels already stored. One run
+writes all three document types: a letter and a clinical note (2.4.2) for every claim
+labelled denied, and a prior-authorisation record (2.4.3) for the claims that get one. It
+replaces the documents in one transaction: every existing row of `generated_documents`, of
+every type, is removed and the documents of this run are stored. So the table always comes
+from one run, with one seed and one generator version per type, and a claim that is no longer
+denied does not keep an old document.
 
-Exit code 0 means generated, 1 means the stored labels cannot be used (no claim is labelled
-denied, the labels were made by another label rule version, or a claim is labelled denied
-but its stored lines no longer hold a denied line; nothing is written or removed), 2 means a
-bad argument. On exit code 1, run the pipeline (2.9) again first. Running it again with the
-same seed leaves the same rows. Run it again after every pipeline run, because new labels can
-change which claims are denied.
+It prints the total and one count per type, with that type's generator version. For the
+default load:
+
+```text
+generated 13067 documents (seed 42)
+  denial_letter: 5325 (generator v1)
+  clinical_note: 5325 (generator v1)
+  prior_auth: 2417 (generator v1)
+```
+
+Exit code 0 means generated, 1 means the stored labels cannot be used, 2 means a bad
+argument. The labels cannot be used when:
+
+- no claim is labelled denied;
+- the labels were made by another label rule version;
+- a claim is labelled denied but its stored lines no longer hold a denied line;
+- a claim is labelled for a prior-authorisation record but its stored lines no longer hold a
+  line that qualifies (2.4.3).
+
+On exit code 1 nothing is written or removed; run the pipeline (2.9) again first. Running the
+command again with the same seed leaves the same rows. Run it again after every pipeline run,
+because new labels can change which claims are denied.
 
 **Measured on the first 50,000 claims** (the default load, seed 42):
 
 | Measure | Value |
 |---|---|
 | Letters | 5,325, one per denied claim, no two with the same text |
-| Time | About 3 seconds |
+| Time | About 4 seconds for the whole command (all three types, 13,067 documents) |
 | Letters with a total allowed charge of 0.00 | 566 |
 | Letters with no procedure code on the first denied line | 468 |
 
@@ -494,6 +518,130 @@ change which claims are denied.
   categories (`other`, `noncovered`) are the headline reason of almost nine in ten letters.
 - There are only four layouts and no noise yet, so extraction from these letters is easier
   than from real, scanned ones.
+
+### 2.4.2 Generated so far: clinical notes v1
+
+**Every note is fabricated**, in the same way as the letter (2.4.1): the claim is synthetic
+and every name and id added on top is made up. No real patient or provider appears in a note.
+
+The note is the provider's own short record of the visit, written as if before the denial. It
+knows nothing about the payer's decision.
+
+**Which claims get a note.** Every claim that label rule v1 calls denied, one note each: the
+same claims that get a letter.
+
+**What a note prints.**
+
+| In the note | Source |
+|---|---|
+| Date(s) of service | `claim_from_date` and `claim_thru_date`; one date when they are equal |
+| Note date | `claim_thru_date`. It is not drawn |
+| Diagnosis codes | `diagnosis_codes`, in source order |
+| Procedure codes | `hcpcs_code` of **all** the claim's lines, denied or not, in line order, each code once |
+| Patient name, member id, provider name | The claim's shared identity, the same values as in its letter (2.4.1) |
+
+- Codes are printed as codes. No table of code meanings is loaded and CPT descriptions are
+  copyrighted (2.2.2), so a description would be an invented clinical fact.
+- The wording around the codes is generic, for example "seen for the conditions coded below".
+  No symptoms, findings, medicines or history are made up.
+- A claim with no procedure code on any line, or with no diagnosis code, gets "not provided".
+- The practice signs the note. There is no clinician name.
+
+**What a note never shows.** Money, the denial reason, the payer, the claim number, and (as in
+every document) the appeal-success proxy, its chance, the amount band and the split.
+
+**Templates.** Three layouts, one picked per note: `visit_note` (sentences), `encounter_summary`
+(a list of labelled fields) and `chart_entry` (short chart lines, with `Dx` and `Px` for the
+codes). They print the same fields under different labels and with the three date formats of
+the letter.
+
+**The seed rule.** As in 2.4.1, with `clinical_note` in the draw text. The template is the
+note's only own draw; the names and the member id come from the shared identity. The note
+generator has its own version, `v1`, stored on its rows.
+
+**The answer key.** Built first, with the text written from it alone, as for the letter.
+
+**Measured on the first 50,000 claims** (the default load, seed 42):
+
+| Measure | Value |
+|---|---|
+| Notes | 5,325, one per denied claim, no two with the same text |
+| Notes with no procedure code at all | 4 |
+| Notes whose patient, member id and provider equal the letter's | all 5,325 |
+
+**Known limits.**
+
+- The note is thin: codes and generic wording only. It gives the extractor fields to find,
+  not clinical reasoning. Stage 4 drafting should not expect clinical detail in it.
+- There are only three layouts and no noise yet.
+
+### 2.4.3 Generated so far: prior-authorisation records v1
+
+**Every record is fabricated, more so than the other two.** The claims sample has no
+prior-authorisation field at all, so the authorisation number, the request date, the decision
+date and the status are all made up. No real patient, provider or insurer appears in a record.
+
+The record is the payer's note of a request made before the service.
+
+**Which claims get a record.** A claim that is denied and whose headline reason (the label's
+`denial_reason_category`) is `medical_necessity` or `noncovered`. This is how "where relevant"
+(2.4) is applied. The rule is our own choice, not a real rate of prior authorisation.
+
+**What comes from the claims sample.**
+
+| In the record | Source |
+|---|---|
+| Planned date(s) of service | `claim_from_date` and `claim_thru_date`; one date when they are equal |
+| Diagnosis codes | `diagnosis_codes`, in source order |
+| Requested procedure codes | `hcpcs_code` of each denied line whose own reason is `medical_necessity` or `noncovered`, in line order, one entry per line |
+| Patient name, member id, provider name, payer name | The claim's shared identity, the same values as in its letter (2.4.1) |
+
+A listed line with no procedure code is printed as "not provided". Paid lines, and denied
+lines with another reason, are not listed.
+
+**What is fabricated.**
+
+| Field | How it is made |
+|---|---|
+| Authorisation number | `PA-` and 8 digits |
+| Request date | The first service date minus 7 to 30 days |
+| Decision date | The request date plus 1 to 5 days, so always before the service |
+| Status | `approved` or `denied`, half each |
+
+**The status carries no signal.** It is a seed draw only. It never reads the appeal-success
+proxy, its chance, the amount band or the split, so an "approved" record next to a denial is
+random here: it is not a real ground for appeal, and the Stage 3 model must not expect it to
+help. A status tied to the label would leak the target instead. Whether a record exists
+follows the headline reason, which the letter already prints, so that reveals nothing new.
+
+**What a record never shows.** Money, the claim number, policy text (a quoted policy would be
+an invented policy statement), and the proxy, its chance, the amount band and the split.
+
+**Templates.** Three layouts, one picked per record: `authorization_notice` (a letter from the
+payer), `request_summary` (a list of labelled fields) and `status_record` (short record lines).
+They print the same fields under different labels and with the three date formats of the
+letter.
+
+**The seed rule.** As in 2.4.1, with `prior_auth` in the draw text. The record's own draws are
+the template, the authorisation number, the two day counts and the status. The record
+generator has its own version, `v1`, stored on its rows.
+
+**The answer key.** Built first, with the text written from it alone, as for the letter.
+
+**Measured on the first 50,000 claims** (the default load, seed 42):
+
+| Measure | Value |
+|---|---|
+| Records | 2,417 (45.4% of the 5,325 denied claims), no two with the same text |
+| Headline reason of those claims | `noncovered` 2,222, `medical_necessity` 195 |
+| Status | 1,219 approved, 1,198 denied |
+| Records with a "not provided" line | 287 |
+
+**Known limits.**
+
+- The status is noise (see above), and the half-and-half share is an assumption.
+- Almost all records belong to `noncovered` claims; `medical_necessity` is rare in the sample.
+- There are only three layouts and no noise yet.
 
 ## 2.5 Splits
 
@@ -566,8 +714,9 @@ data/
 `data/` is never stored with the project. Everything in it must be
 reproducible by running a loader script.
 
-The generated denial letters are not files under `documents/`: they are stored as text in
-the `generated_documents` table (2.4.1).
+The generated documents (denial letters, clinical notes and prior-authorisation records) are
+not files under `documents/`: they are stored as text in the `generated_documents` table
+(2.4.1 to 2.4.3).
 
 ## 2.9 Running the whole pipeline
 
@@ -635,6 +784,7 @@ labelling. Loading claims that way after a pipeline run can change a claim's lin
 changing its label, so run the pipeline again afterwards.
 
 The pipeline does not generate documents. That is a second command,
-`python3 -m pipelines.generate_documents` (2.4.1), which reads what this one stored. Run it
-after every pipeline run: the letters are written from the stored claims and labels, so they
-go out of date when those change.
+`python3 -m pipelines.generate_documents` (2.4.1), which reads what this one stored and
+writes all three document types (2.4.1 to 2.4.3). Run it after every pipeline run: the
+documents are written from the stored claims and labels, so they go out of date when those
+change.

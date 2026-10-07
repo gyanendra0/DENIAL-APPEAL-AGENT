@@ -1,13 +1,15 @@
 """Build the generated documents of the stored claims and store them in `generated_documents`.
 
-One denial letter per claim that is labelled denied, written by `src.synth.denial_letter` from
-the claim, its lines and its label as they are stored. `generated_documents` is a public
-reference table (no `account_id`), like the three tables read here. Documents are derived
-data: they can always be rebuilt from the claims, the labels, the seed and the generator
-version.
+Every claim that is labelled denied gets a denial letter (`src.synth.denial_letter`) and a
+clinical note (`src.synth.clinical_note`); a claim that `needs_prior_auth` also gets a
+prior-authorisation record (`src.synth.prior_auth`). Each is written from the claim, its lines
+and its label as they are stored. `generated_documents` is a public reference table (no
+`account_id`), like the three tables read here. Documents are derived data: they can always be
+rebuilt from the claims, the labels, the seed and the generator versions.
 """
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,12 +25,28 @@ from src.db.models import (
 )
 from src.ingest.marketplace_denials import BatchRejectedError, upsert_rows
 from src.ml.labels import LABEL_RULE_VERSION, ClaimId, ClaimLabel, is_denied_line
-from src.synth.denial_letter import MAX_SEED, generate_denial_letter
+from src.synth import clinical_note, denial_letter, prior_auth
+from src.synth.clinical_note import ClinicalNote, generate_clinical_note
+from src.synth.denial_letter import DenialLetter, generate_denial_letter
+from src.synth.identity import MAX_SEED
+from src.synth.prior_auth import (
+    PriorAuthRecord,
+    generate_prior_auth,
+    is_requested_line,
+    needs_prior_auth,
+)
 
 logger = logging.getLogger(__name__)
 
 UPSERT_CONSTRAINT = "uq_generated_documents_claim_type"
 UPSERT_KEY_COLUMNS = ("source_claim_id", "document_type")
+
+# The generator version of each document type, in the order a claim's documents are built.
+GENERATOR_VERSIONS = {
+    DocumentType.DENIAL_LETTER: denial_letter.GENERATOR_VERSION,
+    DocumentType.CLINICAL_NOTE: clinical_note.GENERATOR_VERSION,
+    DocumentType.PRIOR_AUTH: prior_auth.GENERATOR_VERSION,
+}
 
 
 class GeneratedDocumentRow(BaseModel):
@@ -49,25 +67,32 @@ class GeneratedDocumentRow(BaseModel):
     answer_key: dict[str, Any] = Field(min_length=1)
 
 
-def build_denial_letter_rows(session: Session, seed: int) -> list[GeneratedDocumentRow]:
-    """Write the denial letter of every stored claim that is labelled denied.
+def build_document_rows(session: Session, seed: int) -> list[GeneratedDocumentRow]:
+    """Write the documents of every stored claim that is labelled denied.
 
-    Reads `claim_sample_labels`, `claim_samples` and `claim_sample_lines`; writes nothing.
-    The rows come back in claim id order. Raises `BatchRejectedError` if no claim is labelled
-    denied, if a label was made by a label rule other than `LABEL_RULE_VERSION` (the
-    letters would then disagree with the rule in the code), or if a claim is labelled denied
-    but its stored lines hold no denied line (the lines were loaded again after the labels).
+    Each denied claim gets a denial letter and a clinical note, and a prior-authorisation
+    record too if it `needs_prior_auth`. Reads `claim_sample_labels`, `claim_samples` and
+    `claim_sample_lines`; writes nothing. The rows come back in claim id order, and for one
+    claim in the order letter, note, record.
+
+    Raises `BatchRejectedError` if no claim is labelled denied, if a label was made by a
+    label rule other than `LABEL_RULE_VERSION` (the documents would then disagree with the
+    rule in the code), or if a label no longer fits the claim's stored lines (the lines were
+    loaded again after the labels): a claim labelled denied with no denied line, or one
+    labelled for a prior-authorisation record with no line that qualifies.
     """
-    labels = session.scalars(
+    stored_labels = session.scalars(
         select(ClaimSampleLabel)
         .where(ClaimSampleLabel.is_denied)
         .order_by(ClaimSampleLabel.source_claim_id)
     ).all()
-    if not labels:
+    if not stored_labels:
         raise BatchRejectedError(
             ["no claim is labelled denied: run pipelines.run_data_pipeline first"]
         )
-    other_versions = sorted({label.label_rule_version for label in labels} - {LABEL_RULE_VERSION})
+    other_versions = sorted(
+        {label.label_rule_version for label in stored_labels} - {LABEL_RULE_VERSION}
+    )
     if other_versions:
         raise BatchRejectedError(
             [
@@ -75,6 +100,16 @@ def build_denial_letter_rows(session: Session, seed: int) -> list[GeneratedDocum
                 f" {LABEL_RULE_VERSION}: run pipelines.run_data_pipeline again"
             ]
         )
+    labels = [
+        ClaimLabel(
+            source_claim_id=label.source_claim_id,
+            is_denied=label.is_denied,
+            denial_reason_category=label.denial_reason_category,
+            appeal_success_proxy=label.appeal_success_proxy,
+            label_rule_version=label.label_rule_version,
+        )
+        for label in stored_labels
+    ]
 
     is_denied_claim = ClaimSampleLabel.is_denied
     claims = {
@@ -93,54 +128,65 @@ def build_denial_letter_rows(session: Session, seed: int) -> list[GeneratedDocum
     ):
         lines_by_claim[line.source_claim_id].append(line)
 
-    stale = [
-        label.source_claim_id
-        for label in labels
-        if not any(is_denied_line(line) for line in lines_by_claim[label.source_claim_id])
-    ]
+    stale: list[str] = []
+    for label in labels:
+        claim_id = label.source_claim_id
+        lines = lines_by_claim[claim_id]
+        if not any(is_denied_line(line) for line in lines):
+            stale.append(f"claim {claim_id} is labelled denied but has no denied line")
+        elif needs_prior_auth(label) and not any(is_requested_line(line) for line in lines):
+            stale.append(
+                f"claim {claim_id} is labelled for a prior-authorisation record but has no"
+                " line that qualifies"
+            )
     if stale:
         raise BatchRejectedError(
-            [
-                f"claim {claim_id} is labelled denied but has no denied line: run"
-                " pipelines.run_data_pipeline again"
-                for claim_id in stale
-            ]
+            [f"{problem}: run pipelines.run_data_pipeline again" for problem in stale]
         )
 
     rows: list[GeneratedDocumentRow] = []
     for label in labels:
-        claim_id = label.source_claim_id
-        letter = generate_denial_letter(
-            claims[claim_id],
-            lines_by_claim[claim_id],
-            ClaimLabel(
-                source_claim_id=claim_id,
-                is_denied=label.is_denied,
-                denial_reason_category=label.denial_reason_category,
-                appeal_success_proxy=label.appeal_success_proxy,
-                label_rule_version=label.label_rule_version,
-            ),
-            seed,
-        )
-        rows.append(
-            GeneratedDocumentRow(
-                **letter.model_dump(exclude={"answer_key"}),
-                answer_key=letter.answer_key.model_dump(mode="json"),
-            )
-        )
-    logger.info("generated %d denial letters", len(rows))
+        claim = claims[label.source_claim_id]
+        lines = lines_by_claim[label.source_claim_id]
+        rows.append(_row(generate_denial_letter(claim, lines, label, seed)))
+        rows.append(_row(generate_clinical_note(claim, lines, label, seed)))
+        if needs_prior_auth(label):
+            rows.append(_row(generate_prior_auth(claim, lines, label, seed)))
+    logger.info(
+        "generated %d documents (%s)",
+        len(rows),
+        ", ".join(f"{kind.value}: {count}" for kind, count in count_by_type(rows).items()),
+    )
     return rows
+
+
+def count_by_type(rows: Iterable[GeneratedDocumentRow]) -> dict[DocumentType, int]:
+    """How many of `rows` each document type has. Every type is listed, a type with no
+    document as 0, in the order of `GENERATOR_VERSIONS`."""
+    counts = dict.fromkeys(GENERATOR_VERSIONS, 0)
+    for row in rows:
+        counts[row.document_type] += 1
+    return counts
 
 
 def replace_generated_document_rows(session: Session, rows: list[GeneratedDocumentRow]) -> int:
     """Make `generated_documents` hold exactly `rows`: remove every document, then store `rows`.
 
-    The table then always comes from one run, with one seed and one generator version. With an
-    upsert alone, a claim that is no longer denied would keep its old letter. The claims must
-    already be in `claim_samples`. Returns the number of rows written. Does not commit: the
-    caller owns the transaction, so a failure brings the old documents back.
+    Every document type is removed, so `rows` must hold every type of the run (as
+    `build_document_rows` returns them). The table then always comes from one run, with one
+    seed and one generator version per type. With an upsert alone, a claim that is no longer
+    denied would keep its old documents. The claims must already be in `claim_samples`.
+    Returns the number of rows written. Does not commit: the caller owns the transaction, so
+    a failure brings the old documents back.
     """
     session.execute(delete(GeneratedDocument))
     written = upsert_rows(session, GeneratedDocument, rows, UPSERT_CONSTRAINT, UPSERT_KEY_COLUMNS)
     logger.info("stored %d generated documents", written)
     return written
+
+
+def _row(document: DenialLetter | ClinicalNote | PriorAuthRecord) -> GeneratedDocumentRow:
+    return GeneratedDocumentRow(
+        **document.model_dump(exclude={"answer_key"}),
+        answer_key=document.answer_key.model_dump(mode="json"),
+    )

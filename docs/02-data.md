@@ -236,7 +236,7 @@ are never removed. Loading 50,000 claims takes about 40 seconds.
 Because only the first rows are read, the gates say nothing about the rest of the file: a
 duplicate claim id or a damaged row further down is not noticed.
 
-### 2.2.3 Labels: rule v1
+### 2.2.3 Labels: rule v2
 
 The ML target is:
 
@@ -244,9 +244,14 @@ The ML target is:
 
 That outcome cannot be observed: the claims sample holds no appeals. So the label is made by
 a written rule and is a **proxy**. It is stored as `appeal_success_proxy`, and every report
-that shows it must call it a proxy. The rule has a version, `v1`, which is stored on every
-label row. Any change to the rule (a mapping, a band edge, a chance, the hash input) needs a
-new version.
+that shows it must call it a proxy. The rule has a version, `v2`, which is stored on every
+label row. Any change to the rule (a mapping, a band edge, a chance, a nudge, a limit, the
+hash input) needs a new version.
+
+**The chances in this rule were chosen so that the label can be learned.** They are not
+measured win rates, and they are not more true than the chances of rule v1. Rule v2 exists
+because no model could reach the Stage 3 target on rule v1 (see "Why v2 replaced v1" below).
+The label is still a proxy.
 
 **Denied or not.**
 
@@ -254,8 +259,11 @@ new version.
 - A claim is denied when at least one of its lines is denied.
 
 Both conditions are needed because the indicator and the money are only loosely linked in
-this file (see 2.2.2, "Reading the numbers"). Most denied claims are partly paid: only about
-one in nine is denied on every line.
+this file (see 2.2.2, "Reading the numbers").
+
+A denied claim is **fully denied** when every one of its lines is denied, and **partly
+denied** when at least one line is denied and at least one is not. Most denied claims are
+partly denied: only about one in nine is denied on every line.
 
 **Denial reason category.** Taken from the indicator of the claim's first denied line (the
 lowest line number). A claim that is not denied has no category.
@@ -272,50 +280,75 @@ lowest line number). A claim that is not denied has no category.
 **Appeal-success proxy.** Only denied claims have one. It is made in three steps:
 
 1. Chance = the base chance of the category, plus a nudge for the band of the claim's total
-   allowed charge (the sum over all its lines).
+   allowed charge (the sum over all its lines), plus a nudge for a partly or fully denied
+   claim. The result is then kept between 0.02 and 0.98: anything lower becomes 0.02 and
+   anything higher becomes 0.98.
 2. Draw = a number from 0 up to 1 made from the claim id: the first 8 bytes of the SHA-256
-   hash of the text `v1:<claim id>`, read as a whole number and divided by 2^64.
+   hash of the text `v2:<claim id>`, read as a whole number and divided by 2^64.
 3. The proxy is true when the draw is below the chance.
 
 | Category | Base chance |
 |---|---|
-| `medical_necessity` | 0.60 |
-| `other` | 0.45 |
-| `noncovered` | 0.25 |
-| `coordination_of_benefits` | 0.20 |
-| `duplicate` | 0.10 |
-| `benefits_exhausted` | 0.10 |
+| `medical_necessity` | 0.75 |
+| `other` | 0.55 |
+| `noncovered` | 0.20 |
+| `coordination_of_benefits` | 0.15 |
+| `duplicate` | 0.05 |
+| `benefits_exhausted` | 0.05 |
 
 | Claim's total allowed charge | Nudge |
 |---|---|
-| Exactly 0 | -0.10 |
+| Exactly 0 | -0.15 |
 | Above 0, below 100 | 0.00 |
-| 100 or more, below 250 | +0.05 |
-| 250 or more | +0.10 |
+| 100 or more, below 250 | +0.10 |
+| 250 or more | +0.20 |
 
-**The base chances and nudges are assumptions, not measurements.** No public source gives
-appeal win rates per reason for these claims. The numbers only encode an ordering that seems
-reasonable, for example that a medical-necessity denial is more winnable than a duplicate.
+| Claim | Nudge |
+|---|---|
+| Partly denied | +0.15 |
+| Fully denied | -0.10 |
+
+An example: a partly denied `noncovered` claim with a total allowed charge of 120.00 has the
+chance 0.20 + 0.10 + 0.15 = 0.45. The limits are needed because the sum can leave the range
+0 to 1: a fully denied `duplicate` claim with a total allowed charge of 0 gives
+0.05 - 0.15 - 0.10 = -0.20, which becomes 0.02. No claim is ever certain.
+
+**The base chances, nudges and limits are assumptions, not measurements.** No public source
+gives appeal win rates per reason for these claims. The numbers encode an ordering that seems
+reasonable, for example that a medical-necessity denial is more winnable than a duplicate, or
+that a denial on a claim the payer partly paid looks more fixable than one where it paid
+nothing. How far apart the numbers sit was chosen so that the label can be learned.
 
 The same claim always gets the same draw, so the label can be reproduced exactly. A draw is
 used, and not a fixed threshold, because a threshold would make the label an exact formula
-of two inputs: a model would re-learn the formula and score perfectly, which would prove
-nothing. With the draw, the best a model can do is learn the chance, so its score on this
-label has a ceiling well below a perfect one. Whether the Stage 3 target is reachable with
-these chances has not been measured yet.
+of its inputs: a model would re-learn the formula and score perfectly, which would prove
+nothing. With the draw, the best a model can do is learn the chance. So the best score any
+model can give a claim is the rule's own chance, and the AUC of that score is the **best
+possible AUC**: a ceiling well below a perfect score. It is measured below and printed by
+every pipeline run (2.9).
 
 The claim's total allowed charge is used, and not the denied line's own amount, because the
 allowed charge is 0 on about 88% of denied lines.
 
-**What v1 leaves out.** The rule set was planned as reason category × payer denial rate ×
-amount × prior authorisation. Version 1 uses two of the four:
+**What v2 leaves out.** The rule set was planned as reason category × payer denial rate ×
+amount × prior authorisation. Version 2 uses two of the four, and one input that was not
+planned:
 
-| Input | In v1 | Why |
+| Input | In v2 | Why |
 |---|---|---|
 | Denial reason category | Yes | From the processing indicator |
 | Amount | Yes | The claim's total allowed charge |
+| Partly or fully denied | Yes, new in v2 | Whether every line of the claim is denied |
 | Payer denial rate | No | The claims carry no issuer id, so they cannot be joined to `issuer_denial_stats` or `plan_denial_stats` |
-| Prior authorisation | No | The claims file has no such field |
+| Prior authorisation | No | The claims file has no such field. The generated prior-authorisation records (2.4.3) are fabricated and their status is random, so it carries no signal |
+
+**Why v2 replaced v1.** Rule v1 used the category and the amount only, with chances that sat
+close together (base chances 0.60 / 0.45 / 0.25 / 0.20 / 0.10 / 0.10, band nudges from -0.10
+to +0.10, hash text `v1:<claim id>`). Its best possible AUC, measured on the same claims, was
+0.640 on the test split and 0.654 on all denied claims. The Stage 3 target is 0.70, so no
+model could have reached it. Rule v2 spreads the chances further apart and adds the partly or
+fully denied input. The denied flag and the reason category are the same in both versions;
+the proxy of every denied claim was drawn again.
 
 **Where it lands.** `claim_sample_labels`, a public reference table (no `account_id`) with
 one row per claim: `is_denied`, `denial_reason_category`, `appeal_success_proxy`,
@@ -329,14 +362,41 @@ one split seed.
 | Measure | Value |
 |---|---|
 | Claims denied | 5,325 (10.65%) |
-| Appeal-success proxy true, among denied claims | 1,888 (35.46%) |
+| Partly denied, among denied claims | 4,720 (88.6%) |
+| Fully denied, among denied claims | 605 (11.4%) |
+| Appeal-success proxy true, among denied claims | 2,813 (52.83%) |
 | Denied claims in `other` or `noncovered` | 4,665 (87.6%) |
 | Denied claims in `benefits_exhausted` | 17 |
+| Different chances that occur | 17 |
+| Denied claims at a limit | 242 (176 at 0.02, 66 at 0.98) |
 
-So the reason category carries little information: two categories hold almost nine in ten
-denied claims. The set to model is also small, about 5,300 denied claims; loading more claims
-is the way to grow it. These numbers describe a synthetic file and say nothing about real
-Medicare claims.
+The best possible AUC, with split seed 42 (2.5):
+
+| Split | Denied claims | Proxy true | Best possible AUC |
+|---|---|---|---|
+| Train | 3,784 | 1,976 (52.22%) | 0.7722 |
+| Validation | 782 | 422 (53.96%) | 0.7676 |
+| Test | 759 | 415 (54.68%) | 0.7522 |
+| All | 5,325 | 2,813 (52.83%) | 0.7686 |
+
+How to read these numbers:
+
+- The Stage 3 target (AUC 0.70 on the test split) can be reached, but the margin is small.
+  The ceiling on the test split is 0.7522 and that split has only 759 denied claims. A model
+  that loses a little signal, for example to extraction errors, can still miss 0.70.
+- A model that reaches 0.70 has learned this rule. It has learned nothing about real appeals.
+- The reason category alone is not enough: two categories hold almost nine in ten denied
+  claims, and a model that knows only the category reaches about 0.696 on the test split. It
+  also needs the amount band or the partly or fully denied input.
+- The proxy is true for 52.83% of denied claims (35.46% under rule v1). That is a side effect
+  of the new numbers, not a finding.
+- The two minus nudges overlap: 354 of the 605 fully denied claims also have a total allowed
+  charge of 0. And 533 of the 605 have a single line, so "fully denied" mostly means a
+  one-line claim that was denied.
+- The set to model is small, about 5,300 denied claims; loading more claims is the way to
+  grow it.
+
+These numbers describe a synthetic file and say nothing about real Medicare claims.
 
 ## 2.3 Layer B — evidence corpus for retrieval
 
@@ -379,7 +439,7 @@ writes it, before noise.
 (2.2.2), and every name, id and letter date added on top is made up by the generator. No real
 patient, provider or insurer appears in a letter.
 
-**Which claims get a letter.** Only claims that label rule v1 calls denied (2.2.3), one letter
+**Which claims get a letter.** Only claims that the label rule calls denied (2.2.3), one letter
 each. A claim that is not denied gets no document: on the default load that is 44,675 of the
 50,000 claims.
 
@@ -541,7 +601,7 @@ and every name and id added on top is made up. No real patient or provider appea
 The note is the provider's own short record of the visit, written as if before the denial. It
 knows nothing about the payer's decision.
 
-**Which claims get a note.** Every claim that label rule v1 calls denied, one note each: the
+**Which claims get a note.** Every claim that the label rule calls denied, one note each: the
 same claims that get a letter.
 
 **What a note prints.**
@@ -844,9 +904,9 @@ Measured on the first 50,000 claims with seed 42:
 
 | Split | Claims | Denied claims | Proxy true among denied |
 |---|---|---|---|
-| Train | 35,180 (70.36%) | 3,784 | 35.15% |
-| Validation | 7,305 (14.61%) | 782 | 36.19% |
-| Test | 7,515 (15.03%) | 759 | 36.23% |
+| Train | 35,180 (70.36%) | 3,784 | 52.22% |
+| Validation | 7,305 (14.61%) | 782 | 53.96% |
+| Test | 7,515 (15.03%) | 759 | 54.68% |
 
 ## 2.6 Data quality gates
 
@@ -919,7 +979,7 @@ What it does, in order:
 
 1. Reads and checks the workbook (the gates in 2.2.1).
 2. Reads and checks the claims file (the gates in 2.2.2).
-3. Labels every claim it read with rule v1 (2.2.3), places it in a split (2.5), and prints
+3. Labels every claim it read with rule v2 (2.2.3), places it in a split (2.5), and prints
    the quality report.
 4. Applies the class balance gate (2.6).
 5. Only if everything passed, writes `issuer_denial_stats`, `plan_denial_stats`,
@@ -935,16 +995,22 @@ default 50,000 claims it takes about 50 seconds.
 The report for the default run:
 
 ```text
-label rule version: v1 (the appeal-success label is a proxy, not an observed outcome)
+label rule version: v2 (the appeal-success label is a proxy, not an observed outcome)
 split seed: 42
 claims labelled: 50,000
 group: claims (share) | denied (of group) | proxy true (of denied)
-train: 35,180 (70.36%) | 3,784 (10.76%) | 1,330 (35.15%)
-validation: 7,305 (14.61%) | 782 (10.70%) | 283 (36.19%)
-test: 7,515 (15.03%) | 759 (10.10%) | 275 (36.23%)
-all: 50,000 (100.00%) | 5,325 (10.65%) | 1,888 (35.46%)
-class balance gate (proxy true among denied claims, 20% to 80%): 35.46%, passes
+train: 35,180 (70.36%) | 3,784 (10.76%) | 1,976 (52.22%)
+validation: 7,305 (14.61%) | 782 (10.70%) | 422 (53.96%)
+test: 7,515 (15.03%) | 759 (10.10%) | 415 (54.68%)
+all: 50,000 (100.00%) | 5,325 (10.65%) | 2,813 (52.83%)
+best possible AUC (score = the rule's own chance; target 0.70; reported, not a gate): train 0.7722 | validation 0.7676 | test 0.7522 | all 0.7686
+class balance gate (proxy true among denied claims, 20% to 80%): 52.83%, passes
 ```
+
+The `best possible AUC` line shows whether the Stage 3 target can still be reached on this
+load (2.2.3). It is reported and is **not** a gate: a small load has few test claims, so the
+number is noisy, and it never stops a run. A group with no true proxy or no false proxy
+shows `n/a`.
 
 Because the labels are replaced, the labels table always comes from one run: one rule
 version, one seed, and only the claims that run read. A run with a smaller `--max-claims`

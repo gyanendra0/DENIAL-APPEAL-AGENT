@@ -77,7 +77,7 @@ def test_builds_one_row_per_claim_with_its_label_split_and_seed() -> None:
     )
     assert denied.denial_reason_category is DenialReasonCategory.MEDICAL_NECESSITY
     assert denied.appeal_success_proxy is not None
-    assert paid.label_rule_version == denied.label_rule_version == "v1"
+    assert paid.label_rule_version == denied.label_rule_version == "v2"
     assert paid.split_seed == denied.split_seed == SEED
 
 
@@ -126,7 +126,7 @@ def test_upsert_stores_the_rows(session: Session) -> None:
     assert stored[DENIED_CLAIM].appeal_success_proxy is _rows()[1].appeal_success_proxy
     assert stored[DENIED_CLAIM].split is DatasetSplit.VALIDATION
     assert stored[DENIED_CLAIM].split_seed == SEED
-    assert stored[DENIED_CLAIM].label_rule_version == "v1"
+    assert stored[DENIED_CLAIM].label_rule_version == "v2"
 
 
 def test_upsert_twice_updates_in_place_and_adds_no_rows(session: Session) -> None:
@@ -156,7 +156,7 @@ def test_upsert_twice_updates_in_place_and_adds_no_rows(session: Session) -> Non
     assert stored[DENIED_CLAIM].label_rule_version == "v2"
     assert stored[DENIED_CLAIM].split is DatasetSplit.TEST
     assert stored[DENIED_CLAIM].split_seed == 7
-    assert stored[PAID_CLAIM].label_rule_version == "v1"  # not in the second batch, untouched
+    assert stored[PAID_CLAIM].label_rule_version == "v2"  # not in the second batch, untouched
 
 
 def test_upsert_sets_updated_at_when_a_row_is_stored_again(session: Session) -> None:

@@ -35,11 +35,14 @@ TABLES: tuple[type[Base], ...] = (
 LOADED = (3, 6, 6, 9, 6)
 NOTHING = (0, 0, 0, 0, 0)
 # The fixture has two denied claims, both with a false proxy, so it fails the class balance
-# gate as it is. Denying the first claim's only line (indicator O, payment 0) adds a denied
-# claim whose proxy is true: one of three, which passes.
+# gate as it is. Two edits make it pass with one true proxy of three. Denying the first claim's
+# only line (indicator O, payment 0) adds a third denied claim. Raising the fifth claim's total
+# allowed charge into the high band lifts its chance from 0.30 to 0.50 (partly denied,
+# coordination of benefits), above its draw of 0.468.
 BALANCED: dict[tuple[int, str], str] = {
     (2, "LINE_PRCSG_IND_CD_1"): "O",
     (2, "LINE_NCH_PMT_AMT_1"): "0.00",
+    (6, "LINE_ALOWD_CHRG_AMT_2"): "300.00",
 }
 
 
@@ -108,7 +111,7 @@ def test_prints_the_quality_report(
     main(_args(claims_zip(tmp_path, BALANCED)))
 
     out = capsys.readouterr().out
-    assert "label rule version: v1 (the appeal-success label is a proxy" in out
+    assert "label rule version: v2 (the appeal-success label is a proxy" in out
     assert "split seed: 42" in out
     assert "claims labelled: 6" in out
     assert "all: 6 (100.00%) | 3 (50.00%) | 1 (33.33%)" in out
@@ -130,10 +133,11 @@ def test_stores_each_claims_label_with_the_rule_version_split_and_seed(
         "800000000000002",
         "800000000000005",
     }
-    assert labels["800000000000001"].appeal_success_proxy is True
+    assert labels["800000000000001"].appeal_success_proxy is False
     assert labels["800000000000002"].appeal_success_proxy is False
+    assert labels["800000000000005"].appeal_success_proxy is True
     assert labels["800000000000003"].appeal_success_proxy is None
-    assert {row.label_rule_version for row in labels.values()} == {"v1"}
+    assert {row.label_rule_version for row in labels.values()} == {"v2"}
     assert {row.split_seed for row in labels.values()} == {DEFAULT_SPLIT_SEED} == {42}
     assert labels["800000000000001"].split == DatasetSplit.TRAIN
 
@@ -161,14 +165,14 @@ def test_split_seed_and_max_claims_are_passed_on(
 
     monkeypatch.setattr(run_data_pipeline, "build_claim_label_rows", spy)
 
-    # Claims 1 and 2 only: two denied, one true proxy.
+    # Claims 1 to 5 only: three denied, one true proxy (the fifth claim's).
     exit_code = main(
-        [*_args(claims_zip(tmp_path, BALANCED)), "--max-claims", "2", "--split-seed", "7"]
+        [*_args(claims_zip(tmp_path, BALANCED)), "--max-claims", "5", "--split-seed", "7"]
     )
 
     assert exit_code == 0
     assert seen == [7]
-    assert _stored_counts(database) == (3, 6, 2, 4, 2)
+    assert _stored_counts(database) == (3, 6, 5, 8, 5)
     with database.connect() as connection:
         assert set(connection.scalars(select(ClaimSampleLabel.split_seed))) == {7}
 
@@ -179,13 +183,13 @@ def test_a_later_run_replaces_the_labels_of_the_earlier_run(
     args = _args(claims_zip(tmp_path, BALANCED))
     main(args)  # six claims, seed 42
 
-    exit_code = main([*args, "--max-claims", "2", "--split-seed", "7"])
+    exit_code = main([*args, "--max-claims", "5", "--split-seed", "7"])
 
     assert exit_code == 0
-    # Only the two claims of the later run have a label, both with its seed. No label from
+    # Only the five claims of the later run have a label, all with its seed. No label from
     # the earlier run is left, so the table never mixes two seeds.
-    assert _label_seeds(database) == {"800000000000001": 7, "800000000000002": 7}
-    assert _stored_counts(database) == (3, 6, 6, 9, 2)  # claims and lines are never removed
+    assert _label_seeds(database) == {f"80000000000000{n}": 7 for n in range(1, 6)}
+    assert _stored_counts(database) == (3, 6, 6, 9, 5)  # claims and lines are never removed
 
 
 @pytest.mark.parametrize(

@@ -381,7 +381,7 @@ def test_rejects_labels_made_by_another_rule_version(session: Session) -> None:
         session, OTHER_DENIED_CLAIM, OTHER_DENIED_CLAIM_LINES, is_denied=True, rule_version="v0"
     )
 
-    with pytest.raises(BatchRejectedError, match="rule version v0, the code is at v1"):
+    with pytest.raises(BatchRejectedError, match="rule version v0, the code is at v2"):
         build_document_rows(session, SEED)
 
 

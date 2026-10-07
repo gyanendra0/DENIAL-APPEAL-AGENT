@@ -31,7 +31,11 @@ from src.ingest.marketplace_denials import (
     upsert_issuer_denial_rows,
 )
 from src.ingest.marketplace_plan_denials import read_plan_denial_rows, upsert_plan_denial_rows
-from src.ml.claim_labels import build_claim_label_rows, replace_claim_label_rows
+from src.ml.claim_labels import (
+    build_appeal_success_chances,
+    build_claim_label_rows,
+    replace_claim_label_rows,
+)
 from src.ml.quality_report import build_label_quality_report
 from src.ml.splits import MAX_SPLIT_SEED
 
@@ -98,7 +102,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     label_rows = build_claim_label_rows(
         (claim.source_claim_id for claim in batch.claims), batch.lines, args.split_seed
     )
-    report = build_label_quality_report(label_rows)
+    chances = build_appeal_success_chances(
+        (claim.source_claim_id for claim in batch.claims), batch.lines
+    )
+    report = build_label_quality_report(label_rows, chances)
     print(report.as_text())
     problems = report.problems()
     if problems:

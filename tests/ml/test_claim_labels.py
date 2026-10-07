@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from src.db.models import ClaimSample, ClaimSampleLabel, DatasetSplit, DenialReasonCategory
 from src.ml.claim_labels import (
     ClaimLabelRow,
+    build_appeal_success_chances,
     build_claim_label_rows,
     replace_claim_label_rows,
     upsert_claim_label_rows,
@@ -97,6 +98,23 @@ def test_rejects_a_claim_without_lines() -> None:
 def test_rejects_a_line_of_a_claim_that_is_not_given() -> None:
     with pytest.raises(ValueError, match=f"claim {DENIED_CLAIM}, which is not given"):
         build_claim_label_rows([PAID_CLAIM], LINES, SEED)
+
+
+def test_chances_are_given_for_denied_claims_only() -> None:
+    chances = build_appeal_success_chances([PAID_CLAIM, DENIED_CLAIM], LINES)
+
+    # Medical necessity 0.75, total 100.00 (mid band) +0.10, partly denied +0.15: kept at 0.98.
+    assert chances == {DENIED_CLAIM: Decimal("0.98")}
+
+
+def test_chances_reject_a_claim_without_lines() -> None:
+    with pytest.raises(ValueError, match="800000000000009 has no lines"):
+        build_appeal_success_chances([PAID_CLAIM, "800000000000009"], LINES[1:2])
+
+
+def test_chances_reject_a_line_of_a_claim_that_is_not_given() -> None:
+    with pytest.raises(ValueError, match=f"claim {DENIED_CLAIM}, which is not given"):
+        build_appeal_success_chances([PAID_CLAIM], LINES)
 
 
 def test_rejects_a_seed_that_does_not_fit_the_integer_column() -> None:

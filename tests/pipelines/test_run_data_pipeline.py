@@ -115,6 +115,9 @@ def test_prints_the_quality_report(
     assert "split seed: 42" in out
     assert "claims labelled: 6" in out
     assert "all: 6 (100.00%) | 3 (50.00%) | 1 (33.33%)" in out
+    # The one true proxy (chance 0.50) scores above both false ones (0.45); all are in train.
+    assert "best possible AUC (score = the rule's own chance; target 0.70" in out
+    assert "train 1.0000 | validation n/a | test n/a | all 1.0000" in out
     assert "33.33%, passes" in out
 
 

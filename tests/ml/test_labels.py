@@ -10,6 +10,7 @@ from src.ml.labels import (
     LABEL_RULE_VERSION,
     ClaimLabel,
     appeal_success_chance,
+    claim_appeal_success_chance,
     is_denied_line,
     label_claim,
 )
@@ -290,6 +291,39 @@ def test_share_of_true_proxies_is_close_to_the_chance() -> None:
 def test_rejects_a_claim_without_lines() -> None:
     with pytest.raises(ValueError, match="has no lines"):
         label_claim(CLAIM_ID, [])
+
+
+def test_a_claims_chance_is_worked_out_from_its_lines() -> None:
+    # The design note's worked example as lines: partly denied `noncovered`, total 120.00.
+    lines = [_line(2, "C", "0.00", "20.00"), _line(1, "A", "80.00", "100.00")]
+
+    assert claim_appeal_success_chance(lines) == Decimal("0.45")
+
+
+def test_a_fully_denied_claim_gets_the_lower_chance_from_its_lines() -> None:
+    # `noncovered`, total 120.00 (mid band), every line denied: 0.20 + 0.10 - 0.10.
+    lines = [_line(1, "C", "0.00", "20.00"), _line(2, "C", "0.00", "100.00")]
+
+    assert claim_appeal_success_chance(lines) == Decimal("0.20")
+
+
+def test_a_claim_that_is_not_denied_has_no_chance() -> None:
+    assert claim_appeal_success_chance([PAID]) is None
+
+
+def test_a_claims_chance_is_the_one_its_proxy_is_drawn_against() -> None:
+    # Same lines for many claims: the share of true proxies must sit near the chance.
+    lines = [_line(1, "N", "0.00"), PAID]  # medical necessity, low band, partly: 0.90
+    labels = [label_claim(f"{800000000000000 + number}", lines) for number in range(2000)]
+
+    share = sum(label.appeal_success_proxy is True for label in labels) / len(labels)
+    assert claim_appeal_success_chance(lines) == Decimal("0.90")
+    assert 0.87 < share < 0.93
+
+
+def test_refuses_to_take_a_chance_from_no_lines() -> None:
+    with pytest.raises(ValueError, match="no lines to take a chance from"):
+        claim_appeal_success_chance([])
 
 
 def test_rejects_a_claim_id_that_is_not_fifteen_digits() -> None:

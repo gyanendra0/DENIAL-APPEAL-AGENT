@@ -114,8 +114,8 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
     """Apply label rule v2 to one claim. `lines` are all of the claim's lines, in any order."""
     if not lines:
         raise ValueError(f"claim {source_claim_id} has no lines to label")
-    denied = [line for line in lines if is_denied_line(line)]
-    if not denied:
+    denied_claim = _category_and_chance(lines)
+    if denied_claim is None:
         return ClaimLabel(
             source_claim_id=source_claim_id,
             is_denied=False,
@@ -123,10 +123,7 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
             appeal_success_proxy=None,
             label_rule_version=LABEL_RULE_VERSION,
         )
-    first = min(denied, key=lambda line: line.line_number)
-    category = CATEGORY_BY_INDICATOR.get(first.processing_indicator, DenialReasonCategory.OTHER)
-    total_allowed = sum((line.allowed_charge_amount for line in lines), Decimal(0))
-    chance = appeal_success_chance(category, total_allowed, fully_denied=len(denied) == len(lines))
+    category, chance = denied_claim
     draw = repeatable_draw(f"{LABEL_RULE_VERSION}:{source_claim_id}")
     return ClaimLabel(
         source_claim_id=source_claim_id,
@@ -135,6 +132,32 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
         appeal_success_proxy=draw < Fraction(chance),
         label_rule_version=LABEL_RULE_VERSION,
     )
+
+
+def claim_appeal_success_chance(lines: Sequence[LabelLine]) -> Decimal | None:
+    """The chance the rule draws one claim's proxy against, or None when the claim is not denied.
+
+    `lines` are all of the claim's lines, in any order. This is the best score any model could
+    give the claim: the rest of the label is a hash draw that nothing can learn.
+    """
+    if not lines:
+        raise ValueError("a claim has no lines to take a chance from")
+    denied_claim = _category_and_chance(lines)
+    return None if denied_claim is None else denied_claim[1]
+
+
+def _category_and_chance(
+    lines: Sequence[LabelLine],
+) -> tuple[DenialReasonCategory, Decimal] | None:
+    """The reason category and the chance of a denied claim; None when no line is denied."""
+    denied = [line for line in lines if is_denied_line(line)]
+    if not denied:
+        return None
+    first = min(denied, key=lambda line: line.line_number)
+    category = CATEGORY_BY_INDICATOR.get(first.processing_indicator, DenialReasonCategory.OTHER)
+    total_allowed = sum((line.allowed_charge_amount for line in lines), Decimal(0))
+    chance = appeal_success_chance(category, total_allowed, fully_denied=len(denied) == len(lines))
+    return category, chance
 
 
 def appeal_success_chance(

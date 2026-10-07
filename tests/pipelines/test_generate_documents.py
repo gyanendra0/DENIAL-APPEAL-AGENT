@@ -40,11 +40,13 @@ TABLES: tuple[type[Base], ...] = (
     ClaimSampleLabel,
     GeneratedDocument,
 )
-# The claims fixture with one more denied claim, so that it passes the class balance gate of
-# the data pipeline (see tests/pipelines/test_run_data_pipeline.py).
+# The claims fixture with one more denied claim and a larger allowed charge on the fifth
+# claim, so that it passes the class balance gate of the data pipeline (see
+# tests/pipelines/test_run_data_pipeline.py).
 BALANCED: dict[tuple[int, str], str] = {
     (2, "LINE_PRCSG_IND_CD_1"): "O",
     (2, "LINE_NCH_PMT_AMT_1"): "0.00",
+    (6, "LINE_ALOWD_CHRG_AMT_2"): "300.00",
 }
 DENIED_CLAIMS = {"800000000000001", "800000000000002", "800000000000005"}
 LETTER = DocumentType.DENIAL_LETTER
@@ -238,7 +240,7 @@ def test_labels_of_another_rule_version_exit_1_and_keep_the_old_documents(
     exit_code = main(["--seed", "7"])
 
     assert exit_code == 1
-    assert "rule version v0, the code is at v1" in capsys.readouterr().err
+    assert "rule version v0, the code is at v2" in capsys.readouterr().err
     assert set(before) == DOCUMENTS
     assert _documents(loaded) == before
 

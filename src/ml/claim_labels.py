@@ -7,6 +7,7 @@ data: they can always be rebuilt from the claims, the rule version and the seed.
 
 import logging
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import Protocol
 
 from pydantic import Field
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import ClaimSampleLabel, DatasetSplit
 from src.ingest.marketplace_denials import upsert_rows
-from src.ml.labels import ClaimLabel, LabelLine, label_claim
+from src.ml.labels import ClaimLabel, LabelLine, claim_appeal_success_chance, label_claim
 from src.ml.splits import MAX_SPLIT_SEED, assign_split
 
 logger = logging.getLogger(__name__)
@@ -46,19 +47,44 @@ def build_claim_label_rows(
     Raises `ValueError` if a claim has no lines or a line belongs to a claim that is not in
     `claim_ids`.
     """
-    lines_by_claim: dict[str, list[ClaimLine]] = {claim_id: [] for claim_id in claim_ids}
-    for line in lines:
-        if line.source_claim_id not in lines_by_claim:
-            raise ValueError(f"a line belongs to claim {line.source_claim_id}, which is not given")
-        lines_by_claim[line.source_claim_id].append(line)
     return [
         ClaimLabelRow(
             **label_claim(claim_id, claim_lines).model_dump(),
             split=assign_split(claim_id, split_seed),
             split_seed=split_seed,
         )
-        for claim_id, claim_lines in lines_by_claim.items()
+        for claim_id, claim_lines in _lines_by_claim(claim_ids, lines).items()
     ]
+
+
+def build_appeal_success_chances(
+    claim_ids: Iterable[str], lines: Iterable[ClaimLine]
+) -> dict[str, Decimal]:
+    """The rule's chance of every denied claim in `claim_ids`, by claim id.
+
+    A claim that is not denied has no entry. The quality report uses these as the best
+    possible score. Raises `ValueError` if a claim has no lines or a line belongs to a claim
+    that is not in `claim_ids`.
+    """
+    chances = {}
+    for claim_id, claim_lines in _lines_by_claim(claim_ids, lines).items():
+        if not claim_lines:
+            raise ValueError(f"claim {claim_id} has no lines to take a chance from")
+        chance = claim_appeal_success_chance(claim_lines)
+        if chance is not None:
+            chances[claim_id] = chance
+    return chances
+
+
+def _lines_by_claim(
+    claim_ids: Iterable[str], lines: Iterable[ClaimLine]
+) -> dict[str, list[ClaimLine]]:
+    lines_by_claim: dict[str, list[ClaimLine]] = {claim_id: [] for claim_id in claim_ids}
+    for line in lines:
+        if line.source_claim_id not in lines_by_claim:
+            raise ValueError(f"a line belongs to claim {line.source_claim_id}, which is not given")
+        lines_by_claim[line.source_claim_id].append(line)
+    return lines_by_claim
 
 
 def upsert_claim_label_rows(session: Session, rows: list[ClaimLabelRow]) -> int:

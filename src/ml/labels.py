@@ -1,16 +1,20 @@
-"""Label rule v1: turn one claim and its service lines into a proxy label.
+"""Label rule v2: turn one claim and its service lines into a proxy label.
 
 Nothing here is an observed outcome. The claims source has no appeals, so
 `appeal_success_proxy` is made by the documented rule below, and every report must call it a
-proxy. The base chances and nudges are assumptions, not measurements.
+proxy. The base chances and nudges are assumptions, not measurements. In v2 they were chosen
+so that the label can be learned: v1 put the chances so close together that no model could
+reach the Stage 3 target.
 
 The rule:
 
 - A line is denied when its processing indicator is not `A` and its payment is 0.
 - A claim is denied when any of its lines is denied.
 - The reason category comes from the indicator of the first denied line.
-- The proxy is a repeatable draw: a chance from the category and the claim's total allowed
-  charge, compared with a number made from a hash of the rule version and the claim id.
+- A claim is fully denied when every one of its lines is denied, and partly denied otherwise.
+- The proxy is a repeatable draw: a chance from the category, the claim's total allowed
+  charge and whether the claim is partly or fully denied, kept between a lowest and a highest
+  value, compared with a number made from a hash of the rule version and the claim id.
 
 Any change to a constant or to the hash input needs a new `LABEL_RULE_VERSION`.
 """
@@ -25,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.db.models import DenialReasonCategory
 from src.ml.draws import repeatable_draw
 
-LABEL_RULE_VERSION = "v1"
+LABEL_RULE_VERSION = "v2"
 
 ALLOWED_INDICATOR = "A"
 # Secondary payer and the "MSP cost avoided" codes: another payer is primary.
@@ -40,20 +44,26 @@ CATEGORY_BY_INDICATOR = {
 )
 
 BASE_CHANCE = {
-    DenialReasonCategory.MEDICAL_NECESSITY: Decimal("0.60"),
-    DenialReasonCategory.OTHER: Decimal("0.45"),
-    DenialReasonCategory.NONCOVERED: Decimal("0.25"),
-    DenialReasonCategory.COORDINATION_OF_BENEFITS: Decimal("0.20"),
-    DenialReasonCategory.DUPLICATE: Decimal("0.10"),
-    DenialReasonCategory.BENEFITS_EXHAUSTED: Decimal("0.10"),
+    DenialReasonCategory.MEDICAL_NECESSITY: Decimal("0.75"),
+    DenialReasonCategory.OTHER: Decimal("0.55"),
+    DenialReasonCategory.NONCOVERED: Decimal("0.20"),
+    DenialReasonCategory.COORDINATION_OF_BENEFITS: Decimal("0.15"),
+    DenialReasonCategory.DUPLICATE: Decimal("0.05"),
+    DenialReasonCategory.BENEFITS_EXHAUSTED: Decimal("0.05"),
 }
 # Bands of the claim's total allowed charge: zero, low (below 100), mid (below 250), high.
 MID_BAND_FROM = Decimal("100")
 HIGH_BAND_FROM = Decimal("250")
-ZERO_BAND_NUDGE = Decimal("-0.10")
+ZERO_BAND_NUDGE = Decimal("-0.15")
 LOW_BAND_NUDGE = Decimal("0.00")
-MID_BAND_NUDGE = Decimal("0.05")
-HIGH_BAND_NUDGE = Decimal("0.10")
+MID_BAND_NUDGE = Decimal("0.10")
+HIGH_BAND_NUDGE = Decimal("0.20")
+# Partly denied: at least one line is denied and at least one is not. Fully denied: every line.
+PARTLY_DENIED_NUDGE = Decimal("0.15")
+FULLY_DENIED_NUDGE = Decimal("-0.10")
+# The sum can leave the range 0 to 1, so it is kept inside these limits: no claim is certain.
+MIN_CHANCE = Decimal("0.02")
+MAX_CHANCE = Decimal("0.98")
 
 ClaimId = Annotated[str, Field(pattern=r"^[0-9]{15}$")]
 
@@ -101,11 +111,11 @@ class ClaimLabel(BaseModel):
 
 
 def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
-    """Apply label rule v1 to one claim. `lines` are all of the claim's lines, in any order."""
+    """Apply label rule v2 to one claim. `lines` are all of the claim's lines, in any order."""
     if not lines:
         raise ValueError(f"claim {source_claim_id} has no lines to label")
-    denied = [line for line in lines if is_denied_line(line)]
-    if not denied:
+    denied_claim = _category_and_chance(lines)
+    if denied_claim is None:
         return ClaimLabel(
             source_claim_id=source_claim_id,
             is_denied=False,
@@ -113,10 +123,7 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
             appeal_success_proxy=None,
             label_rule_version=LABEL_RULE_VERSION,
         )
-    first = min(denied, key=lambda line: line.line_number)
-    category = CATEGORY_BY_INDICATOR.get(first.processing_indicator, DenialReasonCategory.OTHER)
-    total_allowed = sum((line.allowed_charge_amount for line in lines), Decimal(0))
-    chance = appeal_success_chance(category, total_allowed)
+    category, chance = denied_claim
     draw = repeatable_draw(f"{LABEL_RULE_VERSION}:{source_claim_id}")
     return ClaimLabel(
         source_claim_id=source_claim_id,
@@ -127,20 +134,51 @@ def label_claim(source_claim_id: str, lines: Sequence[LabelLine]) -> ClaimLabel:
     )
 
 
-def appeal_success_chance(category: DenialReasonCategory, total_allowed_charge: Decimal) -> Decimal:
-    """The assumed chance that an appeal succeeds: the category's base chance plus a nudge
-    for the band of the claim's total allowed charge."""
+def claim_appeal_success_chance(lines: Sequence[LabelLine]) -> Decimal | None:
+    """The chance the rule draws one claim's proxy against, or None when the claim is not denied.
+
+    `lines` are all of the claim's lines, in any order. This is the best score any model could
+    give the claim: the rest of the label is a hash draw that nothing can learn.
+    """
+    if not lines:
+        raise ValueError("a claim has no lines to take a chance from")
+    denied_claim = _category_and_chance(lines)
+    return None if denied_claim is None else denied_claim[1]
+
+
+def _category_and_chance(
+    lines: Sequence[LabelLine],
+) -> tuple[DenialReasonCategory, Decimal] | None:
+    """The reason category and the chance of a denied claim; None when no line is denied."""
+    denied = [line for line in lines if is_denied_line(line)]
+    if not denied:
+        return None
+    first = min(denied, key=lambda line: line.line_number)
+    category = CATEGORY_BY_INDICATOR.get(first.processing_indicator, DenialReasonCategory.OTHER)
+    total_allowed = sum((line.allowed_charge_amount for line in lines), Decimal(0))
+    chance = appeal_success_chance(category, total_allowed, fully_denied=len(denied) == len(lines))
+    return category, chance
+
+
+def appeal_success_chance(
+    category: DenialReasonCategory, total_allowed_charge: Decimal, *, fully_denied: bool
+) -> Decimal:
+    """The assumed chance that an appeal succeeds: the category's base chance, plus a nudge
+    for the band of the claim's total allowed charge, plus a nudge for a partly or fully
+    denied claim, kept between `MIN_CHANCE` and `MAX_CHANCE`."""
     if total_allowed_charge < 0:
         raise ValueError("total allowed charge cannot be negative")
     if total_allowed_charge == 0:
-        nudge = ZERO_BAND_NUDGE
+        band_nudge = ZERO_BAND_NUDGE
     elif total_allowed_charge < MID_BAND_FROM:
-        nudge = LOW_BAND_NUDGE
+        band_nudge = LOW_BAND_NUDGE
     elif total_allowed_charge < HIGH_BAND_FROM:
-        nudge = MID_BAND_NUDGE
+        band_nudge = MID_BAND_NUDGE
     else:
-        nudge = HIGH_BAND_NUDGE
-    return BASE_CHANCE[category] + nudge
+        band_nudge = HIGH_BAND_NUDGE
+    denied_nudge = FULLY_DENIED_NUDGE if fully_denied else PARTLY_DENIED_NUDGE
+    chance = BASE_CHANCE[category] + band_nudge + denied_nudge
+    return min(max(chance, MIN_CHANCE), MAX_CHANCE)
 
 
 def is_denied_line(line: LabelLine) -> bool:

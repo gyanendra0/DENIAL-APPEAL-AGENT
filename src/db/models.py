@@ -1,4 +1,4 @@
-"""Core tables (accounts, users, claims, denials) and public reference tables."""
+"""Core tables (accounts, users, claims, denials), public reference tables and `llm_calls`."""
 
 from datetime import date
 from decimal import Decimal
@@ -80,6 +80,11 @@ class DocumentType(StrEnum):
     DENIAL_LETTER = "denial_letter"
     CLINICAL_NOTE = "clinical_note"
     PRIOR_AUTH = "prior_auth"
+
+
+class LlmProvider(StrEnum):
+    PRIMARY = "primary"
+    FALLBACK = "fallback"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -465,3 +470,36 @@ class GeneratedDocument(TimestampMixin, Base):
     answer_key: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     noise_version: Mapped[str] = mapped_column(String(20), nullable=False)
     noise_record: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class LlmCall(TimestampMixin, Base):
+    """One model call that returned an answer, with what it cost.
+
+    Operational table, no `account_id`: it holds token counts and cost only, never a prompt,
+    a document text, an answer or a personal field. The monthly budget is checked against the
+    sum of `cost_usd` by `created_at`, so the cap survives a restart. `provider` is the role
+    that answered (the host behind each role is a setting); `model_name` and `prompt_version`
+    are stored with every call.
+    """
+
+    __tablename__ = "llm_calls"
+    __table_args__ = (
+        CheckConstraint("model_name <> ''", name="ck_llm_calls_model_name_not_empty"),
+        CheckConstraint("prompt_version <> ''", name="ck_llm_calls_prompt_version_not_empty"),
+        CheckConstraint("purpose <> ''", name="ck_llm_calls_purpose_not_empty"),
+        CheckConstraint("input_tokens >= 0", name="ck_llm_calls_input_tokens_not_negative"),
+        CheckConstraint("output_tokens >= 0", name="ck_llm_calls_output_tokens_not_negative"),
+        CheckConstraint("cost_usd >= 0", name="ck_llm_calls_cost_usd_not_negative"),
+        Index("ix_llm_calls_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[LlmProvider] = mapped_column(
+        Enum(LlmProvider, name="llm_provider", values_callable=_values), nullable=False
+    )
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)

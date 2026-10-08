@@ -74,8 +74,11 @@ Rules:
 - **No query on a business table without an `account_id` filter.** This is the single
   most important rule in the codebase — breaking it leaks one customer's data to another.
 - Public reference tables (loaded from public sources and shared by every account, such as
-  `issuer_denial_stats`) are the one exception: they have no `account_id`. They never hold
+  `issuer_denial_stats`) are an exception: they have no `account_id`. They never hold
   customer data. Any table that does is a business table.
+- Operational tables (the system's own bookkeeping, such as `llm_calls`, the record of what
+  each model call cost) have no `account_id` either. They never hold customer data, document
+  text or personal fields.
 - Every table has `created_at` and `updated_at`.
 - Money uses an exact decimal type, never a float.
 - Enumerated values (roles, statuses) use constrained types, not free text.

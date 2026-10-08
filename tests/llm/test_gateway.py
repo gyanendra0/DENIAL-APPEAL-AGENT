@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import LlmCall, LlmProvider
 from src.db.session import create_session_factory, session_scope
+from src.llm import gateway as gateway_module
 from src.llm.budget import month_to_date_spend
 from src.llm.gateway import (
     LlmBudgetExceededError,
@@ -333,6 +334,63 @@ def test_one_log_line_per_call_without_the_prompt_or_the_answer(
     )
     assert PROMPT_TEXT not in caplog.text
     assert ANSWER_TEXT not in caplog.text
+
+
+def test_an_answered_call_that_cannot_be_recorded_is_logged_and_the_error_raised(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def failing_record(*_: object) -> None:
+        raise RuntimeError("made-up database failure")
+
+    monkeypatch.setattr(gateway_module, "record_llm_call", failing_record)
+    primary = StubProvider("example-small-model")
+    fallback = StubProvider("example-open-model")
+
+    with (
+        caplog.at_level(logging.INFO, logger="src.llm.gateway"),
+        pytest.raises(RuntimeError, match="made-up database failure"),
+    ):
+        _gateway(session_factory, primary, fallback).complete(_request())
+
+    (line,) = [r.getMessage() for r in caplog.records]
+    assert line == (
+        "llm call answered but not recorded: provider=primary model=example-small-model "
+        "purpose=gateway-test input_tokens=520 output_tokens=75 cost_usd=0.000123"
+    )
+    assert caplog.records[0].levelno == logging.ERROR
+    assert PROMPT_TEXT not in caplog.text
+    assert ANSWER_TEXT not in caplog.text
+    # A paid call is not paid for twice: the fallback is not tried.
+    assert fallback.requests == []
+
+
+def test_printing_a_request_an_answer_or_a_result_shows_no_prompt_and_no_answer(
+    session_factory: sessionmaker[Session],
+) -> None:
+    request = _request()
+    primary = StubProvider("example-small-model")
+    result = _gateway(session_factory, primary).complete(request)
+    answer = StubProvider("example-small-model").run(request)
+
+    for printed in (repr(request), str(request), repr(answer), repr(result)):
+        assert PROMPT_TEXT not in printed
+        assert request.system not in printed
+        assert ANSWER_TEXT not in printed
+    assert "purpose='gateway-test'" in repr(request)
+
+
+@pytest.mark.parametrize("cost", ["0.0000001", "1000000.000000", "-0.000001"])
+def test_answer_rejects_a_cost_the_spend_table_cannot_hold(cost: str) -> None:
+    with pytest.raises(ValidationError, match="cost_usd"):
+        ProviderAnswer(
+            text=ANSWER_TEXT,
+            input_tokens=520,
+            output_tokens=75,
+            cost_usd=Decimal(cost),
+            stop_reason="stop",
+        )
 
 
 @pytest.mark.parametrize("model_name", ["", "m" * 101])

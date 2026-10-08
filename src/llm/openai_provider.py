@@ -6,7 +6,13 @@ model, key and prices, which all come from `LlmGatewaySettings`.
 
 from decimal import Decimal
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
@@ -20,6 +26,12 @@ MESSAGE_FRAMING_TOKENS = 128
 NO_API_KEY = "not-set"
 # Stored as the stop reason when the service returned no choice at all.
 NO_CHOICE_STOP_REASON = "no_choice"
+# The gateway's fallback is the retry: a retry inside the SDK would be a second paid request
+# under one budget check and one spend row.
+SDK_MAX_RETRIES = 0
+# Status codes the service uses for a passing failure that has no error class of its own:
+# request timeout and conflict.
+TEMPORARY_STATUS_CODES = frozenset({408, 409})
 
 
 def highest_input_tokens(request: LlmRequest) -> int:
@@ -60,8 +72,9 @@ class OpenAiChatProvider:
     def run(self, request: LlmRequest) -> ProviderAnswer:
         """Send `request` to the service. Spends money and can take several seconds.
 
-        A rate limit, a connection error, a timeout or a server error (after the SDK's own
-        retries) is raised as `ProviderUnavailableError`; any other error propagates as it is.
+        A rate limit, a connection error, a timeout, a server error or a status in
+        `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other error
+        propagates as it is.
         """
         try:
             completion = self._client.chat.completions.create(
@@ -74,6 +87,10 @@ class OpenAiChatProvider:
             )
         except (APIConnectionError, RateLimitError, InternalServerError) as error:
             # The class name only: the SDK's message may quote the request.
+            raise ProviderUnavailableError(type(error).__name__) from error
+        except APIStatusError as error:
+            if error.status_code not in TEMPORARY_STATUS_CODES:
+                raise
             raise ProviderUnavailableError(type(error).__name__) from error
 
         if completion.usage is None:
@@ -111,6 +128,7 @@ def build_openai_providers(
         client=OpenAI(
             api_key=settings.llm_primary_api_key.get_secret_value(),
             base_url=settings.llm_primary_base_url,
+            max_retries=SDK_MAX_RETRIES,
         ),
         model_name=settings.llm_primary_model,
         input_usd_per_mtok=settings.llm_primary_input_usd_per_mtok,
@@ -123,6 +141,7 @@ def build_openai_providers(
         client=OpenAI(
             api_key=NO_API_KEY if fallback_key is None else fallback_key.get_secret_value(),
             base_url=settings.llm_fallback_base_url,
+            max_retries=SDK_MAX_RETRIES,
         ),
         model_name=settings.llm_fallback_model,
         input_usd_per_mtok=settings.llm_fallback_input_usd_per_mtok,

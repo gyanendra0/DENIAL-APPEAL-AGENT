@@ -175,7 +175,7 @@ stop reason. Both are Pydantic models.
 |---|---|
 | Primary fits the budget and answers | Result from the primary, one row written |
 | Primary does not fit the budget | The primary is not called; the fallback is tried |
-| Primary hits a rate limit, a connection error, a timeout or a server error | The fallback is tried |
+| Primary hits a rate limit, a connection error, a timeout, a server error, or answers with status 408 or 409 | The fallback is tried |
 | Primary rejects the request (a bad request, a wrong key) | The error is raised as it is; the fallback is not called |
 | The primary does not fit the budget and no fallback is configured | `LlmBudgetExceededError`; no provider is called, no row written |
 | The fallback is needed but does not fit the budget | `LlmBudgetExceededError`; the fallback is not called, no row written |
@@ -187,6 +187,9 @@ it, so it is not hidden behind a fallback.
 Providers signal a failure that another provider may cover with
 `ProviderUnavailableError`. It carries the error's class name only, because the SDK's own
 message may quote the request.
+
+The SDK's own retries are switched off. A retry inside the SDK would be a second paid
+request under one budget check and one spend row. The fallback is the retry.
 
 ### Cost and the budget
 
@@ -223,7 +226,12 @@ One line per answered call:
 llm call: provider=primary model=<model> purpose=<purpose> input_tokens=812 output_tokens=140 cost_usd=0.000206 fallback_used=False
 ```
 
-A log line never holds the prompt, document text, the answer or a key.
+If the provider answered but the spend row could not be stored, one error line with the
+same fields is logged (`llm call answered but not recorded: ...`) and the error is raised.
+The answer is not returned.
+
+A log line never holds the prompt, document text, the answer or a key. Printing a request
+or a result leaves the prompt and the answer out too.
 
 ### Settings
 
@@ -256,6 +264,10 @@ decimals of 0 or more.
   a real provider reports.
 - A call that fails after the provider has already produced an answer (a timeout while
   the answer travels back) may be billed but is not recorded.
+- An answered call whose spend row cannot be stored (the database is down) is logged but
+  not counted against the budget.
+- There is no timeout setting: a provider that hangs is cut off by the SDK's default
+  timeout, and only then is the fallback tried.
 - Two processes that check the budget at the same moment can both be allowed. One pipeline
   runs at a time today; concurrent use needs a lock first.
 - The prices are settings typed in by hand. If a provider changes its prices, the

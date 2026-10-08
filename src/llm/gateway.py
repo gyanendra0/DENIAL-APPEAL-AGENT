@@ -10,7 +10,8 @@ schema is the caller's job.
 
 Not handled here: a call that fails after the provider already produced an answer (a
 timeout while the answer travels back) may be billed but is not recorded, and two processes
-checking the budget at the same moment.
+checking the budget at the same moment. An answered call whose spend row cannot be stored is
+logged as an error and the error is raised: the answer is not returned.
 """
 
 import logging
@@ -58,8 +59,9 @@ class LlmRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    system: str = Field(min_length=1)
-    user: str = Field(min_length=1)
+    # Left out of the repr: the prompt may hold document text, which must never reach a log.
+    system: str = Field(min_length=1, repr=False)
+    user: str = Field(min_length=1, repr=False)
     max_tokens: int = Field(gt=0, le=MAX_TOKEN_COUNT)
     prompt_version: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
     purpose: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
@@ -70,10 +72,11 @@ class ProviderAnswer(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    text: str
+    text: str = Field(repr=False)
     input_tokens: int = Field(ge=0, le=MAX_TOKEN_COUNT)
     output_tokens: int = Field(ge=0, le=MAX_TOKEN_COUNT)
-    cost_usd: Decimal = Field(ge=0)
+    # The same limits as `llm_calls.cost_usd`, so a cost the table cannot hold fails here.
+    cost_usd: Decimal = Field(ge=0, max_digits=12, decimal_places=6)
     stop_reason: str
 
 
@@ -82,7 +85,7 @@ class LlmResult(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    text: str
+    text: str = Field(repr=False)
     provider: LlmProvider
     model_name: str
     prompt_version: str
@@ -183,18 +186,32 @@ class LlmGateway:
 
     def _answer(self, role: LlmProvider, provider: ChatProvider, request: LlmRequest) -> LlmResult:
         answer = provider.run(request)
-        record_llm_call(
-            self._session_factory,
-            LlmCallRecord(
-                provider=role,
-                model_name=provider.model_name,
-                prompt_version=request.prompt_version,
-                purpose=request.purpose,
-                input_tokens=answer.input_tokens,
-                output_tokens=answer.output_tokens,
-                cost_usd=answer.cost_usd,
-            ),
-        )
+        try:
+            record_llm_call(
+                self._session_factory,
+                LlmCallRecord(
+                    provider=role,
+                    model_name=provider.model_name,
+                    prompt_version=request.prompt_version,
+                    purpose=request.purpose,
+                    input_tokens=answer.input_tokens,
+                    output_tokens=answer.output_tokens,
+                    cost_usd=answer.cost_usd,
+                ),
+            )
+        except Exception:
+            # The call was paid for but its spend is not stored: say so before the error leaves.
+            logger.error(
+                "llm call answered but not recorded: provider=%s model=%s purpose=%s "
+                "input_tokens=%d output_tokens=%d cost_usd=%s",
+                role.value,
+                provider.model_name,
+                request.purpose,
+                answer.input_tokens,
+                answer.output_tokens,
+                answer.cost_usd,
+            )
+            raise
         logger.info(
             "llm call: provider=%s model=%s purpose=%s input_tokens=%d output_tokens=%d "
             "cost_usd=%s fallback_used=%s",

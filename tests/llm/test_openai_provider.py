@@ -142,7 +142,8 @@ def test_run_records_the_highest_possible_counts_when_none_are_reported() -> Non
 
     assert answer.input_tokens == 10 + MESSAGE_FRAMING_TOKENS
     assert answer.output_tokens == 200
-    assert answer.cost_usd == provider.highest_cost(_request())
+    # The same amount as the highest possible cost: (10 + 128) x 0.15 + 200 x 0.60, per million.
+    assert answer.cost_usd == Decimal("0.000141")
 
 
 def test_run_returns_empty_text_when_the_answer_has_no_content() -> None:
@@ -176,8 +177,17 @@ def test_run_still_prices_an_answer_with_no_choice() -> None:
         _status_error(openai.InternalServerError, 503),
         openai.APIConnectionError(request=HTTP_REQUEST),
         openai.APITimeoutError(request=HTTP_REQUEST),
+        _status_error(openai.APIStatusError, 408),
+        _status_error(openai.ConflictError, 409),
     ],
-    ids=["rate limit", "server error", "connection error", "timeout"],
+    ids=[
+        "rate limit",
+        "server error",
+        "connection error",
+        "timeout",
+        "request timeout status",
+        "conflict status",
+    ],
 )
 def test_run_reports_a_failure_the_fallback_may_cover(error: Exception) -> None:
     provider, _ = _provider(error)
@@ -196,6 +206,8 @@ def test_run_reports_a_failure_the_fallback_may_cover(error: Exception) -> None:
         (openai.AuthenticationError, 401),
         (openai.PermissionDeniedError, 403),
         (openai.NotFoundError, 404),
+        (openai.UnprocessableEntityError, 422),
+        (openai.APIStatusError, 418),
     ],
 )
 def test_run_lets_a_bug_or_a_setup_mistake_propagate_as_it_is(
@@ -239,8 +251,9 @@ def test_builds_only_the_primary_when_no_fallback_is_configured(
 
     assert fallback is None
     assert primary.model_name == "example-small-model"
+    # No retry inside the SDK: each retry would be a paid request with no budget check.
     assert client_arguments == [
-        {"api_key": MADE_UP_KEY, "base_url": "https://primary.example.test/v1"}
+        {"api_key": MADE_UP_KEY, "base_url": "https://primary.example.test/v1", "max_retries": 0}
     ]
 
 
@@ -262,6 +275,7 @@ def test_builds_the_fallback_with_its_own_host_key_and_prices(
     assert client_arguments[1] == {
         "api_key": "another-made-up-key",
         "base_url": "https://fallback.example.test/v1",
+        "max_retries": 0,
     }
     # (10 + 128) x 1.00 / 1,000,000 + 200 x 2.00 / 1,000,000
     assert fallback.highest_cost(_request()) == Decimal("0.000538")

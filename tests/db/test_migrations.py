@@ -11,6 +11,7 @@ from src.db.migrations.versions import rev_0004_claim_samples as migration_0004
 from src.db.migrations.versions import rev_0005_claim_sample_labels as migration_0005
 from src.db.migrations.versions import rev_0006_generated_documents as migration_0006
 from src.db.migrations.versions import rev_0007_document_noise as migration_0007
+from src.db.migrations.versions import rev_0008_llm_calls as migration_0008
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -21,6 +22,7 @@ from src.db.models import (
     DenialReasonCategory,
     DocumentType,
     ExchangeType,
+    LlmProvider,
     MetalLevel,
     PlanType,
 )
@@ -34,13 +36,16 @@ REFERENCE_TABLES = {
     "claim_sample_labels",
     "generated_documents",
 }
-TABLES = BUSINESS_TABLES | REFERENCE_TABLES
+# Neither customer data nor public data: counts and cost of the project's own model calls.
+OPERATIONAL_TABLES = {"llm_calls"}
+TABLES = BUSINESS_TABLES | REFERENCE_TABLES | OPERATIONAL_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
 CLAIM_TABLE = "claim_samples"
 LINE_TABLE = "claim_sample_lines"
 LABEL_TABLE = "claim_sample_labels"
 DOCUMENT_TABLE = "generated_documents"
+LLM_CALL_TABLE = "llm_calls"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -61,6 +66,14 @@ def test_business_tables_have_indexed_account_id(engine: Engine) -> None:
 def test_reference_tables_have_timestamps_and_no_account_id(engine: Engine) -> None:
     inspector = inspect(engine)
     for table in REFERENCE_TABLES:
+        columns = {c["name"] for c in inspector.get_columns(table)}
+        assert "account_id" not in columns, table
+        assert {"created_at", "updated_at"} <= columns, table
+
+
+def test_operational_tables_have_timestamps_and_no_account_id(engine: Engine) -> None:
+    inspector = inspect(engine)
+    for table in OPERATIONAL_TABLES:
         columns = {c["name"] for c in inspector.get_columns(table)}
         assert "account_id" not in columns, table
         assert {"created_at", "updated_at"} <= columns, table
@@ -240,6 +253,46 @@ def test_migrations_0006_and_0007_have_the_same_check_rules_as_the_model() -> No
     }
 
 
+def test_llm_calls_has_its_index_check_constraints_and_six_place_cost(engine: Engine) -> None:
+    inspector = inspect(engine)
+    indexes = {i["name"]: i["column_names"] for i in inspector.get_indexes(LLM_CALL_TABLE)}
+    checks = {c["name"] for c in inspector.get_check_constraints(LLM_CALL_TABLE)}
+    cost = next(c for c in inspector.get_columns(LLM_CALL_TABLE) if c["name"] == "cost_usd")
+
+    assert indexes == {"ix_llm_calls_created_at": ["created_at"]}
+    assert checks == {
+        "ck_llm_calls_model_name_not_empty",
+        "ck_llm_calls_prompt_version_not_empty",
+        "ck_llm_calls_purpose_not_empty",
+        "ck_llm_calls_input_tokens_not_negative",
+        "ck_llm_calls_output_tokens_not_negative",
+        "ck_llm_calls_cost_usd_not_negative",
+    }
+    assert (cost["type"].precision, cost["type"].scale) == (12, 6)  # type: ignore[attr-defined]
+    assert inspector.get_foreign_keys(LLM_CALL_TABLE) == []
+
+
+def test_migration_0008_lists_the_same_values_as_the_model() -> None:
+    assert tuple(member.value for member in LlmProvider) == migration_0008.LLM_PROVIDER
+
+
+def test_migration_0008_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[LLM_CALL_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_llm_calls_model_name_not_empty": migration_0008.MODEL_NAME_NOT_EMPTY,
+        "ck_llm_calls_prompt_version_not_empty": migration_0008.PROMPT_VERSION_NOT_EMPTY,
+        "ck_llm_calls_purpose_not_empty": migration_0008.PURPOSE_NOT_EMPTY,
+        "ck_llm_calls_input_tokens_not_negative": migration_0008.INPUT_TOKENS_NOT_NEGATIVE,
+        "ck_llm_calls_output_tokens_not_negative": migration_0008.OUTPUT_TOKENS_NOT_NEGATIVE,
+        "ck_llm_calls_cost_usd_not_negative": migration_0008.COST_USD_NOT_NEGATIVE,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -250,6 +303,25 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0007_removes_llm_calls_table_and_enum(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0007")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert LLM_CALL_TABLE not in tables
+        assert DOCUMENT_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'llm_provider'")
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert LLM_CALL_TABLE in inspect(engine).get_table_names()
 
 
 NOISE_COLUMNS = {"noise_version", "noise_record"}

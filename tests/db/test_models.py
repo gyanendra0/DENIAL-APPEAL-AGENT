@@ -25,6 +25,8 @@ from src.db.models import (
     ExchangeType,
     GeneratedDocument,
     IssuerDenialStats,
+    LlmCall,
+    LlmProvider,
     MetalLevel,
     PlanDenialStats,
     PlanType,
@@ -737,3 +739,89 @@ def test_rejects_unknown_document_type(session: Session) -> None:
 
     with pytest.raises(DataError):
         session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID})
+
+
+def _llm_call(session: Session, **overrides: Any) -> LlmCall:
+    fields: dict[str, Any] = {
+        "provider": LlmProvider.PRIMARY,
+        "model_name": "example-small-model",
+        "prompt_version": "extraction-v1",
+        "purpose": "extraction",
+        "input_tokens": 520,
+        "output_tokens": 75,
+        "cost_usd": Decimal("0.000123"),
+    }
+    call = LlmCall(**(fields | overrides))
+    session.add(call)
+    session.flush()
+    return call
+
+
+def test_stores_llm_call_with_model_prompt_version_and_exact_cost(session: Session) -> None:
+    call = _llm_call(session)
+    session.expire_all()
+
+    stored = session.get(LlmCall, call.id)
+    assert stored is not None
+    assert stored.provider is LlmProvider.PRIMARY
+    assert stored.model_name == "example-small-model"
+    assert stored.prompt_version == "extraction-v1"
+    assert stored.purpose == "extraction"
+    assert stored.input_tokens == 520
+    assert stored.output_tokens == 75
+    assert stored.cost_usd == Decimal("0.000123")
+    assert isinstance(stored.cost_usd, Decimal)
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_keeps_one_millionth_of_a_dollar_apart_from_zero(session: Session) -> None:
+    call = _llm_call(session, cost_usd=Decimal("0.000001"))
+    session.expire_all()
+
+    stored = session.get(LlmCall, call.id)
+    assert stored is not None
+    assert stored.cost_usd == Decimal("0.000001")
+
+
+def test_allows_a_free_fallback_call_with_no_tokens(session: Session) -> None:
+    call = _llm_call(
+        session, provider=LlmProvider.FALLBACK, input_tokens=0, output_tokens=0, cost_usd=0
+    )
+    session.expire_all()
+
+    stored = session.get(LlmCall, call.id)
+    assert stored is not None
+    assert stored.provider is LlmProvider.FALLBACK
+    assert stored.cost_usd == Decimal("0")
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("model_name", "", "ck_llm_calls_model_name_not_empty"),
+        ("prompt_version", "", "ck_llm_calls_prompt_version_not_empty"),
+        ("purpose", "", "ck_llm_calls_purpose_not_empty"),
+        ("input_tokens", -1, "ck_llm_calls_input_tokens_not_negative"),
+        ("output_tokens", -1, "ck_llm_calls_output_tokens_not_negative"),
+        ("cost_usd", Decimal("-0.000001"), "ck_llm_calls_cost_usd_not_negative"),
+    ],
+)
+def test_rejects_llm_call_with_an_empty_field_or_a_negative_number(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _llm_call(session, **bad)
+
+
+def test_rejects_unknown_llm_provider(session: Session) -> None:
+    insert = text(
+        "INSERT INTO llm_calls (provider, model_name, prompt_version, purpose, input_tokens,"
+        " output_tokens, cost_usd) VALUES ('someone_else', 'example-small-model',"
+        " 'extraction-v1', 'extraction', 1, 1, 0)"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert)

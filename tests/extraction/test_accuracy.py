@@ -6,6 +6,7 @@ from src.db.models import DocumentType, LlmProvider
 from src.extraction.accuracy import FieldMatchCount, count_field_matches, match_fields
 from src.extraction.schemas import schema_for
 from src.extraction.store import DocumentExtractionRow, StoredDocument, text_sha256
+from src.synth.noise import NoiseLevel
 from tests.extraction.helpers import (
     ANSWER_KEYS,
     CLAIM_1,
@@ -31,6 +32,7 @@ def _document(
         document_type=kind,
         text=document_text(claim_id, kind),
         answer_key=ANSWER_KEYS[kind],
+        noise_level=NoiseLevel.NONE,
         missing_field=missing_field,
     )
 

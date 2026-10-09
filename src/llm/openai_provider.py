@@ -4,15 +4,19 @@ The primary and the fallback provider are both this class: they differ only in b
 model, key and prices, which all come from `LlmGatewaySettings`.
 """
 
+import json
 from decimal import Decimal
 
 from openai import (
     APIConnectionError,
     APIStatusError,
     InternalServerError,
+    Omit,
     OpenAI,
     RateLimitError,
+    omit,
 )
+from openai.types.shared_params import ResponseFormatJSONSchema
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
@@ -32,16 +36,38 @@ SDK_MAX_RETRIES = 0
 # Status codes the service uses for a passing failure that has no error class of its own:
 # request timeout and conflict.
 TEMPORARY_STATUS_CODES = frozenset({408, 409})
+# The name the service wants for a response schema. It is a label only.
+RESPONSE_SCHEMA_NAME = "answer"
+# The service aims for the schema but does not promise it. Strict mode is off because the
+# fallback service refused these schemas in strict mode (measured 2026-10-09).
+RESPONSE_SCHEMA_STRICT = False
 
 
 def highest_input_tokens(request: LlmRequest) -> int:
     """Return a number of input tokens that `request` can never exceed.
 
     There is no free token counter, so this is the UTF-8 byte length of the prompt (a token
-    is never smaller than one byte) plus a fixed margin for message framing.
+    is never smaller than one byte) plus a fixed margin for message framing. A response
+    schema is billed as input too, so its bytes are counted as well.
     """
     prompt_bytes = len(request.system.encode("utf-8")) + len(request.user.encode("utf-8"))
-    return prompt_bytes + MESSAGE_FRAMING_TOKENS
+    schema_bytes = 0
+    if request.response_schema is not None:
+        schema_bytes = len(json.dumps(request.response_schema).encode("utf-8"))
+    return prompt_bytes + schema_bytes + MESSAGE_FRAMING_TOKENS
+
+
+def _response_format(request: LlmRequest) -> ResponseFormatJSONSchema | Omit:
+    if request.response_schema is None:
+        return omit
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": RESPONSE_SCHEMA_NAME,
+            "schema": request.response_schema,
+            "strict": RESPONSE_SCHEMA_STRICT,
+        },
+    }
 
 
 class OpenAiChatProvider:
@@ -84,6 +110,7 @@ class OpenAiChatProvider:
                     {"role": "user", "content": request.user},
                 ],
                 max_completion_tokens=request.max_tokens,
+                response_format=_response_format(request),
             )
         except (APIConnectionError, RateLimitError, InternalServerError) as error:
             # The class name only: the SDK's message may quote the request.

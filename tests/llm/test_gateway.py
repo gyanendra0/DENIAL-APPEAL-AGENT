@@ -416,3 +416,10 @@ def test_rejects_a_model_name_the_spend_table_cannot_hold(
 def test_request_rejects_a_value_the_gateway_cannot_use(field: str, value: Any) -> None:
     with pytest.raises(ValidationError, match=field):
         _request(**{field: value})
+
+
+def test_a_request_carries_no_response_schema_unless_one_is_given() -> None:
+    schema = {"type": "object", "properties": {"reason": {"type": "string"}}}
+
+    assert _request().response_schema is None
+    assert _request(response_schema=schema).response_schema == schema

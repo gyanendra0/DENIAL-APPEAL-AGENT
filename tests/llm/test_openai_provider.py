@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
@@ -24,6 +25,12 @@ from src.llm.openai_provider import (
 MADE_UP_KEY = "made-up-key-for-tests"
 # httpx2 comes with the SDK; it is used here only to build the SDK's own error objects.
 HTTP_REQUEST = httpx2.Request("POST", "https://llm.example.test/v1/chat/completions")
+RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"reason": {"type": "string"}},
+    "required": ["reason"],
+    "additionalProperties": False,
+}
 
 
 class FakeCompletions:
@@ -118,8 +125,29 @@ def test_run_sends_the_model_the_two_messages_and_the_output_limit() -> None:
                 {"role": "user", "content": "efghij"},
             ],
             "max_completion_tokens": 200,
+            "response_format": openai.omit,
         }
     ]
+
+
+def test_run_sends_a_response_schema_as_the_response_format() -> None:
+    provider, completions = _provider(_completion())
+
+    provider.run(_request(response_schema=RESPONSE_SCHEMA))
+
+    assert completions.calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "answer", "schema": RESPONSE_SCHEMA, "strict": False},
+    }
+
+
+def test_highest_input_tokens_counts_the_response_schema_too() -> None:
+    schema_bytes = len(json.dumps(RESPONSE_SCHEMA).encode("utf-8"))
+
+    bound = highest_input_tokens(_request(response_schema=RESPONSE_SCHEMA))
+
+    assert schema_bytes > 50
+    assert bound == 4 + 6 + schema_bytes + MESSAGE_FRAMING_TOKENS
 
 
 def test_run_returns_the_text_and_prices_the_reported_tokens() -> None:

@@ -18,7 +18,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
@@ -65,6 +65,9 @@ class LlmRequest(BaseModel):
     max_tokens: int = Field(gt=0, le=MAX_TOKEN_COUNT)
     prompt_version: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
     purpose: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
+    # A JSON schema the answer must fit, sent to the provider with the prompt. The provider
+    # only shapes the answer with it: checking the answer stays the caller's job.
+    response_schema: dict[str, Any] | None = None
 
 
 class ProviderAnswer(BaseModel):

@@ -36,7 +36,7 @@
 |---|---|---|
 | `ingest` | Take files in, normalise, queue work | Accept PDF, image, text |
 | `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; OCR when needed |
-| `ml` | Predict appeal success | Gradient boosting first; a neural net only if it beats it |
+| `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases | Deterministic, testable, no LLM |
 | `rag` | Find and rank supporting evidence | pgvector, chunked policy corpus |
 | `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
@@ -83,6 +83,9 @@ The business table `extractions` does not exist yet: it is built when customer u
 exist. Until then, what a model reads from the generated documents is stored in the public
 reference table `document_extractions` (see 3.9).
 
+The business table `predictions` does not exist yet either. The win-probability model is
+trained and saved as files, and no score is stored (see 3.10).
+
 ## 3.5 Tech stack
 
 | Layer | Choice | Why |
@@ -92,7 +95,7 @@ reference table `document_extractions` (see 3.9).
 | ORM / migrations | SQLAlchemy 2 + Alembic | Standard, testable |
 | Database | PostgreSQL + pgvector | One store for rows *and* vectors — keeps cost near zero |
 | Jobs | Postgres-backed queue | No extra broker to pay for or run |
-| ML | scikit-learn, XGBoost/LightGBM | Strong on tabular, cheap to train |
+| ML | scikit-learn | Strong on tabular, cheap to train |
 | LLM | Hosted API primary, open-weight fallback | Quality with a cost escape hatch |
 | Frontend | React + Vite + TypeScript | Fast build, typed |
 | Tests | pytest, coverage | Standard, cheap |
@@ -471,3 +474,123 @@ they bring it to 20,166 of 21,837 (92.3%).
 - The train split and most of the validation split have not been extracted.
 - The fallback answered none of the measured runs, so its extraction quality is not
   measured.
+
+## 3.10 Win-probability model
+
+The model gives a denied claim a win probability: a number from 0 to 1 that says how likely
+an appeal is to succeed. It is trained on the stored claims of the synthetic sample.
+
+The label it learns is `appeal_success_proxy`, which the label rule makes up
+([02-data.md 2.2.3](02-data.md#223-labels-rule-v2)). So a high AUC means the model learned
+that rule. It says nothing about real appeals.
+
+No model call is made and no money is spent: the model is trained and run on this machine.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/ml/features.py` | `build_claim_features(category, lines)`, the feature row `ClaimFeatures` and `FEATURE_VERSION` |
+| `src/ml/training.py` | `train_win_model(rows, seed)`, `save_win_model(...)`, the fixed settings and `MODEL_VERSION` |
+| `src/ml/inference.py` | `load_win_model(folder)`, `predict_win_probability` and `predict_win_probabilities` |
+| `src/ml/auc.py` | `pairwise_auc(true_scores, false_scores)` and the target `TARGET_AUC` |
+| `src/ml/win_model_run.py` | `load_training_data(session)` and `train_and_score(data, seed)`: reads the denied claims, fits, scores every split |
+| `pipelines/train_win_model.py` | The command ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
+
+### The features
+
+A claim becomes one row of three features, built from its stored lines and the denial
+reason category of its label:
+
+| Feature | Kind | Meaning |
+|---|---|---|
+| `denial_reason_category` | Category | The headline denial reason of the claim |
+| `total_allowed_charge` | Exact decimal | The allowed charges of all the claim's lines, added up |
+| `fully_denied` | True / false | True when every line of the claim is denied |
+
+- These are the three things the label rule looks at, and nothing else. The category alone
+  reaches an AUC of only 0.696 on the test split, so the other two are needed.
+- The proxy, the hash draw behind it, the split and the claim id are never inputs. A test
+  proves that no feature changes when the proxy flips.
+- The amount is given to the model as a number, not as the rule's bands. The model finds
+  the cut points itself.
+- A claim with no lines or no denied line has no feature row: `build_claim_features` raises
+  an error.
+- A change to the features gets a new `FEATURE_VERSION`.
+
+### The model
+
+The model is scikit-learn's `HistGradientBoostingClassifier`: many small decision trees,
+each one correcting the mistakes of the ones before it.
+
+| Setting | Value |
+|---|---|
+| Trees | 50 |
+| Depth of a tree | 3 |
+| Learning rate | 0.05 |
+| Fewest claims in a leaf | 50 |
+
+- The settings are fixed constants and deliberately small. They are **not** tuned on the
+  validation split. 180 settings were tried before the code was written: all scored 0.736
+  to 0.756 on the test split, and the validation score could not tell the good ones from
+  the bad ones. Picking "the best" would have been picking noise.
+- The model is fitted on the train split only. The validation and test splits are scored,
+  never learned from.
+- The same claims, labels and seed give the same model.
+- A change to the settings or the library class gets a new `MODEL_VERSION`.
+
+### The saved files
+
+Training writes two files into the folder named by the setting `MODEL_DIR` (default
+`models`, never committed):
+
+| File | Holds |
+|---|---|
+| `win_model.joblib` | The fitted model |
+| `win_model.json` | The facts: feature, model and label rule versions, the scikit-learn version, the split seed, the training seed, per split the rows, the true proxies and the AUC, and the SHA-256 of the model file |
+
+A new run replaces both files. There is no predictions table and no migration: the
+business table `predictions` (3.4) is built when customer uploads exist.
+
+`load_win_model(folder)` checks before it opens the model file:
+
+1. The facts file exists and is well formed.
+2. Its feature, model, label rule and scikit-learn versions are the ones in use now.
+3. The SHA-256 of the model file equals the one in the facts file.
+
+Any failure raises `ModelFileError`, and the fix is to train again. The model file is a
+pickle, and loading a pickle runs the code inside it. The checks catch a damaged or
+out-of-date file. They do not make a file from someone else safe, so the folder must only
+hold files this project wrote: never a download or an upload.
+
+### Measured
+
+One run on 2026-10-10 on the default load (first 50,000 claims, split seed 42, label rule
+`v2`, training seed 42, scikit-learn 1.9.1). It took 5 seconds.
+
+| Split | Denied claims | Proxy true | Model AUC | Best possible AUC |
+|---|---|---|---|---|
+| Train | 3,784 | 1,976 (52.22%) | 0.7750 | 0.7722 |
+| Validation | 782 | 422 (53.96%) | 0.7641 | 0.7676 |
+| Test | 759 | 415 (54.68%) | 0.7539 | 0.7522 |
+
+The best possible AUC is the score of the label rule's own chance: the most any model can
+learn, because the rest of the label is a random draw. The test AUC of 0.7539 is above the
+Stage 3 target of 0.70. It is 0.0017 above the best possible AUC, which is chance on 759
+claims and not a better model.
+
+### Known limits
+
+- The model is no better than a simple one. A logistic regression on the same three
+  features (the amount as its logarithm) scored 0.7528 on the test split, measured before the code was written. Gradient
+  boosting is used because the build plan names it and it needs no hand-made amount bands,
+  not because it scored higher.
+- The test AUC is noisy. Over 2,000 resamples of the 759 test claims it ranged from 0.720
+  to 0.786.
+- The AUC is reported and is not a gate. A run with a test AUC below 0.70 still saves the
+  model.
+- The features come from the structured claim rows, not from the fields extracted from
+  documents (3.9). Only the test split has been extracted, and a denial letter has no
+  "fully denied" field.
+- A customer's denial cannot be scored yet: nothing calls `load_win_model` outside the
+  tests, and no score is stored.

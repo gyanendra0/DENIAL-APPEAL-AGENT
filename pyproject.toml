@@ -10,11 +10,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.13",
+    "joblib>=1.4",
+    "numpy>=2.0",
     "openai>=3.26",
     "openpyxl>=3.1",
     "psycopg[binary]>=3.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "scikit-learn>=1.9",
     "sqlalchemy>=2.1",
 ]
 
@@ -48,9 +51,13 @@ ignore = []
 "tests/**" = ["S101"]
 
 [tool.mypy]
-python_version = "3.11"
 strict = true
 files = ["src", "pipelines", "tests"]
+
+# scikit-learn and joblib ship no type information; what they return is typed where it is used.
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

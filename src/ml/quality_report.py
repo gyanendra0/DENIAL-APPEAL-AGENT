@@ -8,7 +8,6 @@ can be expected to score higher. It is reported beside the Stage 3 target and is
 a small load has few test claims, so the number is noisy.
 """
 
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from fractions import Fraction
@@ -16,14 +15,13 @@ from fractions import Fraction
 from pydantic import BaseModel, ConfigDict
 
 from src.db.models import DatasetSplit
+from src.ml.auc import TARGET_AUC, pairwise_auc
 from src.ml.claim_labels import ClaimLabelRow
 
 # The model's target must not be too one-sided (docs/02-data.md 2.6).
 MIN_PROXY_TRUE_SHARE = Decimal("0.20")
 MAX_PROXY_TRUE_SHARE = Decimal("0.80")
 NO_SHARE = "n/a"
-# The Stage 3 done condition for the win-probability model (docs/05-build-plan.md).
-TARGET_AUC = Decimal("0.70")
 
 
 class LabelCounts(BaseModel):
@@ -105,24 +103,6 @@ class LabelQualityReport(BaseModel):
         return "\n".join(lines)
 
 
-def best_possible_auc(
-    true_scores: Sequence[Decimal], false_scores: Sequence[Decimal]
-) -> float | None:
-    """The AUC of a score: how often a claim with a true proxy scores above one with a false one.
-
-    It is the share of all (true, false) pairs in which the true claim has the higher score;
-    a pair with equal scores counts as half. None when either group is empty.
-    """
-    if not true_scores or not false_scores:
-        return None
-    false_counts = Counter(false_scores)
-    wins = Fraction(0)
-    for score, true_count in Counter(true_scores).items():
-        below = sum(count for other, count in false_counts.items() if other < score)
-        wins += true_count * (below + Fraction(false_counts[score], 2))
-    return float(wins / (len(true_scores) * len(false_scores)))
-
-
 def build_label_quality_report(
     rows: Sequence[ClaimLabelRow], chances: Mapping[str, Decimal]
 ) -> LabelQualityReport:
@@ -160,7 +140,7 @@ def build_label_quality_report(
 
 def _best_auc(rows: Sequence[ClaimLabelRow], chances: Mapping[str, Decimal]) -> float | None:
     """The best possible AUC over the denied claims in `rows`."""
-    return best_possible_auc(
+    return pairwise_auc(
         [chances[row.source_claim_id] for row in rows if row.appeal_success_proxy is True],
         [chances[row.source_claim_id] for row in rows if row.appeal_success_proxy is False],
     )

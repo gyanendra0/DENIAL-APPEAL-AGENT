@@ -115,9 +115,10 @@ def test_every_document_type_has_a_schema_whose_fields_are_all_value_and_confide
     document_type: DocumentType,
 ) -> None:
     for field in schema_for(document_type).model_fields.values():
-        assert field.annotation is not None
-        assert issubclass(field.annotation, Extracted)
-        assert list(field.annotation.model_fields) == ["value", "confidence"]
+        annotation = field.annotation
+        assert isinstance(annotation, type)
+        assert issubclass(annotation, Extracted)
+        assert list(annotation.model_fields) == ["value", "confidence"]
 
 
 @pytest.mark.parametrize("document_type", list(DocumentType))

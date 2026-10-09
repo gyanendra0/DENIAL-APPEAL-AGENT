@@ -20,6 +20,7 @@ from src.extraction.store import (
     select_documents,
     text_sha256,
 )
+from src.synth.noise import NoiseLevel
 from tests.extraction.helpers import (
     ANSWER_KEYS,
     CLAIM_1,
@@ -48,6 +49,7 @@ def _document(claim_id: str = CLAIM_1) -> StoredDocument:
         document_type=LETTER,
         text=document_text(claim_id, LETTER),
         answer_key=ANSWER_KEYS[LETTER],
+        noise_level=NoiseLevel.NONE,
         missing_field=None,
     )
 
@@ -87,7 +89,7 @@ def test_a_limit_takes_the_first_documents_of_the_split(factory: sessionmaker[Se
     assert [document.key for document in documents] == VALIDATION_KEYS[:2]
 
 
-def test_a_selected_document_carries_its_text_answer_key_and_blanked_field(
+def test_a_selected_document_carries_its_text_answer_key_and_noise_facts(
     factory: sessionmaker[Session],
 ) -> None:
     with session_scope(factory) as session:
@@ -112,6 +114,8 @@ def test_a_selected_document_carries_its_text_answer_key_and_blanked_field(
     assert letter.answer_key == ANSWER_KEYS[LETTER]
     assert letter.missing_field is None
     assert note.missing_field == "member_id"
+    assert letter.noise_level is NoiseLevel.NONE
+    assert note.noise_level is NoiseLevel.LIGHT
 
 
 def test_the_repr_of_a_document_and_of_a_row_shows_no_text_and_no_value() -> None:

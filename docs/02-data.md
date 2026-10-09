@@ -1125,5 +1125,98 @@ The first four are fixed by running the pipeline again. The test AUC is **not** 
 value below 0.70 is printed as `below the target`, the model is still saved and the exit
 code is 0, because a small load gives a noisy AUC.
 
+### Checking the Stage 3 targets
+
+A fifth command measures what is stored and checks it against the Stage 3 done condition
+([03-architecture.md 3.12](03-architecture.md#312-evaluation-harness)):
+
+```text
+python3 -m pipelines.run_evaluation --rules-today 2010-01-01
+```
+
+It needs everything above to have run: the pipeline, the documents, the extraction of the
+split and the trained model. It only reads. It makes no model call, spends no money, trains
+nothing and writes nothing, and it does not need the `LLM_` keys. With the default load it
+takes about 8 seconds.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--rules-today` | none, required | The date the rules take as "today", as `YYYY-MM-DD` |
+| `--split` | `test` | `train`, `validation` or `test`: the split that is measured |
+| `--prompt-version` | `v2` | The prompt version whose extraction results are measured |
+
+`--rules-today` has no default because the rules never read the clock. The made-up appeal
+deadlines run from 2008 to 2011, so with the real date every claim is past its deadline;
+2010-01-01 falls in the middle of them. The amount floor comes from the setting
+`RULES_AMOUNT_FLOOR_USD` and the model folder from `MODEL_DIR`.
+
+The output for the default load, shortened: the 35 per-field lines are left out at the
+three places marked `...`.
+
+```text
+Stage 3 evaluation on the test split (generated data: made-up documents of the synthetic claims sample; the appeal-success label is a proxy, not an observed outcome)
+extraction prompt v2 | win-probability model v1 | rules v1, today 2010-01-01, amount floor $25
+documents: 1,883 | with a current result 1,867 | no result 16 | stale result 0
+field accuracy (exact match with the answer keys):
+  no result counted as wrong (the number checked against the target): 20,317 of 21,837 (93.04%)
+  no result left out: 20,317 of 21,619 (93.98%)
+  per document type (no result counted as wrong), then per field (documents with a result):
+    denial_letter (759 documents, 749 with a result): 10,533 of 11,385 (92.52%)
+      ...
+    clinical_note (759 documents, 758 with a result): 5,739 of 6,072 (94.52%)
+      ...
+    prior_auth (365 documents, 360 with a result): 4,045 of 4,380 (92.35%)
+      ...
+  per noise level (documents with a result):
+    none: 3,852 of 3,900 (98.77%)
+    light: 10,601 of 11,096 (95.54%)
+    heavy: 5,864 of 6,623 (88.54%)
+  per confidence score of the model (documents with a result):
+    below 0.80: 166 of 187 (88.77%)
+    0.80 to 0.89: 228 of 337 (67.66%)
+    0.90 to 0.94: 7,643 of 8,332 (91.73%)
+    0.95 to 0.99: 2,045 of 2,126 (96.19%)
+    1.00: 10,235 of 10,637 (96.22%)
+headline denial reason (denial letters, no result counted as wrong): 690 of 759 (90.91%)
+win-probability model (saved model, not trained here): 759 denied claims | proxy true 415 (54.68%) | model AUC 0.7539 | best possible AUC 0.7522
+rules agreement (verdict from the extracted values against the verdict from the answer key; reported, not a gate):
+  denial letters: 759 | with a verdict from extraction 749 | no verdict 10
+  answer-key outcomes: pass 332 | must_review 62 | hard_fail 365
+  same outcome: 739 of 749 (98.66%)
+  pass to must_review: 7
+  pass to hard_fail: 1
+  hard_fail to must_review: 2
+targets:
+  field accuracy, at least 85%: 93.04%, meets the target
+  headline denial reason, at least 85%: 90.91%, meets the target
+  model AUC, at least 0.70: 0.7539, meets the target
+Stage 3 targets met: yes
+```
+
+One more line goes to the error stream, not the report: `read 5325 denied claims for
+training`. It comes from the function that reads the claims for the model's score; nothing
+is trained.
+
+Three of the numbers are checked against a target: the field accuracy with a missing result
+counted as wrong, the headline denial reason, and the model AUC. Everything else is
+reported only. What each number means is in 03-architecture.md 3.12.
+
+Exit code 0 means all three targets are met, 2 means a bad argument. Exit code 1 has five
+reasons:
+
+- one of the three numbers is below its target;
+- the split has no document (only a message is printed, no report);
+- no extraction result is stored for the split and prompt version, so the accuracy is 0%;
+- there is no usable saved model in `MODEL_DIR` (run `pipelines.train_win_model`);
+- the stored labels cannot be used, for the same reasons the training command refuses
+  them, or the split has no true proxy or no false proxy, so there is no AUC.
+
+In the last two cases the report is still printed, and the model line says `cannot be
+measured` with the reason.
+
+The numbers stay the same only while the stored extraction results do. Running
+`pipelines.extract_documents` on the split again tries the documents with no result once
+more, which can change them.
+
 The same claims, labels and seed give the same model. Train again after every pipeline run
 that changes the labels.

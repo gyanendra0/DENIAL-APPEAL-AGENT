@@ -44,6 +44,7 @@
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
+| `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12) | Read-only, no LLM, nothing stored |
 
 ## 3.3 Request flow
 
@@ -89,6 +90,9 @@ trained and saved as files, and no score is stored (see 3.10).
 A rule verdict is not stored either. The rules are a function that is called when a verdict
 is needed (see 3.11); the first place a verdict will be written down is the agent's trace.
 
+An evaluation result is not stored either. The evaluation harness prints its report and
+writes nothing (see 3.12).
+
 ## 3.5 Tech stack
 
 | Layer | Choice | Why |
@@ -114,6 +118,7 @@ denial-appeal-agent/
 │  ├─ agent/        orchestration loop and tools
 │  ├─ api/          FastAPI routes, auth, schemas
 │  ├─ db/           models, migrations, session
+│  ├─ evaluation/   measured results against the stage targets
 │  ├─ extraction/   document → fields
 │  ├─ ingest/       loaders, file handling
 │  ├─ llm/          provider gateway, prompts, budget guard
@@ -423,9 +428,10 @@ running the same command again, not paid for twice.
 
 At the end the command prints how many extracted values equal the answer keys exactly, per
 document type and field. This count is for comparing two prompt versions. It is **not**
-the Stage 3 accuracy target: that measurement belongs to the evaluation harness. A document
-with no result is in no count, so the command also prints how many selected documents were
-left out. Two runs with different left-out numbers did not compare the same documents.
+the Stage 3 accuracy target: that measurement belongs to the evaluation harness (see
+3.12). A document with no result is in no count, so the command also prints how many
+selected documents were left out. Two runs with different left-out numbers did not compare
+the same documents.
 
 ### Measured
 
@@ -756,13 +762,17 @@ missing. The other 8:
 So a wrong extracted value sends a claim to a person 7 times and wrongly stops it once. No
 claim that should be stopped passes.
 
+These counts are from the day the rules were written. More letters have a stored result
+since then; the current agreement count is printed by the evaluation harness and is in 3.12.
+
 ### Known limits
 
 - With the real date every made-up claim is past its deadline: the deadlines run from
   2008-07-08 to 2011-08-04, so `deadline_passed` fires on all 5,325. Any run over the
   made-up data must pass a chosen date as `today`.
-- One of the 743 extracted test letters is wrongly stopped. Which extracted value is wrong
-  has not been looked up.
+- One extracted test letter is wrongly stopped: its total allowed charge is 110.00 and was
+  extracted as 11.00, which is below the floor. Its dates were right. No rule can catch
+  that from the letter alone.
 - Three wrong extracted deadlines (8, 10 and 92 days too early) pass every check. Only the
   letter date plus a known appeal window would catch them, and the window is made up, so it
   is not a rule input.
@@ -774,5 +784,202 @@ claim that should be stopped passes.
 - The floor is on the total allowed charge, the only printed number that says how big a
   claim is. It is not the money an appeal could win: the generated letters print no billed
   amount.
-- Nothing calls `evaluate_rules` outside the tests yet. The evaluation harness and the
-  agent loop will.
+- Only the evaluation harness (3.12) calls `evaluate_rules` outside the tests. The agent
+  loop will.
+
+## 3.12 Evaluation harness
+
+The evaluation harness is one command that measures what Stage 3 built and checks it
+against the Stage 3 done condition in [05-build-plan.md](05-build-plan.md): on the test
+split, field extraction accuracy of at least 85% and a model AUC of at least 0.70.
+
+The command only reads. It makes no model call, spends no money, trains nothing and writes
+nothing. Running it twice on the same database gives the same report.
+
+All data it measures is generated: made-up documents of the synthetic claims sample, and an
+appeal-success label that is a proxy made by the label rule
+([02-data.md 2.2.3](02-data.md#223-labels-rule-v2)). The numbers say how well the parts
+work on that data. They say nothing about real appeals, and the report's first line says
+so.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/evaluation/extraction_accuracy.py` | `build_extraction_accuracy_report(documents, rows)`, the extraction counts, and `TARGET_FIELD_ACCURACY` |
+| `src/evaluation/model_score.py` | `score_saved_model(model, data, split)`, the saved model's AUC on one split |
+| `src/evaluation/rules_agreement.py` | `build_rules_agreement_report(documents, rows, *, today, amount_floor)`, how often the rules give an extracted letter the verdict its answer key gets |
+| `src/evaluation/report.py` | `build_evaluation_report(...)`, the combined `EvaluationReport`, its printed text and `targets_met` |
+| `pipelines/run_evaluation.py` | The command: reads the database and the saved model, prints the report, sets the exit code |
+
+The four functions in `src/evaluation` are pure: the documents, the stored results, the
+model and the dates are passed in. Only the command opens the database, reads the settings
+and loads the model file. `src/evaluation` calls the public functions of `src/extraction`,
+`src/ml` and `src/rules` and holds no rule, schema or model of its own. There is no table
+and no migration. The command and its options are in
+[02-data.md 2.9](02-data.md#29-running-the-whole-pipeline).
+
+### What each number means
+
+**Field accuracy.** Every field of every document's answer key is one value. A value is
+right when the extracted value equals the answer key exactly (the same comparison as the
+count in 3.9). Field accuracy is the right values divided by all values.
+
+Three rules decide what is counted:
+
+- **The truth is the value before noise.** The answer key holds what the generator wrote,
+  not what the noise step left on the page
+  ([02-data.md 2.4.4](02-data.md#244-noise-v1)). A model that copies a damaged character
+  faithfully is counted as wrong, because that is what a bad scan does to a real system.
+  For the one field the noise step blanked on a document, the truth is "no value".
+- **A document with no result counts as all wrong.** When the model's answer could not be
+  used, nothing is stored (3.9), and every value of that document is counted as wrong. A
+  document the system could not read is a failure of the system; leaving it out would let
+  a run look better by failing more often.
+- **A stale result is no result.** A stored result made from a text that is no longer the
+  document's text (its `text_sha256` differs) is treated as missing.
+
+The report prints the accuracy both ways: with such documents counted as wrong, and with
+them left out. Only the first is checked against the target.
+
+**Headline denial reason.** The share of denial letters whose extracted
+`denial_reason_category` equals the answer key, with a letter that has no result counted as
+wrong. It is one field of the field accuracy, shown on its own because
+[01-problem-and-scope.md 1.6](01-problem-and-scope.md#16-success-criteria) names "correct
+denial-reason extraction" as a success measure, and because it is one of the model's three
+features.
+
+**Model AUC.** The AUC of the saved win-probability model (3.10) on the claims of the
+split, built from the stored claim rows and labels. The model is loaded from the folder
+named by `MODEL_DIR`; it is not trained here. The best possible AUC, the score of the label
+rule's own chance, is printed beside it.
+
+**Rules agreement.** For each denial letter the rules (3.11) are run twice: on the answer
+key's values and on the extracted values. The report counts how often the two verdicts
+have the same outcome, and lists each difference by direction. A value the noise step
+blanked counts as truly missing on the answer-key side. A letter with no result, a stale
+result or a negative extracted amount gets no verdict from extraction and is counted apart.
+
+**Noise levels and confidence bands.** Field accuracy again, split by the document's noise
+level and by the confidence score the model gave each value, over documents with a result.
+
+### Gates and reported numbers
+
+Three numbers are gates. The command exits with 0 only when all three were measured and
+meet their targets:
+
+| Number | Target |
+|---|---|
+| Field accuracy, no result counted as wrong | at least 85% (`TARGET_FIELD_ACCURACY`) |
+| Headline denial reason, no result counted as wrong | at least 85% (the same constant) |
+| Model AUC on the split | at least 0.70 (`TARGET_AUC` in `src/ml/auc.py`) |
+
+A number that cannot be measured is not met. That is the case when there is no saved
+model, when the stored labels cannot be used (the same checks as the training command), or
+when the split has only one kind of proxy. The report is still printed, with the reason on
+the model line.
+
+Everything else is reported and never changes the exit code: the accuracy with documents
+left out, per document type, per field, per noise level, per confidence band, and the rules
+agreement. The build plan has no target for them.
+
+A printed number is rounded normally, with one exception: a number just below its target
+is rounded down, so the report can never show `85.00%` beside `below the target`.
+
+### Measured
+
+Measured on 2026-10-10 on the default load (first 50,000 claims, split seed 42), test
+split, prompt `v2`, rules date 2010-01-01, amount floor 25. The command took about 8
+seconds and exited with 0.
+
+Against the Stage 3 done condition:
+
+| Number | Measured | Target | Result |
+|---|---|---|---|
+| Field accuracy | 20,317 of 21,837 (93.04%) | 85% | met |
+| Headline denial reason | 690 of 759 (90.91%) | 85% | met |
+| Model AUC, test split | 0.7539 on 759 denied claims | 0.70 | met |
+
+The test split has 1,883 documents: 1,867 with a current result, 16 with none, 0 stale.
+With the 16 left out, field accuracy is 20,317 of 21,619 (93.98%). The best possible AUC on
+the test split is 0.7522, so the model has learned the label rule and no more.
+
+Per document type, no result counted as wrong:
+
+| Type | Documents | With a result | Field accuracy |
+|---|---|---|---|
+| Denial letter | 759 | 749 | 10,533 of 11,385 (92.52%) |
+| Clinical note | 759 | 758 | 5,739 of 6,072 (94.52%) |
+| Prior-authorisation record | 365 | 360 | 4,045 of 4,380 (92.35%) |
+
+Per noise level, documents with a result:
+
+| Noise level | Field accuracy |
+|---|---|
+| `none` | 3,852 of 3,900 (98.77%) |
+| `light` | 10,601 of 11,096 (95.54%) |
+| `heavy` | 5,864 of 6,623 (88.54%) |
+
+Noise is what costs accuracy: on a clean document the model is right on almost every value.
+
+The weakest fields, over documents with a result (every other field is at 90% or more):
+
+| Field | Right |
+|---|---|
+| Letter `denied_lines` | 556 of 749 (74.23%) |
+| Note `procedure_codes` | 659 of 758 (86.94%) |
+| Letter `claim_number` | 652 of 749 (87.05%) |
+| Prior-auth `request_date` | 316 of 360 (87.78%) |
+| Prior-auth `provider_name` | 320 of 360 (88.89%) |
+| Prior-auth `authorization_number` | 323 of 360 (89.72%) |
+
+Per confidence score the model gave, documents with a result:
+
+| Score | Values right |
+|---|---|
+| below 0.80 | 166 of 187 (88.77%) |
+| 0.80 to 0.89 | 228 of 337 (67.66%) |
+| 0.90 to 0.94 | 7,643 of 8,332 (91.73%) |
+| 0.95 to 0.99 | 2,045 of 2,126 (96.19%) |
+| 1.00 | 10,235 of 10,637 (96.22%) |
+
+The score does not rise steadily with correctness, which is why no rule uses it (3.11).
+
+Rules agreement: of the 759 test letters, 749 get a verdict from extraction and 10 do not.
+The outcome is the same as the answer key's on 739 of the 749 (98.66%). The other 10:
+
+| Answer key | Extracted values | Letters |
+|---|---|---|
+| `pass` | `must_review` | 7 |
+| `hard_fail` | `must_review` | 2 |
+| `pass` | `hard_fail` | 1 |
+
+Nine of the ten differences send a claim to a person. One stops a claim wrongly (see Known
+limits). No claim that should be stopped passes.
+
+### Known limits
+
+- The numbers hold only while the table `document_extractions` is unchanged. Another
+  `extract_documents --split test` run tries the 16 documents with no result again and
+  could move every extraction number.
+- 16 test documents have no result after two tries (10 letters, 1 note, 5 prior-auth
+  records). Why their answers could not be used is not known, because an answer is never
+  logged.
+- The letter's `denied_lines` is right on 74.23% of letters, the only field below 85%. The
+  gate is on all fields together, so this field does not fail it.
+- There is no AUC from extracted letters. The model's third feature, whether every line was
+  denied, is not printed on a letter. With the guess "the total payment is 0" (wrong on 54
+  of the 759 answer keys), extracted values give an AUC of 0.7267 on 749 letters, against
+  0.7521 from the stored rows of the same claims. That number was measured once by hand; the
+  command does not print it, because a guessed feature is a change to the model's inputs
+  and not a measurement.
+- One test letter is wrongly stopped by the rules: its total allowed charge of 110.00 was
+  extracted as 11.00, below the floor of 25. No check on the letter alone catches a dropped
+  digit.
+- The AUC is measured on the stored claim rows, the same inputs the model was trained on,
+  not on values read from a document.
+- The exit code depends on the rules date only through the reported lines: `--rules-today`
+  changes the rules agreement and never a gate. Any ISO date form Python reads is accepted
+  (`20100101`, `2010-W01-1`), not only `YYYY-MM-DD`.
+- When `MODEL_DIR` names a file instead of a folder, the command ends with a traceback
+  instead of the "cannot be measured" line.

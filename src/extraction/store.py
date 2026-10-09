@@ -26,7 +26,7 @@ from src.db.models import (
 from src.extraction.extractor import ExtractionResult
 from src.ingest.marketplace_denials import upsert_rows
 from src.ml.labels import ClaimId
-from src.synth.noise import NoiseRecord
+from src.synth.noise import NoiseLevel, NoiseRecord
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,8 @@ DocumentKey = tuple[str, DocumentType]
 class StoredDocument(BaseModel):
     """One stored document, with what is needed to extract it and to mark the result.
 
-    `missing_field` is the answer-key field the noise step blanked in `text`, or None.
+    `noise_level` is how much scan damage the noise step gave `text`. `missing_field` is the
+    answer-key field it blanked in `text`, or None.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -50,6 +51,7 @@ class StoredDocument(BaseModel):
     # Left out of the repr: document text and its values must never reach a log.
     text: str = Field(min_length=1, repr=False)
     answer_key: dict[str, Any] = Field(min_length=1, repr=False)
+    noise_level: NoiseLevel
     missing_field: str | None
 
     @property
@@ -102,16 +104,20 @@ def select_documents(
         .order_by(GeneratedDocument.source_claim_id, GeneratedDocument.document_type)
         .limit(limit)
     )
-    return [
-        StoredDocument(
-            source_claim_id=row.source_claim_id,
-            document_type=row.document_type,
-            text=row.text,
-            answer_key=row.answer_key,
-            missing_field=NoiseRecord.model_validate(row.noise_record).missing_field,
+    documents = []
+    for row in rows:
+        noise = NoiseRecord.model_validate(row.noise_record)
+        documents.append(
+            StoredDocument(
+                source_claim_id=row.source_claim_id,
+                document_type=row.document_type,
+                text=row.text,
+                answer_key=row.answer_key,
+                noise_level=noise.level,
+                missing_field=noise.missing_field,
+            )
         )
-        for row in rows
-    ]
+    return documents
 
 
 def read_extraction_rows(

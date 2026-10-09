@@ -28,6 +28,7 @@ src/
   api/          FastAPI routes, auth, request/response schemas
   config/       settings
   db/           models, migrations, session
+  evaluation/   measured results against the stage targets
   extraction/   document → structured fields
   ingest/       loaders and file handling
   llm/          provider gateway, prompts, budget guard

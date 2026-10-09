@@ -91,8 +91,27 @@ def test_a_version_cannot_point_outside_the_prompt_folder(tmp_path: Path) -> Non
 def test_the_repository_has_a_prompt_for_every_document_type(document_type: DocumentType) -> None:
     prompt = load_extraction_prompt(REAL_PROMPT_DIR, EXTRACTION_PROMPT_VERSION, document_type)
 
-    assert prompt.version == "v1"
+    assert prompt.version == "v2"
     assert prompt.document_type is document_type
+
+
+@pytest.mark.parametrize("document_type", list(DocumentType))
+def test_the_first_prompt_version_is_kept_because_stored_results_name_it(
+    document_type: DocumentType,
+) -> None:
+    first = load_extraction_prompt(REAL_PROMPT_DIR, "v1", document_type)
+    current = load_extraction_prompt(REAL_PROMPT_DIR, EXTRACTION_PROMPT_VERSION, document_type)
+
+    assert first.system != current.system
+
+
+@pytest.mark.parametrize("document_type", list(DocumentType))
+def test_the_current_prompt_says_what_a_single_service_date_means(
+    document_type: DocumentType,
+) -> None:
+    prompt = load_extraction_prompt(REAL_PROMPT_DIR, EXTRACTION_PROMPT_VERSION, document_type)
+
+    assert "one service date and not a range" in prompt.system
 
 
 @pytest.mark.parametrize("document_type", list(DocumentType))
@@ -151,5 +170,5 @@ def test_the_version_and_purpose_fit_a_gateway_request() -> None:
         purpose=EXTRACTION_PURPOSE,
     )
 
-    assert request.prompt_version == "v1"
+    assert request.prompt_version == "v2"
     assert request.purpose == "extraction"

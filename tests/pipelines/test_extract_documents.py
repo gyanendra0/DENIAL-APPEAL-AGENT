@@ -265,7 +265,7 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
 
     assert main(["--split", "validation"]) == 1
 
-    assert EXTRACTION_PROMPT_VERSION == "v1"
+    assert EXTRACTION_PROMPT_VERSION == "v2"
 
 
 def test_no_document_text_and_no_value_is_printed_or_logged(

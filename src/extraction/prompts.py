@@ -13,7 +13,7 @@ from src.db.models import DocumentType
 
 # Stored with every model call as `LlmRequest.purpose`, and the name of the prompts' folder.
 EXTRACTION_PURPOSE = "extraction"
-EXTRACTION_PROMPT_VERSION = "v1"
+EXTRACTION_PROMPT_VERSION = "v2"
 # Also keeps a version from pointing outside the prompt folder ("../..").
 VERSION_PATTERN = re.compile(r"v[0-9]+")
 PROMPT_FILE_SUFFIX = ".txt"

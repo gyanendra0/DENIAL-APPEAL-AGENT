@@ -222,6 +222,7 @@ def test_run_lets_a_bug_or_a_setup_mistake_propagate_as_it_is(
 def _settings(**overrides: Any) -> LlmGatewaySettings:
     fields: dict[str, Any] = {
         "llm_monthly_budget_usd": "3.00",
+        "llm_timeout_seconds": "30",
         "llm_primary_base_url": "https://primary.example.test/v1",
         "llm_primary_model": "example-small-model",
         "llm_primary_api_key": MADE_UP_KEY,
@@ -253,7 +254,12 @@ def test_builds_only_the_primary_when_no_fallback_is_configured(
     assert primary.model_name == "example-small-model"
     # No retry inside the SDK: each retry would be a paid request with no budget check.
     assert client_arguments == [
-        {"api_key": MADE_UP_KEY, "base_url": "https://primary.example.test/v1", "max_retries": 0}
+        {
+            "api_key": MADE_UP_KEY,
+            "base_url": "https://primary.example.test/v1",
+            "max_retries": 0,
+            "timeout": 30.0,
+        }
     ]
 
 
@@ -276,6 +282,8 @@ def test_builds_the_fallback_with_its_own_host_key_and_prices(
         "api_key": "another-made-up-key",
         "base_url": "https://fallback.example.test/v1",
         "max_retries": 0,
+        # The same limit as the primary: one setting covers both.
+        "timeout": 30.0,
     }
     # (10 + 128) x 1.00 / 1,000,000 + 200 x 2.00 / 1,000,000
     assert fallback.highest_cost(_request()) == Decimal("0.000538")

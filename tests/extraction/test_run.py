@@ -8,14 +8,20 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.db.models import DatasetSplit, DocumentExtraction, GeneratedDocument, LlmCall, LlmProvider
 from src.db.session import session_scope
 from src.extraction import run
-from src.extraction.run import BUDGET_REACHED, NO_PROVIDER, ExtractionRunSummary, run_extraction
+from src.extraction.run import (
+    BUDGET_REACHED,
+    NO_PROVIDER,
+    REQUEST_REFUSED,
+    ExtractionRunSummary,
+    run_extraction,
+)
 from src.extraction.store import (
     StoredDocument,
     read_extraction_rows,
     select_documents,
     text_sha256,
 )
-from src.llm.gateway import LlmRequest, ProviderUnavailableError
+from src.llm.gateway import LlmRequest, ProviderRejectedError, ProviderUnavailableError
 from tests.extraction.helpers import (
     CLAIM_1,
     CLAIM_2,
@@ -285,6 +291,29 @@ def test_the_run_stops_without_an_error_when_no_provider_can_answer(
     assert summary == _summary(extracted=3, stop_reason=NO_PROVIDER)
     assert summary.not_tried == 2
     assert len(primary.requests) == 4  # the run ended at the first call nobody answered
+
+
+def test_the_run_stops_without_an_error_when_a_provider_refuses_the_request(
+    factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider(
+        error=lambda request: (
+            ProviderRejectedError("BadRequestError (status 400)")
+            if is_about(CLAIM_2)(request)
+            else None
+        )
+    )
+    fallback = StubProvider()
+
+    summary = _run(factory, primary, fallback)
+
+    assert summary == _summary(
+        extracted=3, stop_reason=f"{REQUEST_REFUSED}: BadRequestError (status 400)"
+    )
+    assert summary.not_tried == 2
+    assert _stored_keys(factory) == set(VALIDATION_KEYS[:3])  # what was finished is kept
+    assert len(primary.requests) == 4  # the run ended at the refused call
+    assert fallback.requests == []
 
 
 @pytest.mark.parametrize("missing_or_mixed", ["missing", "mixed"])

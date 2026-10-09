@@ -39,19 +39,23 @@ class FieldMatchReport(BaseModel):
     """The exact-match count per document type and field.
 
     `documents` is how many documents of each type were compared; every type is listed, a
-    type with no compared document as 0 and with no fields.
+    type with no compared document as 0 and with no fields. `left_out` is how many of the
+    documents given had no result for the text they have now: they are in no count, so two
+    reports with different `left_out` numbers do not compare the same documents.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     documents: dict[DocumentType, int]
     fields: dict[DocumentType, dict[str, FieldMatchCount]]
+    left_out: int = Field(ge=0)
 
     def as_text(self) -> str:
         """The report as printed lines. It holds counts and field names only, no value."""
         lines = [
             f"exact match with the answer keys ({sum(self.documents.values())} documents"
-            " with a result):"
+            " with a result):",
+            f"  {self.left_out} selected documents have no current result and are left out",
         ]
         for document_type, documents in self.documents.items():
             counts = self.fields[document_type]
@@ -88,13 +92,15 @@ def count_field_matches(
     """Count the exact matches of `rows` against the answer keys of `documents`.
 
     A document with no row, or with a row made from another text than the one it has now,
-    is left out.
+    is left out and counted in `left_out`.
     """
     compared = dict.fromkeys(DocumentType, 0)
     matched: dict[DocumentType, dict[str, int]] = {kind: {} for kind in DocumentType}
+    left_out = 0
     for document in documents:
         row = rows.get(document.key)
         if row is None or row.text_sha256 != text_sha256(document.text):
+            left_out += 1
             continue
         kind = document.document_type
         extraction = schema_for(kind).model_validate(row.fields)
@@ -110,6 +116,7 @@ def count_field_matches(
             }
             for kind in DocumentType
         },
+        left_out=left_out,
     )
 
 

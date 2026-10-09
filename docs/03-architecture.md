@@ -191,7 +191,7 @@ caller must therefore still check the answer itself.
 | Primary fits the budget and answers | Result from the primary, one row written |
 | Primary does not fit the budget | The primary is not called; the fallback is tried |
 | Primary hits a rate limit, a connection error, a timeout, a server error, or answers with status 408 or 409 | The fallback is tried |
-| Primary rejects the request (a bad request, a wrong key) | The error is raised as it is; the fallback is not called |
+| A provider rejects the request (a bad request, a wrong key) | `ProviderRejectedError`; the fallback is not called, no row written |
 | The primary does not fit the budget and no fallback is configured | `LlmBudgetExceededError`; no provider is called, no row written |
 | The fallback is needed but does not fit the budget | `LlmBudgetExceededError`; the fallback is not called, no row written |
 | The primary is unavailable and no fallback is configured, or the fallback is unavailable too | `LlmUnavailableError`, no row written |
@@ -202,6 +202,11 @@ it, so it is not hidden behind a fallback.
 Providers signal a failure that another provider may cover with
 `ProviderUnavailableError`. It carries the error's class name only, because the SDK's own
 message may quote the request.
+
+A rejected request is raised as `ProviderRejectedError`. It carries the error's class name
+and the status code only, and the SDK's error is not attached to it: the SDK's message
+holds the service's whole response body, which may quote the request or a failed answer,
+and a traceback would print it.
 
 The SDK's own retries are switched off. A retry inside the SDK would be a second paid
 request under one budget check and one spend row. The fallback is the retry.
@@ -370,7 +375,7 @@ them. A changed prompt gets a new version; an existing file is not edited.
 
 Nothing is repaired and no second call is made for a failed answer. Both errors are an
 `ExtractionError`, and their text never quotes the answer. The gateway's own errors (over
-budget, no provider available) pass through unchanged.
+budget, no provider available, a rejected request) pass through unchanged.
 
 Document text and extracted values never appear in a log line or an error message. The one
 log line per call is the gateway's.
@@ -405,13 +410,16 @@ document type) and handles them one at a time.
 | The answer is usable | The row is saved and committed at once |
 | The answer cannot be parsed, or stopped at the output limit | Counted; nothing is stored; the next run tries the document again |
 | The budget is reached, or no provider can answer | The run stops and keeps what it finished |
+| A provider rejects the request (a bad request, a wrong key) | The run stops and keeps what it finished; the message gives the error's class name and the status code |
 
 Each result is committed on its own, so a run that stops after an hour is continued by
 running the same command again, not paid for twice.
 
 At the end the command prints how many extracted values equal the answer keys exactly, per
 document type and field. This count is for comparing two prompt versions. It is **not**
-the Stage 3 accuracy target: that measurement belongs to the evaluation harness.
+the Stage 3 accuracy target: that measurement belongs to the evaluation harness. A document
+with no result is in no count, so the command also prints how many selected documents were
+left out. Two runs with different left-out numbers did not compare the same documents.
 
 ### Measured
 

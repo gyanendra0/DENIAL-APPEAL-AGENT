@@ -129,6 +129,7 @@ def test_counts_matches_per_document_type_and_field() -> None:
     assert list(report.fields[LETTER]) == list(ANSWER_KEYS[LETTER])
     assert set(report.fields[NOTE].values()) == {FieldMatchCount(matched=1, compared=1)}
     assert report.fields[PRIOR_AUTH] == {}
+    assert report.left_out == 0
 
 
 def test_a_document_without_a_result_or_with_one_for_another_text_is_left_out() -> None:
@@ -141,6 +142,18 @@ def test_a_document_without_a_result_or_with_one_for_another_text_is_left_out() 
     )
 
     assert report.documents == {LETTER: 1, NOTE: 0, PRIOR_AUTH: 0}
+    assert report.left_out == 2
+
+
+def test_the_text_says_how_many_documents_are_left_out() -> None:
+    extracted, not_extracted = _document(), _document(NOTE)
+
+    report = count_field_matches([extracted, not_extracted], {extracted.key: _row(extracted)})
+
+    assert report.as_text().splitlines()[:2] == [
+        "exact match with the answer keys (1 documents with a result):",
+        "  1 selected documents have no current result and are left out",
+    ]
 
 
 def test_the_text_lists_counts_and_field_names_but_no_value() -> None:
@@ -153,8 +166,9 @@ def test_the_text_lists_counts_and_field_names_but_no_value() -> None:
     lines = report.as_text().splitlines()
 
     assert lines[0] == "exact match with the answer keys (2 documents with a result):"
-    assert lines[1] == "  denial_letter (2 documents): 29 of 30 values"
-    assert lines[2] == "    claim_number: 2 of 2"
+    assert lines[1] == "  0 selected documents have no current result and are left out"
+    assert lines[2] == "  denial_letter (2 documents): 29 of 30 values"
+    assert lines[3] == "    claim_number: 2 of 2"
     assert "    patient_name: 1 of 2" in lines
     assert lines[-2:] == [
         "  clinical_note (0 documents): 0 of 0 values",

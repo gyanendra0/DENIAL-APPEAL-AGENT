@@ -21,7 +21,12 @@ from src.extraction.store import (
     save_extraction_row,
     text_sha256,
 )
-from src.llm.gateway import LlmBudgetExceededError, LlmGateway, LlmUnavailableError
+from src.llm.gateway import (
+    LlmBudgetExceededError,
+    LlmGateway,
+    LlmUnavailableError,
+    ProviderRejectedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 PROGRESS_EVERY = 100
 BUDGET_REACHED = "the monthly LLM budget is reached"
 NO_PROVIDER = "no provider could answer"
+REQUEST_REFUSED = "a provider refused the request"
 
 
 class ExtractionRunSummary(BaseModel):
@@ -70,7 +76,8 @@ def run_extraction(
     Spends money and can take hours: one model call per document, several seconds each.
     Each result is committed on its own, so a run that stops keeps what it finished. An
     answer that cannot be used is counted and nothing is stored for it. The run ends early,
-    without an error, when the budget is reached or no provider can answer. `prompts` must
+    without an error, when the budget is reached, no provider can answer, or a provider
+    refuses the request. `prompts` must
     hold one prompt per document type, all of one version.
     """
     versions = {prompt.version for prompt in prompts.values()}
@@ -99,6 +106,11 @@ def run_extraction(
                 break
             except LlmUnavailableError:
                 stop_reason = NO_PROVIDER
+                break
+            except ProviderRejectedError as error:
+                # A bad request or a wrong key would most likely repeat on every document.
+                # The error's text is the kind of failure and the status only.
+                stop_reason = f"{REQUEST_REFUSED}: {error}"
                 break
             else:
                 with session_scope(session_factory) as session:

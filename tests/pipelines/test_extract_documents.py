@@ -19,7 +19,7 @@ from src.db.models import DocumentType
 from src.db.session import session_scope
 from src.extraction.prompts import EXTRACTION_PROMPT_VERSION
 from src.extraction.store import read_extraction_rows
-from src.llm.gateway import LlmGateway
+from src.llm.gateway import LlmGateway, ProviderRejectedError
 from tests.extraction.helpers import (
     CLAIM_1,
     CLAIM_3,
@@ -120,7 +120,7 @@ def test_extracts_one_split_stores_the_results_and_prints_the_counts(
     captured = capsys.readouterr()
     assert captured.err == ""
     lines = _without_time(captured.out).splitlines()
-    assert lines[:8] == [
+    assert lines[:9] == [
         "extracted 5 of 5 selected documents (validation split, prompt v999)",
         "  already extracted before this run: 0",
         "  failed to parse: 0",
@@ -129,6 +129,7 @@ def test_extracts_one_split_stores_the_results_and_prints_the_counts(
         "  time: N s",
         "  spent $0.000615 in this run; $0.000615 of the $3.00 monthly budget is used",
         "exact match with the answer keys (5 documents with a result):",
+        "  0 selected documents have no current result and are left out",
     ]
     assert "  denial_letter (2 documents): 30 of 30 values" in lines
     assert "  clinical_note (2 documents): 16 of 16 values" in lines
@@ -187,6 +188,7 @@ def test_failed_extractions_are_counted_and_the_run_still_exits_0(
     assert lines[2] == "  failed to parse: 2"
     assert lines[3] == "  stopped for length: 1"
     assert lines[7] == "exact match with the answer keys (2 documents with a result):"
+    assert lines[8] == "  3 selected documents have no current result and are left out"
 
 
 def test_stops_cleanly_when_the_budget_is_reached_and_exits_1(
@@ -207,6 +209,27 @@ def test_stops_cleanly_when_the_budget_is_reached_and_exits_1(
     assert captured.err == (
         "stopped early: the monthly LLM budget is reached; 2 documents were not tried."
         " Run the same command again to continue.\n"
+    )
+
+
+def test_stops_cleanly_when_a_provider_refuses_the_request_and_exits_1(
+    factory: sessionmaker[Session], stubs: Stubs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stubs.primary = StubProvider(
+        error=lambda request: (
+            None if is_about(CLAIM_1)(request) else ProviderRejectedError("BadRequestError (400)")
+        )
+    )
+
+    exit_code = main(VALIDATION)
+
+    assert exit_code == 1
+    assert _stored_keys(factory) == set(VALIDATION_KEYS[:3])  # what was finished is kept
+    captured = capsys.readouterr()
+    assert captured.out.startswith("extracted 3 of 5 selected documents")
+    assert captured.err == (
+        "stopped early: a provider refused the request: BadRequestError (400);"
+        " 2 documents were not tried. Run the same command again to continue.\n"
     )
 
 

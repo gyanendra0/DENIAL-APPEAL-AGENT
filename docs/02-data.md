@@ -1050,8 +1050,9 @@ two commands need none of those keys.
 | `--prompt-version` | `v2` | The version of the extraction prompts |
 
 Exit code 0 means every selected document was looked at, 1 means the run stopped early
-(the monthly budget is reached, or no provider could answer) or the split has no document,
-2 means a bad argument, a prompt version with no prompt files included.
+(the monthly budget is reached, no provider could answer, or a provider refused the
+request) or the split has no document, 2 means a bad argument, a prompt version with no
+prompt files included.
 
 Each result is saved as soon as it arrives. A document that already has a result for the
 prompt version is skipped, so after exit code 1 the same command continues where the run
@@ -1060,7 +1061,8 @@ the next run.
 
 At the end the command prints the counts, the time, the money spent in the run and in the
 month, and how many extracted values equal the answer keys exactly. That count compares
-prompts; it is not the Stage 3 accuracy target.
+prompts; it is not the Stage 3 accuracy target. Documents with no result are left out of
+it, and the command prints how many.
 
 Measured on 2026-10-09 for the test split of the default load (1,883 documents, prompt
 `v2`): 103 minutes and $0.653694, about 3.3 seconds and $0.00035 per document. The other

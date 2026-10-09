@@ -12,14 +12,16 @@ A document that already has a result for the prompt version, made from the text 
 is skipped, so a run that stopped can be started again. `--limit` takes the first documents
 of the split in claim id order, so the same limit always means the same documents. An answer
 that is not usable (not JSON, not the schema, or cut off at the output limit) is counted and
-nothing is stored for it. When the monthly budget is reached, or no provider can answer, the
-run stops and keeps what it finished.
+nothing is stored for it. When the monthly budget is reached, no provider can answer, or a
+provider refuses the request (a bad request, a wrong key), the run stops and keeps what it
+finished.
 
 At the end the command prints the counts, the time, the money spent, and how many extracted
 values equal the answer keys exactly (a count for comparing prompts, not the accuracy gate).
+Documents with no result are not in that count; the command prints how many there are.
 
-Exit codes: 0 every selected document was looked at, 1 the run stopped early (budget reached
-or no provider) or the split has no document, 2 bad arguments.
+Exit codes: 0 every selected document was looked at, 1 the run stopped early (budget reached,
+no provider, or a refused request) or the split has no document, 2 bad arguments.
 """
 
 import argparse

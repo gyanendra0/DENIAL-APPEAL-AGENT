@@ -1,4 +1,5 @@
 import json
+import traceback
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,7 +13,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm import openai_provider
-from src.llm.gateway import LlmGateway, LlmRequest, ProviderUnavailableError
+from src.llm.gateway import (
+    LlmGateway,
+    LlmRequest,
+    ProviderRejectedError,
+    ProviderUnavailableError,
+)
 from src.llm.openai_provider import (
     MESSAGE_FRAMING_TOKENS,
     NO_API_KEY,
@@ -238,13 +244,22 @@ def test_run_reports_a_failure_the_fallback_may_cover(error: Exception) -> None:
         (openai.APIStatusError, 418),
     ],
 )
-def test_run_lets_a_bug_or_a_setup_mistake_propagate_as_it_is(
+def test_run_reports_a_refused_request_without_what_the_service_answered(
     error_class: type[openai.APIStatusError], status: int
 ) -> None:
-    provider, _ = _provider(_status_error(error_class, status))
+    # The SDK puts the whole response body into its message; a body may quote an answer.
+    body = {"error": {"message": "failed to fit the schema", "failed_generation": "Ada Example"}}
+    response = httpx2.Response(status, request=HTTP_REQUEST, json=body)
+    error = error_class(f"Error code: {status} - {body}", response=response, body=body)
+    provider, _ = _provider(error)
 
-    with pytest.raises(error_class):
+    with pytest.raises(ProviderRejectedError) as raised:
         provider.run(_request())
+
+    assert str(raised.value) == f"{error_class.__name__} (status {status})"
+    printed = "".join(traceback.format_exception(raised.value))
+    assert "Ada Example" not in printed
+    assert "failed_generation" not in printed
 
 
 def _settings(**overrides: Any) -> LlmGatewaySettings:

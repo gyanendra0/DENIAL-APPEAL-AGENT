@@ -20,6 +20,7 @@ from src.llm.gateway import (
     LlmResult,
     LlmUnavailableError,
     ProviderAnswer,
+    ProviderRejectedError,
     ProviderUnavailableError,
 )
 
@@ -270,6 +271,21 @@ def test_a_bad_request_is_raised_as_it_is_and_not_sent_to_the_fallback(
     with pytest.raises(RuntimeError, match="bad request"):
         _gateway(session_factory, primary, fallback).complete(_request())
 
+    assert fallback.requests == []
+    assert _new_calls(session_factory) == []
+
+
+def test_a_refused_request_is_not_sent_to_the_fallback(
+    session_factory: sessionmaker[Session],
+) -> None:
+    refused = ProviderRejectedError("BadRequestError (status 400)")
+    primary = StubProvider("example-small-model", error=refused)
+    fallback = StubProvider("example-open-model")
+
+    with pytest.raises(ProviderRejectedError) as raised:
+        _gateway(session_factory, primary, fallback).complete(_request())
+
+    assert raised.value is refused
     assert fallback.requests == []
     assert _new_calls(session_factory) == []
 

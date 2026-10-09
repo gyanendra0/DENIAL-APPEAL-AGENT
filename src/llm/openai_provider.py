@@ -21,7 +21,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm.budget import call_cost
-from src.llm.gateway import LlmGateway, LlmRequest, ProviderAnswer, ProviderUnavailableError
+from src.llm.gateway import (
+    LlmGateway,
+    LlmRequest,
+    ProviderAnswer,
+    ProviderRejectedError,
+    ProviderUnavailableError,
+)
 
 # Added to the byte count of the prompt for what the service wraps around the messages
 # (role markers, a model's built-in preamble). Chosen with a wide margin, not measured.
@@ -99,8 +105,8 @@ class OpenAiChatProvider:
         """Send `request` to the service. Spends money and can take several seconds.
 
         A rate limit, a connection error, a timeout, a server error or a status in
-        `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other error
-        propagates as it is.
+        `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other status
+        the service answers with (a bad request, a wrong key) as `ProviderRejectedError`.
         """
         try:
             completion = self._client.chat.completions.create(
@@ -116,9 +122,13 @@ class OpenAiChatProvider:
             # The class name only: the SDK's message may quote the request.
             raise ProviderUnavailableError(type(error).__name__) from error
         except APIStatusError as error:
-            if error.status_code not in TEMPORARY_STATUS_CODES:
-                raise
-            raise ProviderUnavailableError(type(error).__name__) from error
+            if error.status_code in TEMPORARY_STATUS_CODES:
+                raise ProviderUnavailableError(type(error).__name__) from error
+            # Not chained: the SDK's message holds the service's whole response body, which
+            # may quote the request or a failed answer, and a traceback would print it.
+            raise ProviderRejectedError(
+                f"{type(error).__name__} (status {error.status_code})"
+            ) from None
 
         if completion.usage is None:
             # The call was answered, so it was paid for: record the most it can have cost.

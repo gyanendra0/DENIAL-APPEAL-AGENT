@@ -63,9 +63,12 @@ def test_a_negative_floor_is_refused_even_when_the_amount_is_missing() -> None:
     [25.0, 25, "25", Decimal("NaN"), Decimal("Infinity")],
     ids=["a float", "a whole number", "text", "not a number", "infinite"],
 )
-def test_a_floor_that_is_not_an_exact_finite_decimal_is_refused(floor: object) -> None:
+@pytest.mark.parametrize("amount", [Decimal("24.99"), None], ids=["an amount", "no amount"])
+def test_a_floor_that_is_not_an_exact_finite_decimal_is_refused(
+    floor: object, amount: Decimal | None
+) -> None:
     with pytest.raises(ValueError, match="floor"):
-        check_amount(Decimal("24.99"), floor)  # type: ignore[arg-type]
+        check_amount(amount, floor)  # type: ignore[arg-type]
 
 
 def test_a_negative_amount_is_refused_and_not_reported_as_below_the_floor() -> None:

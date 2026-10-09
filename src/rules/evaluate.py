@@ -21,7 +21,8 @@ def evaluate_rules(inputs: RuleInputs, *, today: date, amount_floor: Decimal) ->
     `today` and `amount_floor` are always passed in. Every rule runs, so the verdict lists
     every reason that fired, in `RuleReason` order, and not only the first. One hard-fail
     reason makes the outcome `hard_fail` whatever else fired; otherwise any reason makes it
-    `must_review`; no reason means `pass`. A negative floor is refused.
+    `must_review`; no reason means `pass`. A floor that is not an exact decimal of zero or
+    more is refused.
     """
     reasons = (
         *check_deadline(inputs.letter_date, inputs.appeal_deadline, today),

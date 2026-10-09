@@ -1040,8 +1040,8 @@ python3 -m pipelines.extract_documents --split test
 
 **This command spends money**: one model call per document that has no result yet. It
 needs the database migrated, the documents generated, and the `LLM_` keys from
-`.env.example` set ([03-architecture.md 3.8](03-architecture.md#38-llm-gateway)). The other
-two commands need none of those keys.
+`.env.example` set ([03-architecture.md 3.8](03-architecture.md#38-llm-gateway)). No other
+command on this page needs those keys.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -1067,3 +1067,63 @@ it, and the command prints how many.
 Measured on 2026-10-09 for the test split of the default load (1,883 documents, prompt
 `v2`): 103 minutes and $0.653694, about 3.3 seconds and $0.00035 per document. The other
 figures of that run are in 03-architecture.md 3.9.
+
+### Training the win-probability model
+
+A fourth command trains the model that scores a denied claim's appeal chance and saves it
+([03-architecture.md 3.10](03-architecture.md#310-win-probability-model)):
+
+```text
+python3 -m pipelines.train_win_model
+```
+
+It needs the database migrated and the pipeline run, because it reads the stored lines and
+labels. It does not need the documents or the extraction, makes no model call and spends
+no money. With the default load it takes about 5 seconds.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--seed` | 42 | Seed of the model's fit, from 0 to 4,294,967,295 |
+
+What it does, in order:
+
+1. Reads every claim labelled denied and builds its three features.
+2. Fits the model on the train split only.
+3. Scores the train, validation and test splits and prints the report.
+4. Writes `win_model.joblib` and `win_model.json` into the folder named by the setting
+   `MODEL_DIR` (default `models`). Files of an earlier run are replaced.
+
+The output for the default load:
+
+```text
+win-probability model v1 (features v1, label rule v2; the appeal-success label is a proxy, not an observed outcome)
+training seed: 42 | split seed: 42
+split: denied claims | proxy true (of denied) | model AUC | best possible AUC
+train: 3,784 | 1,976 (52.22%) | 0.7750 | 0.7722
+validation: 782 | 422 (53.96%) | 0.7641 | 0.7676
+test: 759 | 415 (54.68%) | 0.7539 | 0.7522
+test AUC against the target 0.70 (reported, not a gate): 0.7539, meets the target
+saved win_model.joblib and win_model.json in models
+```
+
+The `best possible AUC` column is the same number the quality report prints: the score of
+the label rule's own chance. A model AUC close to it means the model learned the rule; it
+cannot do better except by chance. A split with no true proxy or no false proxy shows
+`n/a`.
+
+Exit code 0 means trained and saved, 2 means a bad argument. Exit code 1 means nothing was
+written, for one of five reasons:
+
+- no stored claim is labelled denied;
+- the labels were made by another label rule version;
+- the labels hold more than one split seed;
+- a label no longer fits the claim's stored lines (the claims were loaded again after the
+  labels were made);
+- the train split has no true proxy or no false proxy.
+
+The first four are fixed by running the pipeline again. The test AUC is **not** a gate: a
+value below 0.70 is printed as `below the target`, the model is still saved and the exit
+code is 0, because a small load gives a noisy AUC.
+
+The same claims, labels and seed give the same model. Train again after every pipeline run
+that changes the labels.

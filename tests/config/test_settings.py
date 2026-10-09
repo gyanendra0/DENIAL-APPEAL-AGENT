@@ -333,7 +333,7 @@ def test_env_example_lists_every_gateway_key(monkeypatch: pytest.MonkeyPatch) ->
 
     settings = load_llm_gateway_settings(env_file=str(example))
 
-    assert {*REQUIRED_GATEWAY_ENV, *OPTIONAL_GATEWAY_KEYS, "PROMPT_DIR"} <= listed
+    assert {*REQUIRED_GATEWAY_ENV, *OPTIONAL_GATEWAY_KEYS, "PROMPT_DIR", "MODEL_DIR"} <= listed
     assert settings.has_fallback is True
     assert settings.llm_fallback_api_key is not None
     # Worked out before the asserts, so a failure never prints the value of a real key.

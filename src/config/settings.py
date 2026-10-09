@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     prompt_dir: Path = Path("config/prompts")
     # The folder a trained model and its facts file are written to and read from.
     model_dir: Path = Path("models")
+    # The smallest total allowed charge the rules let through, in US dollars. Assumed: no
+    # source gives this value.
+    rules_amount_floor_usd: UsdAmount = Decimal("25")
 
     @field_validator("database_url")
     @classmethod

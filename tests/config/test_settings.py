@@ -81,6 +81,46 @@ def test_model_folder_is_read_from_the_environment(monkeypatch: pytest.MonkeyPat
     assert load_settings(env_file=None).model_dir == Path("/made/up/models")
 
 
+def test_amount_floor_defaults_to_an_exact_25(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.delenv("RULES_AMOUNT_FLOOR_USD", raising=False)
+
+    floor = load_settings(env_file=None).rules_amount_floor_usd
+
+    assert floor == Decimal("25")
+    assert isinstance(floor, Decimal)
+
+
+def test_amount_floor_is_read_from_the_environment_as_an_exact_decimal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("RULES_AMOUNT_FLOOR_USD", "50.10")
+
+    floor = load_settings(env_file=None).rules_amount_floor_usd
+
+    assert isinstance(floor, Decimal)
+    assert str(floor) == "50.10"
+
+
+def test_an_amount_floor_of_zero_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("RULES_AMOUNT_FLOOR_USD", "0")
+
+    assert load_settings(env_file=None).rules_amount_floor_usd == Decimal("0")
+
+
+@pytest.mark.parametrize("value", ["-1", "-0.01", "abc", ""], ids=["-1", "-0.01", "text", "empty"])
+def test_rejects_an_amount_floor_that_is_negative_or_not_a_number(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("RULES_AMOUNT_FLOOR_USD", value)
+
+    with pytest.raises(ValidationError, match="rules_amount_floor_usd"):
+        load_settings(env_file=None)
+
+
 # A made-up value. No real key ever appears in a test.
 API_KEY = "test-key-not-real"
 FALLBACK_KEY = "test-fallback-key-not-real"
@@ -333,7 +373,13 @@ def test_env_example_lists_every_gateway_key(monkeypatch: pytest.MonkeyPatch) ->
 
     settings = load_llm_gateway_settings(env_file=str(example))
 
-    assert {*REQUIRED_GATEWAY_ENV, *OPTIONAL_GATEWAY_KEYS, "PROMPT_DIR", "MODEL_DIR"} <= listed
+    assert {
+        *REQUIRED_GATEWAY_ENV,
+        *OPTIONAL_GATEWAY_KEYS,
+        "PROMPT_DIR",
+        "MODEL_DIR",
+        "RULES_AMOUNT_FLOOR_USD",
+    } <= listed
     assert settings.has_fallback is True
     assert settings.llm_fallback_api_key is not None
     # Worked out before the asserts, so a failure never prints the value of a real key.

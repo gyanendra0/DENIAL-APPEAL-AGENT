@@ -58,6 +58,16 @@ def test_a_negative_floor_is_refused_even_when_the_amount_is_missing() -> None:
         check_amount(None, Decimal("-1"))
 
 
+@pytest.mark.parametrize(
+    "floor",
+    [25.0, 25, "25", Decimal("NaN"), Decimal("Infinity")],
+    ids=["a float", "a whole number", "text", "not a number", "infinite"],
+)
+def test_a_floor_that_is_not_an_exact_finite_decimal_is_refused(floor: object) -> None:
+    with pytest.raises(ValueError, match="floor"):
+        check_amount(Decimal("24.99"), floor)  # type: ignore[arg-type]
+
+
 def test_a_negative_amount_is_refused_and_not_reported_as_below_the_floor() -> None:
     with pytest.raises(ValueError, match="total allowed charge"):
         check_amount(Decimal("-0.01"), FLOOR)

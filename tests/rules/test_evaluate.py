@@ -148,6 +148,27 @@ def test_every_combination_lists_its_reasons_in_order_with_a_fitting_outcome(
         assert verdict.outcome is RuleOutcome.PASS
 
 
+@pytest.mark.parametrize(
+    ("appeal_deadline", "outcome", "reasons"),
+    [
+        (OPEN_DEADLINE, RuleOutcome.PASS, ()),
+        (PASSED_DEADLINE, RuleOutcome.HARD_FAIL, (RuleReason.DEADLINE_PASSED,)),
+    ],
+    ids=["an open deadline", "a passed deadline"],
+)
+def test_a_missing_letter_date_leaves_only_the_passed_check(
+    appeal_deadline: date, outcome: RuleOutcome, reasons: tuple[RuleReason, ...]
+) -> None:
+    inputs = RuleInputs(
+        letter_date=None, appeal_deadline=appeal_deadline, total_allowed_charge_amount=BIG_AMOUNT
+    )
+
+    verdict = evaluate_rules(inputs, today=TODAY, amount_floor=FLOOR)
+
+    assert verdict.outcome is outcome
+    assert verdict.reasons == reasons
+
+
 def test_the_today_passed_in_is_the_one_used() -> None:
     on_the_deadline = evaluate(today=OPEN_DEADLINE)
     the_day_after = evaluate(today=date(2010, 1, 12))

@@ -14,10 +14,11 @@ def check_amount(total_allowed_charge_amount: Decimal | None, floor: Decimal) ->
 
     `floor` is always passed in. An amount exactly at the floor is big enough. Zero means the
     letter does not say what the claim was worth, so it is sent to review and is never reported
-    as below the floor. A negative amount or floor is refused.
+    as below the floor. A negative amount is refused, and so is a floor that is not an exact
+    decimal of zero or more (a float, not a number, or infinite).
     """
-    if floor < 0:
-        raise ValueError("the amount floor must be zero or more")
+    if not isinstance(floor, Decimal) or not floor.is_finite() or floor < 0:
+        raise ValueError("the amount floor must be an exact decimal of zero or more")
     if total_allowed_charge_amount is None:
         return [RuleReason.AMOUNT_MISSING]
     if total_allowed_charge_amount < 0:

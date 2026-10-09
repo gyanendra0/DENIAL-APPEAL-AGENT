@@ -679,7 +679,8 @@ The amount rule:
 - An amount exactly at the floor is big enough.
 - Zero is never "below the floor". Zero means the letter does not say what the claim was
   worth, so the claim goes to a person.
-- A negative amount or a negative floor raises `ValueError`.
+- A negative amount raises `ValueError`. So does a floor that is not an exact decimal of 0 or
+  more: a negative one, a float, "not a number" or infinity.
 
 A deadline reason and an amount reason can fire together. Two reasons of the same rule
 cannot.

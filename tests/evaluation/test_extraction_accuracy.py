@@ -1,10 +1,9 @@
 from decimal import Decimal
-from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from src.db.models import DocumentType, LlmProvider
+from src.db.models import DocumentType
 from src.evaluation.extraction_accuracy import (
     HEADLINE_REASON_FIELD,
     TARGET_FIELD_ACCURACY,
@@ -13,69 +12,20 @@ from src.evaluation.extraction_accuracy import (
     build_extraction_accuracy_report,
     confidence_band,
 )
-from src.extraction.schemas import schema_for
-from src.extraction.store import DocumentExtractionRow, DocumentKey, StoredDocument, text_sha256
 from src.synth.noise import NoiseLevel
+from tests.evaluation.helpers import by_key, result_row, stored_document
 from tests.extraction.helpers import (
     ANSWER_KEYS,
     CLAIM_1,
     CLAIM_2,
     CLAIM_3,
     LETTER,
-    MODEL_NAME,
     NOTE,
     PRIOR_AUTH,
-    PROMPT_VERSION,
-    document_text,
-    fields_json,
 )
 
 # How many fields a letter, a note and a prior-authorisation record have.
 LETTER_FIELDS, NOTE_FIELDS, PRIOR_AUTH_FIELDS = 15, 8, 12
-
-
-def _document(
-    kind: DocumentType = LETTER,
-    claim_id: str = CLAIM_1,
-    *,
-    noise_level: NoiseLevel = NoiseLevel.NONE,
-    missing_field: str | None = None,
-) -> StoredDocument:
-    return StoredDocument(
-        source_claim_id=claim_id,
-        document_type=kind,
-        text=document_text(claim_id, kind),
-        answer_key=ANSWER_KEYS[kind],
-        noise_level=noise_level,
-        missing_field=missing_field,
-    )
-
-
-def _row(
-    document: StoredDocument,
-    *,
-    text: str | None = None,
-    confidences: dict[str, float] | None = None,
-    **changed: Any,
-) -> DocumentExtractionRow:
-    """A result for `document`: its answer key with `changed` and `confidences` swapped in."""
-    raw = fields_json(document.document_type, **changed)
-    for name, confidence in (confidences or {}).items():
-        raw[name]["confidence"] = confidence
-    fields = schema_for(document.document_type).model_validate(raw)
-    return DocumentExtractionRow(
-        source_claim_id=document.source_claim_id,
-        document_type=document.document_type,
-        prompt_version=PROMPT_VERSION,
-        model_name=MODEL_NAME,
-        provider=LlmProvider.PRIMARY,
-        text_sha256=text_sha256(document.text if text is None else text),
-        fields=fields.model_dump(mode="json"),
-    )
-
-
-def _by_key(*rows: DocumentExtractionRow) -> dict[DocumentKey, DocumentExtractionRow]:
-    return {row.key: row for row in rows}
 
 
 def _count(matched: int, compared: int) -> MatchCount:
@@ -87,9 +37,9 @@ def test_the_target_is_the_stage_3_done_condition() -> None:
 
 
 def test_perfect_results_are_fully_right_both_ways() -> None:
-    documents = [_document(LETTER), _document(NOTE), _document(PRIOR_AUTH)]
+    documents = [stored_document(LETTER), stored_document(NOTE), stored_document(PRIOR_AUTH)]
 
-    report = build_extraction_accuracy_report(documents, _by_key(*map(_row, documents)))
+    report = build_extraction_accuracy_report(documents, by_key(*map(result_row, documents)))
 
     values = LETTER_FIELDS + NOTE_FIELDS + PRIOR_AUTH_FIELDS
     assert (report.documents, report.with_result, report.no_result, report.stale) == (3, 3, 0, 0)
@@ -99,9 +49,9 @@ def test_perfect_results_are_fully_right_both_ways() -> None:
 
 
 def test_a_document_with_no_result_is_all_wrong_in_the_gate_number_only() -> None:
-    letter, note = _document(LETTER), _document(NOTE)
+    letter, note = stored_document(LETTER), stored_document(NOTE)
 
-    report = build_extraction_accuracy_report([letter, note], _by_key(_row(letter)))
+    report = build_extraction_accuracy_report([letter, note], by_key(result_row(letter)))
 
     assert (report.with_result, report.no_result, report.stale) == (1, 1, 0)
     assert report.with_result_only == _count(LETTER_FIELDS, LETTER_FIELDS)
@@ -114,10 +64,10 @@ def test_a_document_with_no_result_is_all_wrong_in_the_gate_number_only() -> Non
 
 
 def test_a_result_made_from_another_text_is_stale_and_counts_as_no_result() -> None:
-    letter = _document(LETTER)
+    letter = stored_document(LETTER)
 
     report = build_extraction_accuracy_report(
-        [letter], _by_key(_row(letter, text="an older made-up text"))
+        [letter], by_key(result_row(letter, text="an older made-up text"))
     )
 
     assert (report.with_result, report.no_result, report.stale) == (0, 0, 1)
@@ -127,12 +77,12 @@ def test_a_result_made_from_another_text_is_stale_and_counts_as_no_result() -> N
 
 
 def test_a_blanked_field_is_right_only_when_the_extracted_value_is_null() -> None:
-    read_as_null = _document(LETTER, CLAIM_1, missing_field="member_id")
-    read_as_value = _document(LETTER, CLAIM_2, missing_field="member_id")
+    read_as_null = stored_document(LETTER, CLAIM_1, missing_field="member_id")
+    read_as_value = stored_document(LETTER, CLAIM_2, missing_field="member_id")
 
     report = build_extraction_accuracy_report(
         [read_as_null, read_as_value],
-        _by_key(_row(read_as_null, member_id=None), _row(read_as_value)),
+        by_key(result_row(read_as_null, member_id=None), result_row(read_as_value)),
     )
 
     assert report.by_type[LETTER].fields["member_id"] == _count(1, 2)
@@ -140,12 +90,12 @@ def test_a_blanked_field_is_right_only_when_the_extracted_value_is_null() -> Non
 
 
 def test_counts_are_kept_per_type_and_per_field() -> None:
-    letter_1, letter_2 = _document(LETTER, CLAIM_1), _document(LETTER, CLAIM_2)
-    note, record = _document(NOTE), _document(PRIOR_AUTH)
-    rows = _by_key(
-        _row(letter_1, patient_name="Someone Else", letter_date="2008-03-21"),
-        _row(letter_2, patient_name="Someone Else"),
-        _row(note, procedure_codes=["99214"]),
+    letter_1, letter_2 = stored_document(LETTER, CLAIM_1), stored_document(LETTER, CLAIM_2)
+    note, record = stored_document(NOTE), stored_document(PRIOR_AUTH)
+    rows = by_key(
+        result_row(letter_1, patient_name="Someone Else", letter_date="2008-03-21"),
+        result_row(letter_2, patient_name="Someone Else"),
+        result_row(note, procedure_codes=["99214"]),
     )
 
     report = build_extraction_accuracy_report([letter_1, letter_2, note, record], rows)
@@ -169,11 +119,13 @@ def test_counts_are_kept_per_type_and_per_field() -> None:
 
 
 def test_counts_are_kept_per_noise_level_for_documents_with_a_result() -> None:
-    clean = _document(LETTER, CLAIM_1, noise_level=NoiseLevel.NONE)
-    heavy = _document(LETTER, CLAIM_2, noise_level=NoiseLevel.HEAVY)
-    heavy_note = _document(NOTE, CLAIM_2, noise_level=NoiseLevel.HEAVY)
-    unread = _document(LETTER, CLAIM_3, noise_level=NoiseLevel.LIGHT)
-    rows = _by_key(_row(clean), _row(heavy, member_id="MBR-OOOOO1"), _row(heavy_note))
+    clean = stored_document(LETTER, CLAIM_1, noise_level=NoiseLevel.NONE)
+    heavy = stored_document(LETTER, CLAIM_2, noise_level=NoiseLevel.HEAVY)
+    heavy_note = stored_document(NOTE, CLAIM_2, noise_level=NoiseLevel.HEAVY)
+    unread = stored_document(LETTER, CLAIM_3, noise_level=NoiseLevel.LIGHT)
+    rows = by_key(
+        result_row(clean), result_row(heavy, member_id="MBR-OOOOO1"), result_row(heavy_note)
+    )
 
     report = build_extraction_accuracy_report([clean, heavy, heavy_note, unread], rows)
 
@@ -186,9 +138,11 @@ def test_counts_are_kept_per_noise_level_for_documents_with_a_result() -> None:
 
 
 def test_the_headline_reason_counts_every_letter_and_no_other_document() -> None:
-    right, wrong, unread = (_document(LETTER, claim) for claim in (CLAIM_1, CLAIM_2, CLAIM_3))
-    note = _document(NOTE)
-    rows = _by_key(_row(right), _row(wrong, denial_reason_category="duplicate"), _row(note))
+    right, wrong, unread = (stored_document(LETTER, claim) for claim in (CLAIM_1, CLAIM_2, CLAIM_3))
+    note = stored_document(NOTE)
+    rows = by_key(
+        result_row(right), result_row(wrong, denial_reason_category="duplicate"), result_row(note)
+    )
 
     report = build_extraction_accuracy_report([right, wrong, unread, note], rows)
 
@@ -217,14 +171,14 @@ def test_a_score_falls_in_the_band_that_starts_at_or_below_it(
 
 
 def test_right_and_wrong_values_are_counted_in_the_band_of_their_own_score() -> None:
-    note = _document(NOTE)
-    row = _row(
+    note = stored_document(NOTE)
+    row = result_row(
         note,
         confidences={"patient_name": 1.0, "member_id": 0.5, "note_date": 0.85},
         member_id="MBR-999999",
     )
 
-    report = build_extraction_accuracy_report([note], _by_key(row))
+    report = build_extraction_accuracy_report([note], by_key(row))
 
     assert report.by_confidence == {
         ConfidenceBand.BELOW_080: _count(0, 1),
@@ -236,9 +190,11 @@ def test_right_and_wrong_values_are_counted_in_the_band_of_their_own_score() -> 
 
 
 def test_a_result_for_a_document_that_was_not_given_is_ignored() -> None:
-    letter, other = _document(LETTER, CLAIM_1), _document(LETTER, CLAIM_2)
+    letter, other = stored_document(LETTER, CLAIM_1), stored_document(LETTER, CLAIM_2)
 
-    report = build_extraction_accuracy_report([letter], _by_key(_row(letter), _row(other)))
+    report = build_extraction_accuracy_report(
+        [letter], by_key(result_row(letter), result_row(other))
+    )
 
     assert (report.documents, report.with_result) == (1, 1)
     assert report.all_documents == _count(LETTER_FIELDS, LETTER_FIELDS)

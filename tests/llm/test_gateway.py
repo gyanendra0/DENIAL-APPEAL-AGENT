@@ -20,6 +20,7 @@ from src.llm.gateway import (
     LlmResult,
     LlmUnavailableError,
     ProviderAnswer,
+    ProviderRejectedError,
     ProviderUnavailableError,
 )
 
@@ -274,6 +275,21 @@ def test_a_bad_request_is_raised_as_it_is_and_not_sent_to_the_fallback(
     assert _new_calls(session_factory) == []
 
 
+def test_a_refused_request_is_not_sent_to_the_fallback(
+    session_factory: sessionmaker[Session],
+) -> None:
+    refused = ProviderRejectedError("BadRequestError (status 400)")
+    primary = StubProvider("example-small-model", error=refused)
+    fallback = StubProvider("example-open-model")
+
+    with pytest.raises(ProviderRejectedError) as raised:
+        _gateway(session_factory, primary, fallback).complete(_request())
+
+    assert raised.value is refused
+    assert fallback.requests == []
+    assert _new_calls(session_factory) == []
+
+
 def test_a_call_that_lands_exactly_on_the_cap_is_made(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -416,3 +432,10 @@ def test_rejects_a_model_name_the_spend_table_cannot_hold(
 def test_request_rejects_a_value_the_gateway_cannot_use(field: str, value: Any) -> None:
     with pytest.raises(ValidationError, match=field):
         _request(**{field: value})
+
+
+def test_a_request_carries_no_response_schema_unless_one_is_given() -> None:
+    schema = {"type": "object", "properties": {"reason": {"type": "string"}}}
+
+    assert _request().response_schema is None
+    assert _request(response_schema=schema).response_schema == schema

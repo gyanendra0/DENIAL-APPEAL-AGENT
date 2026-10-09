@@ -4,20 +4,30 @@ The primary and the fallback provider are both this class: they differ only in b
 model, key and prices, which all come from `LlmGatewaySettings`.
 """
 
+import json
 from decimal import Decimal
 
 from openai import (
     APIConnectionError,
     APIStatusError,
     InternalServerError,
+    Omit,
     OpenAI,
     RateLimitError,
+    omit,
 )
+from openai.types.shared_params import ResponseFormatJSONSchema
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm.budget import call_cost
-from src.llm.gateway import LlmGateway, LlmRequest, ProviderAnswer, ProviderUnavailableError
+from src.llm.gateway import (
+    LlmGateway,
+    LlmRequest,
+    ProviderAnswer,
+    ProviderRejectedError,
+    ProviderUnavailableError,
+)
 
 # Added to the byte count of the prompt for what the service wraps around the messages
 # (role markers, a model's built-in preamble). Chosen with a wide margin, not measured.
@@ -32,16 +42,38 @@ SDK_MAX_RETRIES = 0
 # Status codes the service uses for a passing failure that has no error class of its own:
 # request timeout and conflict.
 TEMPORARY_STATUS_CODES = frozenset({408, 409})
+# The name the service wants for a response schema. It is a label only.
+RESPONSE_SCHEMA_NAME = "answer"
+# The service aims for the schema but does not promise it. Strict mode is off because the
+# fallback service refused these schemas in strict mode (measured 2026-10-09).
+RESPONSE_SCHEMA_STRICT = False
 
 
 def highest_input_tokens(request: LlmRequest) -> int:
     """Return a number of input tokens that `request` can never exceed.
 
     There is no free token counter, so this is the UTF-8 byte length of the prompt (a token
-    is never smaller than one byte) plus a fixed margin for message framing.
+    is never smaller than one byte) plus a fixed margin for message framing. A response
+    schema is billed as input too, so its bytes are counted as well.
     """
     prompt_bytes = len(request.system.encode("utf-8")) + len(request.user.encode("utf-8"))
-    return prompt_bytes + MESSAGE_FRAMING_TOKENS
+    schema_bytes = 0
+    if request.response_schema is not None:
+        schema_bytes = len(json.dumps(request.response_schema).encode("utf-8"))
+    return prompt_bytes + schema_bytes + MESSAGE_FRAMING_TOKENS
+
+
+def _response_format(request: LlmRequest) -> ResponseFormatJSONSchema | Omit:
+    if request.response_schema is None:
+        return omit
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": RESPONSE_SCHEMA_NAME,
+            "schema": request.response_schema,
+            "strict": RESPONSE_SCHEMA_STRICT,
+        },
+    }
 
 
 class OpenAiChatProvider:
@@ -73,8 +105,8 @@ class OpenAiChatProvider:
         """Send `request` to the service. Spends money and can take several seconds.
 
         A rate limit, a connection error, a timeout, a server error or a status in
-        `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other error
-        propagates as it is.
+        `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other status
+        the service answers with (a bad request, a wrong key) as `ProviderRejectedError`.
         """
         try:
             completion = self._client.chat.completions.create(
@@ -84,14 +116,19 @@ class OpenAiChatProvider:
                     {"role": "user", "content": request.user},
                 ],
                 max_completion_tokens=request.max_tokens,
+                response_format=_response_format(request),
             )
         except (APIConnectionError, RateLimitError, InternalServerError) as error:
             # The class name only: the SDK's message may quote the request.
             raise ProviderUnavailableError(type(error).__name__) from error
         except APIStatusError as error:
-            if error.status_code not in TEMPORARY_STATUS_CODES:
-                raise
-            raise ProviderUnavailableError(type(error).__name__) from error
+            if error.status_code in TEMPORARY_STATUS_CODES:
+                raise ProviderUnavailableError(type(error).__name__) from error
+            # Not chained: the SDK's message holds the service's whole response body, which
+            # may quote the request or a failed answer, and a traceback would print it.
+            raise ProviderRejectedError(
+                f"{type(error).__name__} (status {error.status_code})"
+            ) from None
 
         if completion.usage is None:
             # The call was answered, so it was paid for: record the most it can have cost.
@@ -129,6 +166,7 @@ def build_openai_providers(
             api_key=settings.llm_primary_api_key.get_secret_value(),
             base_url=settings.llm_primary_base_url,
             max_retries=SDK_MAX_RETRIES,
+            timeout=settings.llm_timeout_seconds,
         ),
         model_name=settings.llm_primary_model,
         input_usd_per_mtok=settings.llm_primary_input_usd_per_mtok,
@@ -142,6 +180,7 @@ def build_openai_providers(
             api_key=NO_API_KEY if fallback_key is None else fallback_key.get_secret_value(),
             base_url=settings.llm_fallback_base_url,
             max_retries=SDK_MAX_RETRIES,
+            timeout=settings.llm_timeout_seconds,
         ),
         model_name=settings.llm_fallback_model,
         input_usd_per_mtok=settings.llm_fallback_input_usd_per_mtok,

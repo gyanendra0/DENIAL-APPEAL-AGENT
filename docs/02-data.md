@@ -1028,3 +1028,42 @@ writes all three document types (2.4.1 to 2.4.3) with noise applied (2.4.4). Run
 every pipeline run: the
 documents are written from the stored claims and labels, so they go out of date when those
 change.
+
+### Extracting fields from the documents
+
+A third command sends the stored documents of one split to a model and saves the typed
+fields it returns ([03-architecture.md 3.9](03-architecture.md#39-extraction)):
+
+```text
+python3 -m pipelines.extract_documents --split test
+```
+
+**This command spends money**: one model call per document that has no result yet. It
+needs the database migrated, the documents generated, and the `LLM_` keys from
+`.env.example` set ([03-architecture.md 3.8](03-architecture.md#38-llm-gateway)). The other
+two commands need none of those keys.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--split` | none, required | `train`, `validation` or `test`: the split whose documents are extracted |
+| `--limit` | all of them | Only the first this many documents of the split, in claim id order, so the same limit always means the same documents |
+| `--prompt-version` | `v2` | The version of the extraction prompts |
+
+Exit code 0 means every selected document was looked at, 1 means the run stopped early
+(the monthly budget is reached, no provider could answer, or a provider refused the
+request) or the split has no document, 2 means a bad argument, a prompt version with no
+prompt files included.
+
+Each result is saved as soon as it arrives. A document that already has a result for the
+prompt version is skipped, so after exit code 1 the same command continues where the run
+stopped. A document whose answer could not be used gets no result and is tried again by
+the next run.
+
+At the end the command prints the counts, the time, the money spent in the run and in the
+month, and how many extracted values equal the answer keys exactly. That count compares
+prompts; it is not the Stage 3 accuracy target. Documents with no result are left out of
+it, and the command prints how many.
+
+Measured on 2026-10-09 for the test split of the default load (1,883 documents, prompt
+`v2`): 103 minutes and $0.653694, about 3.3 seconds and $0.00035 per document. The other
+figures of that run are in 03-architecture.md 3.9.

@@ -51,12 +51,29 @@ def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
 
+def test_prompt_folder_defaults_to_the_one_in_the_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.delenv("PROMPT_DIR", raising=False)
+
+    assert load_settings(env_file=None).prompt_dir == Path("config/prompts")
+
+
+def test_prompt_folder_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("PROMPT_DIR", "/made/up/prompts")
+
+    assert load_settings(env_file=None).prompt_dir == Path("/made/up/prompts")
+
+
 # A made-up value. No real key ever appears in a test.
 API_KEY = "test-key-not-real"
 FALLBACK_KEY = "test-fallback-key-not-real"
 
 REQUIRED_GATEWAY_ENV = {
     "LLM_MONTHLY_BUDGET_USD": "5.00",
+    "LLM_TIMEOUT_SECONDS": "30",
     "LLM_PRIMARY_BASE_URL": "https://llm.example.com/v1",
     "LLM_PRIMARY_MODEL": "made-up-small-model",
     "LLM_PRIMARY_API_KEY": API_KEY,
@@ -74,7 +91,7 @@ OPTIONAL_GATEWAY_KEYS = (
 
 @pytest.fixture
 def gateway_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """Set the five required gateway keys and clear the optional ones."""
+    """Set the required gateway keys and clear the optional ones."""
     for key, value in REQUIRED_GATEWAY_ENV.items():
         monkeypatch.setenv(key, value)
     for key in OPTIONAL_GATEWAY_KEYS:
@@ -86,6 +103,7 @@ def test_gateway_settings_read_the_required_values(gateway_env: pytest.MonkeyPat
     settings = load_llm_gateway_settings(env_file=None)
 
     assert settings.llm_monthly_budget_usd == Decimal("5.00")
+    assert settings.llm_timeout_seconds == 30.0
     assert settings.llm_primary_base_url == "https://llm.example.com/v1"
     assert settings.llm_primary_model == "made-up-small-model"
     assert settings.llm_primary_api_key.get_secret_value() == API_KEY
@@ -153,6 +171,22 @@ def test_rejects_a_budget_that_is_not_a_number(gateway_env: pytest.MonkeyPatch) 
 
     with pytest.raises(ValidationError, match="llm_monthly_budget_usd"):
         load_llm_gateway_settings(env_file=None)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "soon"])
+def test_rejects_a_timeout_that_is_not_a_positive_number(
+    gateway_env: pytest.MonkeyPatch, value: str
+) -> None:
+    gateway_env.setenv("LLM_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValidationError, match="llm_timeout_seconds"):
+        load_llm_gateway_settings(env_file=None)
+
+
+def test_reads_a_timeout_with_a_fraction_of_a_second(gateway_env: pytest.MonkeyPatch) -> None:
+    gateway_env.setenv("LLM_TIMEOUT_SECONDS", "7.5")
+
+    assert load_llm_gateway_settings(env_file=None).llm_timeout_seconds == 7.5
 
 
 def test_api_key_is_not_shown_when_settings_are_printed(gateway_env: pytest.MonkeyPatch) -> None:
@@ -285,7 +319,7 @@ def test_env_example_lists_every_gateway_key(monkeypatch: pytest.MonkeyPatch) ->
 
     settings = load_llm_gateway_settings(env_file=str(example))
 
-    assert {*REQUIRED_GATEWAY_ENV, *OPTIONAL_GATEWAY_KEYS} <= listed
+    assert {*REQUIRED_GATEWAY_ENV, *OPTIONAL_GATEWAY_KEYS, "PROMPT_DIR"} <= listed
     assert settings.has_fallback is True
     assert settings.llm_fallback_api_key is not None
     # Worked out before the asserts, so a failure never prints the value of a real key.

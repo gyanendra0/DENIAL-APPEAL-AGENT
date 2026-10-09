@@ -18,7 +18,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
@@ -41,8 +41,16 @@ class LlmGatewayError(Exception):
 class ProviderUnavailableError(LlmGatewayError):
     """Raised by a provider for a failure another provider may cover.
 
-    That is a rate limit, a connection error, a timeout or a server error. A bad request or
-    a wrong key is a bug or a setup mistake: the provider lets it propagate as it is.
+    That is a rate limit, a connection error, a timeout or a server error.
+    """
+
+
+class ProviderRejectedError(LlmGatewayError):
+    """Raised by a provider when the service refused the request itself.
+
+    A bad request or a wrong key is a bug or a setup mistake. Another provider would not fix
+    it, so the gateway does not try the fallback and the error leaves `complete` as it is.
+    Its text holds the kind of failure and the status only, never what the service answered.
     """
 
 
@@ -65,6 +73,9 @@ class LlmRequest(BaseModel):
     max_tokens: int = Field(gt=0, le=MAX_TOKEN_COUNT)
     prompt_version: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
     purpose: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
+    # A JSON schema the answer must fit, sent to the provider with the prompt. The provider
+    # only shapes the answer with it: checking the answer stays the caller's job.
+    response_schema: dict[str, Any] | None = None
 
 
 class ProviderAnswer(BaseModel):
@@ -110,7 +121,8 @@ class ChatProvider(Protocol):
     def run(self, request: LlmRequest) -> ProviderAnswer:
         """Answer `request`. Spends money and can take several seconds.
 
-        Raises `ProviderUnavailableError` for a failure another provider may cover.
+        Raises `ProviderUnavailableError` for a failure another provider may cover and
+        `ProviderRejectedError` when the service refused the request.
         """
         ...
 
@@ -146,7 +158,8 @@ class LlmGateway:
 
         Spends money and can take several seconds. Raises `LlmBudgetExceededError` when no
         provider fits the monthly budget (nothing is called) and `LlmUnavailableError` when
-        no provider could answer.
+        no provider could answer. A provider's `ProviderRejectedError` is not covered by the
+        fallback and is raised as it is.
         """
         primary_error: ProviderUnavailableError | None = None
         if self._fits_budget(self._primary, request):

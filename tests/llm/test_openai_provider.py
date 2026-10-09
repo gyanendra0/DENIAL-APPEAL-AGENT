@@ -1,3 +1,5 @@
+import json
+import traceback
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,7 +13,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm import openai_provider
-from src.llm.gateway import LlmGateway, LlmRequest, ProviderUnavailableError
+from src.llm.gateway import (
+    LlmGateway,
+    LlmRequest,
+    ProviderRejectedError,
+    ProviderUnavailableError,
+)
 from src.llm.openai_provider import (
     MESSAGE_FRAMING_TOKENS,
     NO_API_KEY,
@@ -24,6 +31,12 @@ from src.llm.openai_provider import (
 MADE_UP_KEY = "made-up-key-for-tests"
 # httpx2 comes with the SDK; it is used here only to build the SDK's own error objects.
 HTTP_REQUEST = httpx2.Request("POST", "https://llm.example.test/v1/chat/completions")
+RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"reason": {"type": "string"}},
+    "required": ["reason"],
+    "additionalProperties": False,
+}
 
 
 class FakeCompletions:
@@ -118,8 +131,29 @@ def test_run_sends_the_model_the_two_messages_and_the_output_limit() -> None:
                 {"role": "user", "content": "efghij"},
             ],
             "max_completion_tokens": 200,
+            "response_format": openai.omit,
         }
     ]
+
+
+def test_run_sends_a_response_schema_as_the_response_format() -> None:
+    provider, completions = _provider(_completion())
+
+    provider.run(_request(response_schema=RESPONSE_SCHEMA))
+
+    assert completions.calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "answer", "schema": RESPONSE_SCHEMA, "strict": False},
+    }
+
+
+def test_highest_input_tokens_counts_the_response_schema_too() -> None:
+    schema_bytes = len(json.dumps(RESPONSE_SCHEMA).encode("utf-8"))
+
+    bound = highest_input_tokens(_request(response_schema=RESPONSE_SCHEMA))
+
+    assert schema_bytes > 50
+    assert bound == 4 + 6 + schema_bytes + MESSAGE_FRAMING_TOKENS
 
 
 def test_run_returns_the_text_and_prices_the_reported_tokens() -> None:
@@ -210,18 +244,28 @@ def test_run_reports_a_failure_the_fallback_may_cover(error: Exception) -> None:
         (openai.APIStatusError, 418),
     ],
 )
-def test_run_lets_a_bug_or_a_setup_mistake_propagate_as_it_is(
+def test_run_reports_a_refused_request_without_what_the_service_answered(
     error_class: type[openai.APIStatusError], status: int
 ) -> None:
-    provider, _ = _provider(_status_error(error_class, status))
+    # The SDK puts the whole response body into its message; a body may quote an answer.
+    body = {"error": {"message": "failed to fit the schema", "failed_generation": "Ada Example"}}
+    response = httpx2.Response(status, request=HTTP_REQUEST, json=body)
+    error = error_class(f"Error code: {status} - {body}", response=response, body=body)
+    provider, _ = _provider(error)
 
-    with pytest.raises(error_class):
+    with pytest.raises(ProviderRejectedError) as raised:
         provider.run(_request())
+
+    assert str(raised.value) == f"{error_class.__name__} (status {status})"
+    printed = "".join(traceback.format_exception(raised.value))
+    assert "Ada Example" not in printed
+    assert "failed_generation" not in printed
 
 
 def _settings(**overrides: Any) -> LlmGatewaySettings:
     fields: dict[str, Any] = {
         "llm_monthly_budget_usd": "3.00",
+        "llm_timeout_seconds": "30",
         "llm_primary_base_url": "https://primary.example.test/v1",
         "llm_primary_model": "example-small-model",
         "llm_primary_api_key": MADE_UP_KEY,
@@ -253,7 +297,12 @@ def test_builds_only_the_primary_when_no_fallback_is_configured(
     assert primary.model_name == "example-small-model"
     # No retry inside the SDK: each retry would be a paid request with no budget check.
     assert client_arguments == [
-        {"api_key": MADE_UP_KEY, "base_url": "https://primary.example.test/v1", "max_retries": 0}
+        {
+            "api_key": MADE_UP_KEY,
+            "base_url": "https://primary.example.test/v1",
+            "max_retries": 0,
+            "timeout": 30.0,
+        }
     ]
 
 
@@ -276,6 +325,8 @@ def test_builds_the_fallback_with_its_own_host_key_and_prices(
         "api_key": "another-made-up-key",
         "base_url": "https://fallback.example.test/v1",
         "max_retries": 0,
+        # The same limit as the primary: one setting covers both.
+        "timeout": 30.0,
     }
     # (10 + 128) x 1.00 / 1,000,000 + 200 x 2.00 / 1,000,000
     assert fallback.highest_cost(_request()) == Decimal("0.000538")

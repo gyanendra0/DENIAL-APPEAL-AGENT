@@ -21,6 +21,7 @@ from src.db.models import (
     Denial,
     DenialReasonCategory,
     DenialStatus,
+    DocumentExtraction,
     DocumentType,
     ExchangeType,
     GeneratedDocument,
@@ -825,3 +826,125 @@ def test_rejects_unknown_llm_provider(session: Session) -> None:
 
     with pytest.raises(DataError):
         session.execute(insert)
+
+
+TEXT_SHA256 = "0123456789abcdef" * 4
+EXTRACTED_FIELDS: dict[str, Any] = {
+    "claim_number": {"value": SAMPLE_CLAIM_ID, "confidence": 0.98},
+    "member_id": {"value": None, "confidence": 0.4},
+    "diagnosis_codes": {"value": ["4019", "V5869"], "confidence": 0.9},
+}
+
+
+def _document_extraction(session: Session, **overrides: Any) -> DocumentExtraction:
+    """Store a result for the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "document_type": DocumentType.DENIAL_LETTER,
+        "prompt_version": "v1",
+        "model_name": "example-small-model",
+        "provider": LlmProvider.PRIMARY,
+        "text_sha256": TEXT_SHA256,
+        "fields": EXTRACTED_FIELDS,
+    }
+    extraction = DocumentExtraction(**(fields | overrides))
+    session.add(extraction)
+    session.flush()
+    return extraction
+
+
+def test_stores_document_extraction_with_model_prompt_version_and_fields(
+    session: Session,
+) -> None:
+    _claim_sample(session)
+    extraction = _document_extraction(session)
+    session.expire_all()
+
+    stored = session.get(DocumentExtraction, extraction.id)
+    assert stored is not None
+    assert stored.source_claim_id == SAMPLE_CLAIM_ID
+    assert stored.document_type is DocumentType.DENIAL_LETTER
+    assert stored.prompt_version == "v1"
+    assert stored.model_name == "example-small-model"
+    assert stored.provider is LlmProvider.PRIMARY
+    assert stored.text_sha256 == TEXT_SHA256
+    assert stored.fields == EXTRACTED_FIELDS
+    assert stored.created_at is not None
+
+
+def test_rejects_second_extraction_for_one_document_and_prompt_version(session: Session) -> None:
+    _claim_sample(session)
+    _document_extraction(session)
+
+    with pytest.raises(IntegrityError, match="uq_document_extractions_claim_type_prompt"):
+        _document_extraction(session, provider=LlmProvider.FALLBACK)
+
+
+def test_allows_another_prompt_version_or_document_type_for_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _document_extraction(session)
+    _document_extraction(session, prompt_version="v2")
+    _document_extraction(session, document_type=DocumentType.CLINICAL_NOTE)
+
+    assert len(session.scalars(select(DocumentExtraction)).all()) == 3
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("prompt_version", "", "ck_document_extractions_prompt_version_not_empty"),
+        ("model_name", "", "ck_document_extractions_model_name_not_empty"),
+        ("text_sha256", "abc123", "ck_document_extractions_text_sha256_format"),
+        ("text_sha256", TEXT_SHA256.upper(), "ck_document_extractions_text_sha256_format"),
+        ("text_sha256", "g" * 64, "ck_document_extractions_text_sha256_format"),
+    ],
+)
+def test_rejects_extraction_with_an_empty_field_or_a_malformed_text_hash(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    _claim_sample(session)
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _document_extraction(session, **bad)
+
+
+def test_rejects_extraction_without_fields(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO document_extractions (source_claim_id, document_type, prompt_version,"
+        " model_name, provider, text_sha256) VALUES (:source_claim_id, 'denial_letter', 'v1',"
+        " 'example-small-model', 'primary', :text_sha256)"
+    )
+
+    with pytest.raises(IntegrityError, match="fields"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID, "text_sha256": TEXT_SHA256})
+
+
+def test_rejects_extraction_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_document_extractions_claim"):
+        _document_extraction(session)
+
+
+def test_deleting_a_claim_sample_removes_its_extractions(session: Session) -> None:
+    sample = _claim_sample(session)
+    _document_extraction(session)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(DocumentExtraction)).all() == []
+
+
+def test_extraction_stays_when_its_document_is_replaced(session: Session) -> None:
+    _claim_sample(session)
+    document = _generated_document(session)
+    _document_extraction(session)
+
+    session.delete(document)
+    session.flush()
+    _generated_document(session, seed=7)
+
+    assert len(session.scalars(select(DocumentExtraction)).all()) == 1

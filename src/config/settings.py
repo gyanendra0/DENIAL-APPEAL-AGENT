@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     database_url: str
     # The folder that holds the versioned prompt files, relative to where a command is run.
     prompt_dir: Path = Path("config/prompts")
+    # The folder a trained model and its facts file are written to and read from.
+    model_dir: Path = Path("models")
 
     @field_validator("database_url")
     @classmethod

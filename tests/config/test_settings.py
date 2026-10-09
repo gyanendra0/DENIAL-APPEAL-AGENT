@@ -67,6 +67,20 @@ def test_prompt_folder_is_read_from_the_environment(monkeypatch: pytest.MonkeyPa
     assert load_settings(env_file=None).prompt_dir == Path("/made/up/prompts")
 
 
+def test_model_folder_defaults_to_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.delenv("MODEL_DIR", raising=False)
+
+    assert load_settings(env_file=None).model_dir == Path("models")
+
+
+def test_model_folder_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("MODEL_DIR", "/made/up/models")
+
+    assert load_settings(env_file=None).model_dir == Path("/made/up/models")
+
+
 # A made-up value. No real key ever appears in a test.
 API_KEY = "test-key-not-real"
 FALLBACK_KEY = "test-fallback-key-not-real"

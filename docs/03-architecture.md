@@ -37,7 +37,7 @@
 | `ingest` | Take files in, normalise, queue work | Accept PDF, image, text |
 | `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; OCR when needed |
 | `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
-| `rules` | Hard policy gates: deadlines, amount floors, must-review cases | Deterministic, testable, no LLM |
+| `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
 | `rag` | Find and rank supporting evidence | pgvector, chunked policy corpus |
 | `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
@@ -85,6 +85,9 @@ reference table `document_extractions` (see 3.9).
 
 The business table `predictions` does not exist yet either. The win-probability model is
 trained and saved as files, and no score is stored (see 3.10).
+
+A rule verdict is not stored either. The rules are a function that is called when a verdict
+is needed (see 3.11); the first place a verdict will be written down is the agent's trace.
 
 ## 3.5 Tech stack
 
@@ -594,3 +597,182 @@ claims and not a better model.
   "fully denied" field.
 - A customer's denial cannot be scored yet: nothing calls `load_win_model` outside the
   tests, and no score is stored.
+
+## 3.11 Deterministic rules
+
+The rules sort a denied claim into one of three outcomes, using three values printed on its
+denial letter:
+
+| Outcome | Meaning |
+|---|---|
+| `pass` | The claim may go on to scoring and an appeal draft |
+| `must_review` | A person must look at the claim before anything else happens |
+| `hard_fail` | The claim is stopped: an appeal is closed or not worth making |
+
+The rules are plain code. No model call is made and no money is spent. The same values
+always give the same verdict. The rules never send anything and never decide an appeal: they
+only say whether the next step may run.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/rules/verdict.py` | The types: `RuleInputs`, `RuleOutcome`, `RuleReason`, `RuleVerdict`, and `RULES_VERSION` |
+| `src/rules/deadline.py` | `check_deadline(letter_date, appeal_deadline, today)`, the appeal deadline rule |
+| `src/rules/amount.py` | `check_amount(total_allowed_charge_amount, floor)`, the amount-floor rule |
+| `src/rules/evaluate.py` | `evaluate_rules(inputs, *, today, amount_floor)`, the one entry point, and `HARD_FAIL_REASONS` |
+
+Callers use `evaluate_rules` and not the single rules, so a claim always gets every check.
+There is no command, no table and no migration.
+
+### The inputs
+
+`RuleInputs` holds three values of one denial letter. Each may be `None`, which means the
+value is missing:
+
+| Value | Kind | Meaning |
+|---|---|---|
+| `letter_date` | Date | The date printed on the letter |
+| `appeal_deadline` | Date | The last day an appeal may be filed, as printed on the letter |
+| `total_allowed_charge_amount` | Exact decimal, 0 or more | The allowed charges of all the claim's lines, added up |
+
+Two more values are passed to `evaluate_rules` on every call, with no default:
+
+- `today`: the date the deadline is compared with.
+- `amount_floor`: the smallest amount the rules let through (see Settings below).
+
+Nothing in `src/rules` reads the clock, the settings or an extraction result. The caller
+takes the plain values out of the extraction (3.9) and passes `today` and the floor in. A
+test reads the source files of `src/rules` to keep it that way. This is why the same call
+always gives the same verdict, and why a test can pick any date.
+
+The amount must be a `Decimal`. A float, a whole number or text is refused, so a caller
+cannot pass a rounded amount by mistake.
+
+### The rules
+
+Six reasons can fire. Each belongs to one rule and leads to one outcome:
+
+| Reason | Fires when | Outcome |
+|---|---|---|
+| `deadline_not_after_letter_date` | The deadline is on or before the letter date | `must_review` |
+| `deadline_missing` | There is no deadline | `must_review` |
+| `deadline_passed` | `today` is after the deadline | `hard_fail` |
+| `amount_missing` | There is no amount | `must_review` |
+| `amount_zero` | The amount is exactly 0 | `must_review` |
+| `amount_below_floor` | The amount is above 0 and below the floor | `hard_fail` |
+
+The deadline rule:
+
+- On the deadline day itself the appeal is still open. Only the day after is too late.
+- A deadline on or before the letter date looks wrong, so the claim goes to a person and is
+  **not** reported as passed. A value that looks wrong must never close a claim.
+- A missing deadline goes to a person. The rule never guesses one.
+- A missing letter date leaves the date-order check out. The passed check still runs.
+- The rule reads the deadline as printed and never computes one. The 180-day appeal window
+  on the generated letters is made up
+  ([02-data.md 2.4.1](02-data.md#241-generated-so-far-denial-letters-v1)), so no real law is
+  used.
+
+The amount rule:
+
+- An amount exactly at the floor is big enough.
+- Zero is never "below the floor". Zero means the letter does not say what the claim was
+  worth, so the claim goes to a person.
+- A negative amount raises `ValueError`. So does a floor that is not an exact decimal of 0 or
+  more: a negative one, a float, "not a number" or infinity.
+
+A deadline reason and an amount reason can fire together. Two reasons of the same rule
+cannot.
+
+### The verdict
+
+`evaluate_rules` always runs both rules and returns one `RuleVerdict`:
+
+| Field | Holds |
+|---|---|
+| `outcome` | `pass`, `must_review` or `hard_fail` |
+| `reasons` | Every reason that fired, deadline reasons first; empty for `pass` |
+| `rules_version` | `RULES_VERSION`, today `v1` |
+
+The outcome follows from the reasons, in this order:
+
+1. Any hard-fail reason (`deadline_passed`, `amount_below_floor`) gives `hard_fail`,
+   whatever else fired.
+2. Otherwise any reason gives `must_review`.
+3. No reason gives `pass`.
+
+Every reason is listed, not only the first, so a reviewer sees all that is wrong with a
+claim. A change to a rule, a reason or the order of the reasons gets a new `RULES_VERSION`.
+
+`RuleVerdict` is only a container: it does not check that its outcome fits its reasons.
+That is one more reason to build a verdict with `evaluate_rules` only.
+
+### Settings
+
+| Key | Required | Meaning |
+|---|---|---|
+| `RULES_AMOUNT_FLOOR_USD` | no (default 25) | Smallest total allowed charge the rules let through, in US dollars; an exact decimal of 0 or more |
+
+The value 25 is **assumed**. No source gives it: it was chosen from the made-up data, where
+it stops 395 of 5,325 claims (7.42%); 50 would stop 863 (16.21%). A floor of 0 turns the
+below-floor check off. A negative value, text or an empty value fails when the settings are
+loaded. The caller passes `settings.rules_amount_floor_usd` to `evaluate_rules`.
+
+### Measured
+
+Measured on 2026-10-10 with `evaluate_rules` on the default load (first 50,000 claims,
+split seed 42, 5,325 denial letters), read-only, with a floor of 25. The date passed as
+`today` is 2010-01-01, chosen because it falls in the middle of the made-up deadlines.
+
+On the answer keys of all 5,325 letters:
+
+| Outcome | Claims |
+|---|---|
+| `pass` | 2,264 (42.52%) |
+| `must_review` | 278 (5.22%) |
+| `hard_fail` | 2,783 (52.26%) |
+
+| Reason | Claims |
+|---|---|
+| `deadline_passed` | 2,606 |
+| `amount_zero` | 566 |
+| `amount_below_floor` | 395 |
+
+A claim can have two reasons, so the reasons add up to more than the outcomes. The other
+three reasons do not fire, because an answer key has every value and a correct deadline.
+
+On the values a model extracted from the test split's letters (3.9), 743 letters have a
+stored result. The verdict from the extracted values is the same as the verdict from the
+answer key on 735 of them (98.92%), with a deadline the noise step blanked counted as truly
+missing. The other 8:
+
+| Answer key | Extracted values | Letters |
+|---|---|---|
+| `pass` | `must_review` | 5 |
+| `hard_fail` | `must_review` | 2 |
+| `pass` | `hard_fail` | 1 |
+
+So a wrong extracted value sends a claim to a person 7 times and wrongly stops it once. No
+claim that should be stopped passes.
+
+### Known limits
+
+- With the real date every made-up claim is past its deadline: the deadlines run from
+  2008-07-08 to 2011-08-04, so `deadline_passed` fires on all 5,325. Any run over the
+  made-up data must pass a chosen date as `today`.
+- One of the 743 extracted test letters is wrongly stopped. Which extracted value is wrong
+  has not been looked up.
+- Three wrong extracted deadlines (8, 10 and 92 days too early) pass every check. Only the
+  letter date plus a known appeal window would catch them, and the window is made up, so it
+  is not a rule input.
+- The model's confidence scores are not used. They sit on a few round numbers (0.9, 0.95,
+  1.0) and do not separate a right value from a wrong one: flagging every letter with a
+  deadline or letter-date score below 0.95 would send over half the letters to review.
+- A failed extraction is not a rule. There are no values to pass in, so the caller must
+  send such a claim to a person. 16 test letters have no stored result.
+- The floor is on the total allowed charge, the only printed number that says how big a
+  claim is. It is not the money an appeal could win: the generated letters print no billed
+  amount.
+- Nothing calls `evaluate_rules` outside the tests yet. The evaluation harness and the
+  agent loop will.

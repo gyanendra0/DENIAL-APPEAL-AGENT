@@ -503,3 +503,56 @@ class LlmCall(TimestampMixin, Base):
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+
+
+class DocumentExtraction(TimestampMixin, Base):
+    """The fields a model read from one generated document, with a confidence per field.
+
+    Public reference table, no `account_id`: it only ever holds results for the fabricated
+    documents of the synthetic claims sample. One row per claim, document type and prompt
+    version, so a new prompt version keeps the old results and a second run can skip what is
+    already there. The row is linked to the claim, not to the `generated_documents` row: a new
+    document run replaces those rows, and the results were paid for. `text_sha256` is the
+    SHA-256 of the text the model read (UTF-8, lowercase hex); a result whose value differs
+    from the stored document's is out of date. `fields` holds the validated extraction schema
+    of the document type; its contents are not checked by the table. `provider` is the role
+    that answered; `model_name` and `prompt_version` are stored with every result.
+    """
+
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_claim_id",
+            "document_type",
+            "prompt_version",
+            name="uq_document_extractions_claim_type_prompt",
+        ),
+        CheckConstraint(
+            "prompt_version <> ''", name="ck_document_extractions_prompt_version_not_empty"
+        ),
+        CheckConstraint("model_name <> ''", name="ck_document_extractions_model_name_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_document_extractions_text_sha256_format"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey(
+            "claim_samples.source_claim_id",
+            name="fk_document_extractions_claim",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    document_type: Mapped[DocumentType] = mapped_column(
+        Enum(DocumentType, name="document_type", values_callable=_values), nullable=False
+    )
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[LlmProvider] = mapped_column(
+        Enum(LlmProvider, name="llm_provider", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

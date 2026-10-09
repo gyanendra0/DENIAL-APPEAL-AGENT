@@ -12,6 +12,7 @@ from src.db.migrations.versions import rev_0005_claim_sample_labels as migration
 from src.db.migrations.versions import rev_0006_generated_documents as migration_0006
 from src.db.migrations.versions import rev_0007_document_noise as migration_0007
 from src.db.migrations.versions import rev_0008_llm_calls as migration_0008
+from src.db.migrations.versions import rev_0009_document_extractions as migration_0009
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -35,6 +36,7 @@ REFERENCE_TABLES = {
     "claim_sample_lines",
     "claim_sample_labels",
     "generated_documents",
+    "document_extractions",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls.
 OPERATIONAL_TABLES = {"llm_calls"}
@@ -46,6 +48,7 @@ LINE_TABLE = "claim_sample_lines"
 LABEL_TABLE = "claim_sample_labels"
 DOCUMENT_TABLE = "generated_documents"
 LLM_CALL_TABLE = "llm_calls"
+EXTRACTION_TABLE = "document_extractions"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -293,6 +296,51 @@ def test_migration_0008_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_document_extractions_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"] for u in inspector.get_unique_constraints(EXTRACTION_TABLE)
+    }
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(EXTRACTION_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(EXTRACTION_TABLE)}
+
+    assert unique == {
+        "uq_document_extractions_claim_type_prompt": [
+            "source_claim_id",
+            "document_type",
+            "prompt_version",
+        ]
+    }
+    # Linked to the claim only: a new document run must not remove the results.
+    assert foreign == {
+        "fk_document_extractions_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")
+    }
+    assert checks == {
+        "ck_document_extractions_prompt_version_not_empty",
+        "ck_document_extractions_model_name_not_empty",
+        "ck_document_extractions_text_sha256_format",
+    }
+
+
+def test_migration_0009_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[EXTRACTION_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_document_extractions_prompt_version_not_empty": (
+            migration_0009.PROMPT_VERSION_NOT_EMPTY
+        ),
+        "ck_document_extractions_model_name_not_empty": migration_0009.MODEL_NAME_NOT_EMPTY,
+        "ck_document_extractions_text_sha256_format": migration_0009.TEXT_SHA256_FORMAT,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -303,6 +351,28 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0008_removes_document_extractions_and_keeps_both_enums(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0008")
+    try:
+        tables = inspect(engine).get_table_names()
+        assert EXTRACTION_TABLE not in tables
+        assert {DOCUMENT_TABLE, LLM_CALL_TABLE} <= set(tables)
+        with engine.connect() as conn:
+            kept = conn.scalar(
+                text(
+                    "SELECT count(*) FROM pg_type"
+                    " WHERE typname IN ('document_type', 'llm_provider')"
+                )
+            )
+        assert kept == 2
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert EXTRACTION_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0007_removes_llm_calls_table_and_enum(

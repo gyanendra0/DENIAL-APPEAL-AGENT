@@ -13,6 +13,7 @@ from src.db.migrations.versions import rev_0006_generated_documents as migration
 from src.db.migrations.versions import rev_0007_document_noise as migration_0007
 from src.db.migrations.versions import rev_0008_llm_calls as migration_0008
 from src.db.migrations.versions import rev_0009_document_extractions as migration_0009
+from src.db.migrations.versions import rev_0010_evidence_corpus as migration_0010
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -22,6 +23,7 @@ from src.db.models import (
     DatasetSplit,
     DenialReasonCategory,
     DocumentType,
+    EvidenceSource,
     ExchangeType,
     LlmProvider,
     MetalLevel,
@@ -37,6 +39,8 @@ REFERENCE_TABLES = {
     "claim_sample_labels",
     "generated_documents",
     "document_extractions",
+    "evidence_documents",
+    "evidence_chunks",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls.
 OPERATIONAL_TABLES = {"llm_calls"}
@@ -49,6 +53,8 @@ LABEL_TABLE = "claim_sample_labels"
 DOCUMENT_TABLE = "generated_documents"
 LLM_CALL_TABLE = "llm_calls"
 EXTRACTION_TABLE = "document_extractions"
+EVIDENCE_DOCUMENT_TABLE = "evidence_documents"
+EVIDENCE_CHUNK_TABLE = "evidence_chunks"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -341,6 +347,86 @@ def test_migration_0009_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_evidence_documents_has_its_two_unique_keys_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"]
+        for u in inspector.get_unique_constraints(EVIDENCE_DOCUMENT_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(EVIDENCE_DOCUMENT_TABLE)}
+
+    assert unique == {
+        "uq_evidence_documents_source_document": ["source", "source_document_id"],
+        "uq_evidence_documents_source_section": ["source", "section_number"],
+    }
+    assert checks == {
+        "ck_evidence_documents_source_document_id_not_empty",
+        "ck_evidence_documents_section_number_not_empty",
+        "ck_evidence_documents_title_not_empty",
+        "ck_evidence_documents_version_number_positive",
+    }
+    assert inspector.get_foreign_keys(EVIDENCE_DOCUMENT_TABLE) == []
+
+
+def test_evidence_chunks_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"] for u in inspector.get_unique_constraints(EVIDENCE_CHUNK_TABLE)
+    }
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(EVIDENCE_CHUNK_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(EVIDENCE_CHUNK_TABLE)}
+    columns = {c["name"]: c for c in inspector.get_columns(EVIDENCE_CHUNK_TABLE)}
+
+    assert unique == {"uq_evidence_chunks_document_index": ["evidence_document_id", "chunk_index"]}
+    assert foreign == {
+        "fk_evidence_chunks_document": (
+            ["evidence_document_id"],
+            EVIDENCE_DOCUMENT_TABLE,
+            "CASCADE",
+        )
+    }
+    assert checks == {
+        "ck_evidence_chunks_chunk_index_not_negative",
+        "ck_evidence_chunks_section_title_not_empty",
+        "ck_evidence_chunks_text_not_empty",
+        "ck_evidence_chunks_text_sha256_format",
+        "ck_evidence_chunks_chunker_version_not_empty",
+    }
+    assert columns["section_title"]["nullable"] is True
+    # The vector column comes with the retrieval branch, once the embedding model is chosen.
+    assert "embedding" not in columns
+
+
+def test_migration_0010_lists_the_same_values_as_the_model() -> None:
+    assert tuple(member.value for member in EvidenceSource) == migration_0010.EVIDENCE_SOURCE
+
+
+def test_migration_0010_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for table in (EVIDENCE_DOCUMENT_TABLE, EVIDENCE_CHUNK_TABLE)
+        for constraint in Base.metadata.tables[table].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_evidence_documents_source_document_id_not_empty": (
+            migration_0010.SOURCE_DOCUMENT_ID_NOT_EMPTY
+        ),
+        "ck_evidence_documents_section_number_not_empty": (migration_0010.SECTION_NUMBER_NOT_EMPTY),
+        "ck_evidence_documents_title_not_empty": migration_0010.TITLE_NOT_EMPTY,
+        "ck_evidence_documents_version_number_positive": migration_0010.VERSION_NUMBER_POSITIVE,
+        "ck_evidence_chunks_chunk_index_not_negative": migration_0010.CHUNK_INDEX_NOT_NEGATIVE,
+        "ck_evidence_chunks_section_title_not_empty": migration_0010.SECTION_TITLE_NOT_EMPTY,
+        "ck_evidence_chunks_text_not_empty": migration_0010.TEXT_NOT_EMPTY,
+        "ck_evidence_chunks_text_sha256_format": migration_0010.TEXT_SHA256_FORMAT,
+        "ck_evidence_chunks_chunker_version_not_empty": migration_0010.CHUNKER_VERSION_NOT_EMPTY,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -351,6 +437,25 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0009_removes_both_evidence_tables_and_the_enum(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0009")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert not {EVIDENCE_DOCUMENT_TABLE, EVIDENCE_CHUNK_TABLE} & tables
+        assert EXTRACTION_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'evidence_source'")
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert {EVIDENCE_DOCUMENT_TABLE, EVIDENCE_CHUNK_TABLE} <= set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0008_removes_document_extractions_and_keeps_both_enums(

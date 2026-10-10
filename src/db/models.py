@@ -87,6 +87,10 @@ class LlmProvider(StrEnum):
     FALLBACK = "fallback"
 
 
+class EvidenceSource(StrEnum):
+    CMS_NCD = "cms_ncd"
+
+
 def _values(enum_cls: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_cls]
 
@@ -556,3 +560,85 @@ class DocumentExtraction(TimestampMixin, Base):
     )
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class EvidenceDocument(TimestampMixin, Base):
+    """One published policy document that a draft can cite, such as a coverage determination.
+
+    Public reference table, no `account_id`: it is loaded from a public source and holds no
+    customer data. `source` says where the document comes from. `source_document_id` is the
+    source's own id, and `section_number` the number a reader would cite (for `cms_ncd` the
+    manual section, such as "220.6.17"); each is unique within a source. `version_number` and
+    `effective_date` describe the version that was loaded. `source_file_date` is the date of
+    the downloaded file the row was read from; the source states no release date. A new load
+    replaces the rows.
+    """
+
+    __tablename__ = "evidence_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "source_document_id", name="uq_evidence_documents_source_document"
+        ),
+        UniqueConstraint("source", "section_number", name="uq_evidence_documents_source_section"),
+        CheckConstraint(
+            "source_document_id <> ''", name="ck_evidence_documents_source_document_id_not_empty"
+        ),
+        CheckConstraint(
+            "section_number <> ''", name="ck_evidence_documents_section_number_not_empty"
+        ),
+        CheckConstraint("title <> ''", name="ck_evidence_documents_title_not_empty"),
+        CheckConstraint(
+            "version_number >= 1", name="ck_evidence_documents_version_number_positive"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[EvidenceSource] = mapped_column(
+        Enum(EvidenceSource, name="evidence_source", values_callable=_values), nullable=False
+    )
+    source_document_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    section_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source_file_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+
+class EvidenceChunk(TimestampMixin, Base):
+    """One piece of an `EvidenceDocument`'s text, small enough to retrieve and to cite.
+
+    Public reference table, no `account_id`. `chunk_index` counts the chunks of one document
+    from 0, in reading order. A citation names a chunk by its document, its `chunk_index` and
+    its `text_sha256` (SHA-256 of `text`, UTF-8, lowercase hex), so a citation written before
+    a re-load that changed the chunk is detectably out of date. `section_title` is the part of
+    the document the chunk comes from, when the source has parts. `chunker_version` names the
+    rules that cut the text; the same text and version always give the same chunks. There is
+    no embedding column yet.
+    """
+
+    __tablename__ = "evidence_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "evidence_document_id", "chunk_index", name="uq_evidence_chunks_document_index"
+        ),
+        CheckConstraint("chunk_index >= 0", name="ck_evidence_chunks_chunk_index_not_negative"),
+        CheckConstraint("section_title <> ''", name="ck_evidence_chunks_section_title_not_empty"),
+        CheckConstraint("text <> ''", name="ck_evidence_chunks_text_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_evidence_chunks_text_sha256_format"
+        ),
+        CheckConstraint(
+            "chunker_version <> ''", name="ck_evidence_chunks_chunker_version_not_empty"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    evidence_document_id: Mapped[int] = mapped_column(
+        ForeignKey("evidence_documents.id", name="fk_evidence_chunks_document", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_title: Mapped[str | None] = mapped_column(String(100))
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunker_version: Mapped[str] = mapped_column(String(20), nullable=False)

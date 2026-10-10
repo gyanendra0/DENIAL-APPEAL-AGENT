@@ -38,7 +38,7 @@
 | `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; OCR when needed |
 | `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
-| `rag` | Find and rank supporting evidence | pgvector, chunked policy corpus |
+| `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13) | pgvector, chunked policy corpus |
 | `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
@@ -68,7 +68,8 @@ Everything after step 1 is asynchronous. The UI polls job status.
 | `denials` | Denial record, reason codes, source file |
 | `extractions` | Fields pulled from a document, with confidence and model version |
 | `predictions` | Score, model version, features used |
-| `evidence_chunks` | Policy text plus embedding |
+| `evidence_documents` | One published policy document: source, section number, title, version |
+| `evidence_chunks` | Policy text cut into chunks; the embedding is added with retrieval |
 | `drafts` | Generated letter, citations, status |
 | `reviews` | Who approved or rejected, when, why |
 | `audit_log` | Every automated decision, immutable |
@@ -92,6 +93,9 @@ is needed (see 3.11); the first place a verdict will be written down is the agen
 
 An evaluation result is not stored either. The evaluation harness prints its report and
 writes nothing (see 3.12).
+
+`evidence_documents` and `evidence_chunks` exist and are public reference tables: the policy
+text is public and shared by every account. They have no embedding column yet (see 3.13).
 
 ## 3.5 Tech stack
 
@@ -983,3 +987,200 @@ limits). No claim that should be stopped passes.
   (`20100101`, `2010-W01-1`), not only `YYYY-MM-DD`.
 - When `MODEL_DIR` names a file instead of a folder, the command ends with a traceback
   instead of the "cannot be measured" line.
+
+## 3.13 Evidence corpus
+
+The evidence corpus is the policy text a draft may cite. Stage 4 builds it in two steps.
+This section covers the first: reading one public source, cutting its text into chunks and
+storing them. Nothing is embedded and nothing is searched yet; that is the retrieval step.
+
+The one source loaded so far is the CMS national coverage determinations. What the file
+is, what is loaded from it, the quality gates, the command and the measured numbers are in
+[02-data.md 2.3.1](02-data.md#231-loaded-source-cms-national-coverage-determinations).
+
+Nothing here calls a model, spends money or needs a new library. The HTML is read with
+Python's own `html.parser`.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/db/models.py` | `EvidenceDocument`, `EvidenceChunk` and the enum `EvidenceSource` |
+| `src/db/migrations/versions/rev_0010_evidence_corpus.py` | Migration 0010: the type `evidence_source` and the two tables; the downgrade drops all three |
+| `src/rag/chunking.py` | `chunk_document(sections)`, the chunk rules, `CHUNKER_VERSION` and `MAX_CHUNK_CHARS` |
+| `src/ingest/html_paragraphs.py` | `html_to_paragraphs(html)`: one HTML field to plain paragraphs |
+| `src/ingest/evidence_corpus.py` | `read_evidence_corpus(path)` with the quality gates, and `replace_evidence_corpus(session, batch)` |
+| `pipelines/load_evidence_corpus.py` | The command: reads the file, stores it in one transaction, prints the counts, sets the exit code |
+
+The work is split so that each part knows one thing. The reader knows the file: its
+columns, its HTML and its gates. The chunker knows nothing about the file: it takes plain
+paragraphs and returns chunks, and it reads no file, no setting and no database. A second
+source needs a new reader and can use the same chunker.
+
+### The two tables
+
+Both are public reference tables: loaded from a public source, shared by every account, no
+`account_id` ([conventions 6.4](06-conventions.md#64-database)).
+
+`evidence_documents` has one row per source document:
+
+| Column | Holds |
+|---|---|
+| `source` | Where the document comes from, a constrained type; the only value today is `cms_ncd` |
+| `source_document_id` | The source's own id (`NCD_id`); unique within a source |
+| `section_number` | The number a reader would cite, such as `220.6.17`; unique within a source |
+| `title` | The document's title |
+| `version_number` | The version that was loaded, at least 1 |
+| `effective_date` | The date that version took effect |
+| `source_file_date` | The date of the downloaded file the row was read from |
+
+`evidence_chunks` has one row per chunk:
+
+| Column | Holds |
+|---|---|
+| `evidence_document_id` | The document the chunk belongs to; removing a document removes its chunks |
+| `chunk_index` | The chunk's place in its document, from 0, in reading order; unique within a document |
+| `section_title` | The part of the document the chunk comes from; may be empty for a source without parts |
+| `text` | The chunk's text |
+| `text_sha256` | The SHA-256 hash of `text` |
+| `chunker_version` | The version of the rules that cut the text |
+
+There are two tables because a citation names one chunk of one document, and a document's
+title, section number and version are stored once, not on every chunk.
+
+### From HTML to paragraphs
+
+The policy text is published as pieces of HTML. `html_to_paragraphs` keeps the words and
+the paragraph breaks and drops everything else:
+
+- A paragraph ends at each of these tags: `p`, `div`, `li`, `ul`, `ol`, `table`, `tr`,
+  `hr`, `br`. A line end inside a paragraph is only a wrapped line, not a break.
+- A table gives one paragraph per row, with its filled cells joined by ` | `.
+- Entities such as `&sect;` are decoded. Every run of spaces, tabs, line ends and
+  non-breaking spaces becomes one space. A paragraph with no text is dropped.
+- A paragraph whose whole text is bold is marked as a heading.
+- These tags are dropped and their words stay in the paragraph: `a`, `em`, `u`, `sup`,
+  `sub`, `font`, `tbody`.
+- Any other tag (a heading tag, `script`, `style` and so on) is refused, and the loader
+  rejects the file. A guess would join two words or keep text that is not policy.
+
+Each of the two policy columns becomes one section with a fixed title. The titles are
+shortened from the file's data dictionary; they are not text of the file. A column with no
+text gives no section.
+
+### How a text is cut into chunks
+
+`chunk_document(sections)` applies the rules of chunker `v1`:
+
+1. Paragraphs are packed in reading order, joined by a blank line, until the next one
+   would take the chunk over 1,200 characters (`MAX_CHUNK_CHARS`).
+2. A chunk never holds text of two sections. `chunk_index` counts from 0 across the
+   sections of one document.
+3. A chunk does not end on a heading when the heading fits at the start of the next
+   chunk, so a heading stays with the text it introduces.
+4. A paragraph over the limit is cut at sentence ends (after `.`, `;`, `:`, `?` or `!`).
+   A sentence over the limit is cut at a space, and a word over the limit at the limit.
+5. Chunks do not overlap: every word is in exactly one chunk.
+
+The limit of 1,200 was set from the real text: the inspection of the file counted 4,539
+paragraphs in the two policy columns, 12 of them longer than 1,200 characters, and each of
+the 12 could be cut at a sentence end. The limit is a constant, not an option.
+
+The same text always gives the same chunks. Any change to a rule or to a constant needs a
+new `CHUNKER_VERSION`, and every stored chunk carries the version that made it.
+
+### What a citation will point at
+
+A citation will name one chunk by three values: the document, the chunk's `chunk_index`
+and the chunk's `text_sha256`.
+
+The hash is what makes a citation checkable later. The load replaces the rows, so a new
+file can change the text behind a document and index. The stored hash then differs from the
+one in an older citation, and the citation is known to be out of date instead of silently
+pointing at other words. The drafting step can also compare a quoted sentence with the
+exact stored text.
+
+Nothing writes or checks a citation yet. That is the drafting branch.
+
+### The load
+
+`replace_evidence_corpus` removes every stored document of the source `cms_ncd`, which
+removes its chunks too, and then stores the batch. It does not commit: the command runs it
+in one transaction, so a failure brings the old rows back. An update in place would not do,
+because a determination that left the file would keep its old chunks.
+
+Only rows of the one source are removed, so loading a second source later will not remove
+the first.
+
+### No embedding yet
+
+`evidence_chunks` has no vector column. The size of a vector depends on the embedding
+model, and that model is chosen in the retrieval branch, which adds the column in its own
+migration and makes the calls through the gateway (3.8) with the budget check. Until then
+the chunks can be read but not searched by meaning.
+
+### Measured
+
+Measured on 2026-10-10 on the file downloaded that day (file date 2026-10-05). The command
+took about a second and exited with 0.
+
+| Number | Value |
+|---|---|
+| Rows in the file | 357 |
+| Determinations loaded | 316 |
+| Retired notices left out | 41 |
+| Chunks | 1,120 |
+| Chunks per determination | median 2, most 18 |
+| Chunk length in characters | longest 1,200, median 855.5, shortest 13 |
+| Chunks under 100 characters | 22 |
+| Characters stored | 866,134 |
+
+No stored chunk holds a leftover tag, entity, tab or non-breaking space. A second run on
+the same file gave the same 1,120 hashes.
+
+### Known limits
+
+About what the corpus can support:
+
+- The claims are from 2008 to 2010 and the policy text is the version current in 2026. A
+  cited determination may not have applied on the date of service.
+- The generated letters name made-up payers, while the evidence is Medicare policy. Drafts
+  on this data show the mechanism (retrieve, cite, check); they are not real appeals.
+- The determinations may cover few of the denied services, and the file cannot tell: no
+  file in the download says which procedure codes a determination is about
+  ([02-data.md 2.3.1](02-data.md#231-loaded-source-cms-national-coverage-determinations)).
+- No description of a CPT code is stored. Retrieval can match a denied service only when
+  the policy text itself names it.
+- Appeal rights and the general coverage rules are in the CMS manuals, which are not
+  loaded. Only the national coverage determinations are.
+
+About the text:
+
+- List numbers that the source keeps in attributes (such as `<ol type="a">`) are lost. A
+  sentence that refers to "item (b)" may no longer show which item that is.
+- A link keeps its words and loses its address.
+- A tag that is cut off before its closing `>` (such as `<p class=` at the very end of a
+  field) is kept as text. No gate catches it.
+- A `<` written in a sentence and followed directly by a letter is read as a tag. When the
+  letters are a known tag name (`(<p 0.05)`), the text up to the next `>` is lost and no
+  gate catches it. With any other letters (`<age 65`), the file is rejected as holding an
+  unknown tag. A `<` followed by a digit or a space stays as text.
+- Comments and document declarations in the HTML are dropped with their content, and the
+  words on both sides of one are joined.
+- An empty table cell leaves no separator, so in a row with an empty cell the later cells
+  move one place to the left.
+- A chunk from the middle of a long table has no header row. The Durable Medical Equipment
+  Reference List (section 280.1) is such a table.
+- A determination is left out as retired only when its title holds `RETIRED`. Section 40.5
+  is loaded although its whole text is a note that it was removed from the manual.
+- One sentence in the policy text of one determination (`NCD_id` 167) is worded like a
+  procedure-code description, without a code number. Who owns that wording is not verified.
+  It is loaded as published.
+- 22 chunks are shorter than 100 characters, the shortest 13. A chunk that short carries
+  little to retrieve on.
+
+About the load:
+
+- There is no gate on the number of rows. A cut-off download that still parses is loaded.
+- The file states no release date. The stored date is the one the zip records for the csv
+  file. It is not a date CMS states for the data.

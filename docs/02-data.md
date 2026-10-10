@@ -400,15 +400,138 @@ These numbers describe a synthetic file and say nothing about real Medicare clai
 
 ## 2.3 Layer B — evidence corpus for retrieval
 
-Text the appeal letter can cite:
+Text the appeal letter can cite. The kinds of text the corpus is meant to hold in the end:
 
 - Public payer medical-policy and coverage documents.
 - CMS National and Local Coverage Determinations.
 - Public code descriptors — ICD-10, CPT/HCPCS, and claim adjustment reason codes.
 - Appeal-rights and timeline guidance published by regulators.
 
-Stored chunked and embedded. **A generated citation is only allowed if it points at a
-chunk that was actually retrieved.**
+One source is loaded so far: the CMS national coverage determinations (2.3.1). The text is
+stored cut into chunks. It is not embedded yet; that comes with retrieval. **A generated
+citation is only allowed if it points at a chunk that was actually retrieved.**
+
+### 2.3.1 Loaded source: CMS national coverage determinations
+
+A national coverage determination (NCD) is a published CMS decision on whether Medicare
+covers an item or service, and under which conditions. The claims in Layer A are Medicare
+carrier claims (2.2.2), so this is policy text about the same programme.
+
+| Item | Value |
+|---|---|
+| File | `ncd.zip`, the "Current NCD Data" download of the CMS Medicare Coverage Database, kept under `data/raw/evidence/` (never committed) |
+| Download page | <https://www.cms.gov/medicare-coverage-database/downloads/downloads.aspx> |
+| Size | About 1.3 MB; the page gave "data as of 2026-10-04" on the day of the download |
+| Inside | A second zip, `ncd_csv.zip`, with four `.csv` files. Only `ncd_trkg.csv` is read: 357 rows, 26 columns, UTF-8 |
+| Grain in the file | One row per determination, in its current version |
+| Grain we store | One row per determination; one row per chunk of its policy text |
+| Lands in | `evidence_documents` and `evidence_chunks` (public reference tables, no `account_id`) |
+
+**Terms of the download.** The download page asks the visitor to accept licence terms of
+the American Medical Association (CPT codes), the American Dental Association (CDT codes)
+and the American Hospital Association (UB-04 codes) before any file is given. The file is
+fetched by hand for that reason: only a person can accept the terms. The terms are about
+third-party codes and their descriptions, so the loader is built to store none of them (see
+"What is not loaded").
+
+**What is loaded.** Per determination: the database's id (`NCD_id`), the manual section
+number a reader would cite (`NCD_mnl_sect`, such as `220.6.17`), the title, the version
+number, the effective date, and the date of the file. The file states no release date
+anywhere, so the date kept is the one the zip records for `ncd_trkg.csv`. The policy text
+comes from two columns, in this order:
+
+| Column | Holds | Section title on its chunks |
+|---|---|---|
+| `itm_srvc_desc` | What the item or service is | `Item/Service Description` |
+| `indctn_lmtn` | When it is covered and when it is not | `Indications and Limitations of Coverage` |
+
+Both columns are HTML. The markup is removed and the text is cut into chunks of at most
+1,200 characters; how is in
+[03-architecture.md 3.13](03-architecture.md#313-evidence-corpus).
+
+**What is not loaded.**
+
+- **Retired determinations.** A row whose title holds the word `RETIRED` is a short notice
+  that the section was retired, not policy. It is counted and left out (41 rows).
+- **The revision history (`rev_hstry`), the cross references (`xref_txt`) and the "other"
+  text (`othr_txt`).** They are never stored, and a test checks it. The revision history is
+  a change log; it holds nearly all the procedure-code numbers in the file and the few
+  passages worded like a code description.
+- **The other three `.csv` files** (benefit categories and publication lists) and every
+  other column of `ncd_trkg.csv`, such as the transmittal numbers and the "under review"
+  flag.
+- **No code description from any other source.** Most procedure codes on the denied lines
+  are CPT codes (2.2.2), and their descriptions cannot be stored.
+
+**Quality gates.** The file is rejected as a whole, and nothing is written to either table,
+if any of these fail. Retired rows are left out before the per-row checks, except the two
+checks marked "every row".
+
+| Gate | Action |
+|---|---|
+| The file is not a readable `.zip`, does not hold `ncd_csv.zip`, or that does not hold `ncd_trkg.csv` | Reject |
+| The zip records no valid date for `ncd_trkg.csv` | Reject |
+| The text is not UTF-8 or cannot be parsed as csv | Reject |
+| The header is not the expected 26 column names in order | Reject |
+| A row does not have 26 fields (every row); or there are no data rows | Reject |
+| An `NCD_id` or a section number appears twice (every row) | Reject |
+| `NCD_id` is not a whole number; the section number is not 2 to 4 numbers joined by dots | Reject |
+| The title is empty or longer than 300 characters | Reject |
+| The version number is not a whole number of at least 1 | Reject |
+| The effective date is not a valid `YYYY-MM-DD HH:MM:SS` value | Reject |
+| `NCD_AMA` is not exactly `True` or `False` | Reject |
+| `NCD_AMA` is `True`: the file's own flag for text that needs the AMA copyright notice | Reject |
+| Both policy columns are empty once the markup is removed | Reject |
+| The policy text holds a tag the reader does not know (a heading tag, `script`, `style` and so on). A `<` followed directly by a letter in a sentence counts as one | Reject |
+| The title or the policy text holds the character U+FFFD, the mark of bytes that could not be read, or a NUL character, which the database cannot store | Reject |
+| Every row is a retired notice, so there is nothing to load | Reject |
+
+There is no gate on the number of rows: a cut-off download that still parses is not
+noticed.
+
+**How to load.** With the database running and migrated:
+
+```text
+python3 -m pipelines.load_evidence_corpus data/raw/evidence/ncd.zip
+```
+
+The command checks the whole file before it writes anything. It then removes every stored
+determination of this source and stores the ones it read, in one transaction, so the tables
+hold exactly the determinations of this file and a failure leaves the old rows in place.
+Exit code 0 means loaded, 1 means the file was rejected (the problems are listed, a row's
+problem with its row number), 2 means a bad argument or a path that is not a file. It
+calls no model and spends no money. Running it again on the same file is safe and gives the
+same chunks. It takes about a second.
+
+**Measured.** Loaded on 2026-10-10 from the file downloaded that day:
+
+```text
+loaded 316 documents and 1120 chunks (chunker v1)
+  retired notices left out: 41
+  file date: 2026-10-05
+  chunk length: longest 1200, median 855.5
+```
+
+| Number | Value |
+|---|---|
+| Rows in the file | 357 |
+| Determinations loaded | 316 |
+| Retired notices left out | 41 |
+| Chunks | 1,120 |
+| Chunks per determination | median 2, most 18 |
+| Chunk length in characters | longest 1,200, median 855.5, shortest 13 (22 chunks are under 100) |
+| Characters stored | 866,134 |
+| Date of the file | 2026-10-05 |
+
+A second run on the same file gave the same 1,120 chunk hashes.
+
+**What the corpus covers.** No file in the download says which procedure codes a
+determination is about. So the number of denied claims that have a determination for one of
+their denied services **cannot be measured from the file**. What is known from the claims:
+2,417 of the 5,325 denied claims have a headline reason about coverage (`noncovered` 2,222,
+`medical_necessity` 195), and the most-denied procedure codes are routine services. This
+source alone is expected to leave many claims without evidence about their service; that is
+an expectation, not a measurement. The limits are listed in 03-architecture.md 3.13.
 
 ## 2.4 Layer C — generated documents
 
@@ -922,7 +1045,7 @@ A batch is rejected if any of these fail:
   of claims that are denied is reported but not gated, because it is not a training target.
 
 These are the general rules. Each loaded source lists the gates it actually applies in its
-own section (2.2.1, 2.2.2); the class balance gate is applied by the pipeline (2.9). Where
+own section (2.2.1, 2.2.2, 2.3.1); the class balance gate is applied by the pipeline (2.9). Where
 the published file itself breaks a general rule (for example amounts of zero, or codes
 outside the known list), the loader relaxes that rule or applies it as a warning instead of
 a rejection, and the section says so.
@@ -941,11 +1064,15 @@ data/
   interim/      cleaned and joined tables
   processed/    model-ready features and splits
   documents/    generated documents kept as files (none yet, see below)
-  evidence/     policy corpus, chunked and embedded
+  evidence/     policy corpus kept as files (none yet, see below)
 ```
 
 `data/` is never stored with the project. Everything in it must be
 reproducible by running a loader script.
+
+The policy corpus is not a set of files under `evidence/` either: the downloaded file is
+kept under `raw/evidence/`, and its chunks are stored in the `evidence_documents` and
+`evidence_chunks` tables (2.3.1).
 
 The generated documents (denial letters, clinical notes and prior-authorisation records) are
 not files under `documents/`: they are stored as text in the `generated_documents` table
@@ -1220,3 +1347,17 @@ more, which can change them.
 
 The same claims, labels and seed give the same model. Train again after every pipeline run
 that changes the labels.
+
+### Loading the evidence corpus
+
+The policy text the drafts will cite is loaded by its own command, from a third file that
+is also fetched by hand:
+
+```text
+python3 -m pipelines.load_evidence_corpus data/raw/evidence/ncd.zip
+```
+
+It does not depend on any command above and none of them depends on it: it reads no claim
+and writes only `evidence_documents` and `evidence_chunks`. The download page, the terms to
+accept there, the gates, the exit codes and the measured numbers are in
+[2.3.1](#231-loaded-source-cms-national-coverage-determinations).

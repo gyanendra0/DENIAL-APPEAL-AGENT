@@ -1059,6 +1059,10 @@ the paragraph breaks and drops everything else:
 - Entities such as `&sect;` are decoded. Every run of spaces, tabs, line ends and
   non-breaking spaces becomes one space. A paragraph with no text is dropped.
 - A paragraph whose whole text is bold is marked as a heading.
+- These tags are dropped and their words stay in the paragraph: `a`, `em`, `u`, `sup`,
+  `sub`, `font`, `tbody`.
+- Any other tag (a heading tag, `script`, `style` and so on) is refused, and the loader
+  rejects the file. A guess would join two words or keep text that is not policy.
 
 Each of the two policy columns becomes one section with a fixed title. The titles are
 shortened from the file's data dictionary; they are not text of the file. A column with no
@@ -1155,6 +1159,8 @@ About the text:
 - List numbers that the source keeps in attributes (such as `<ol type="a">`) are lost. A
   sentence that refers to "item (b)" may no longer show which item that is.
 - A link keeps its words and loses its address.
+- A tag that is cut off before its closing `>` (such as `<p class=` at the very end of a
+  field) is kept as text. No gate catches it.
 - An empty table cell leaves no separator, so in a row with an empty cell the later cells
   move one place to the left.
 - A chunk from the middle of a long table has no header row. The Durable Medical Equipment

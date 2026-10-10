@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.ingest.html_paragraphs import html_to_paragraphs
+from src.ingest.html_paragraphs import KNOWN_TAGS, UnknownTagError, html_to_paragraphs
 
 
 def _texts(html: str) -> list[str]:
@@ -131,3 +131,30 @@ def test_the_same_html_always_gives_the_same_paragraphs() -> None:
     html = "<p><strong>A</strong></p><ul><li>one</li><li>two &amp; three</li></ul>"
 
     assert html_to_paragraphs(html) == html_to_paragraphs(html)
+
+
+@pytest.mark.parametrize(
+    ("html", "tag"),
+    [
+        ("<h3>Covered Uses</h3>The pump is covered.", "h3"),
+        ("<dl><dt>Term</dt><dd>Definition</dd></dl>", "dl"),
+        ("<p>See:</p><blockquote>quoted rule</blockquote>tail", "blockquote"),
+        ("before<pre>line1\nline2</pre>after", "pre"),
+        ("<p>text</p><script>var a = 1;</script>", "script"),
+        ("<p>text</p><style>p {color:red}</style>", "style"),
+        ("<p>one <span>two</span></p>", "span"),
+        ("<P>one</P><H2>two</H2>", "h2"),
+        ("<p>one</p></h3>two", "h3"),
+        ("one<wbr/>two", "wbr"),
+    ],
+)
+def test_a_tag_that_is_not_known_is_refused(html: str, tag: str) -> None:
+    with pytest.raises(UnknownTagError, match=f"<{tag}>") as excinfo:
+        html_to_paragraphs(html)
+
+    assert excinfo.value.tag == tag
+
+
+@pytest.mark.parametrize("tag", sorted(KNOWN_TAGS))
+def test_every_known_tag_is_accepted(tag: str) -> None:
+    assert _texts(f"<{tag}>one</{tag}>") == ["one"]

@@ -30,7 +30,7 @@ from sqlalchemy import delete, insert
 from sqlalchemy.orm import Session
 
 from src.db.models import EvidenceChunk, EvidenceDocument, EvidenceSource
-from src.ingest.html_paragraphs import html_to_paragraphs
+from src.ingest.html_paragraphs import UnknownTagError, html_to_paragraphs
 from src.ingest.marketplace_denials import BatchRejectedError, describe_validation_error
 from src.rag.chunking import Chunk, SectionText, chunk_document
 
@@ -91,6 +91,9 @@ SOURCE_TRUE = "True"
 SOURCE_FALSE = "False"
 # What a decoder leaves in place of bytes it could not read.
 REPLACEMENT_CHARACTER = "�"
+# Valid UTF-8, but a PostgreSQL text column cannot hold it.
+NUL_CHARACTER = "\x00"
+UNREADABLE_CHARACTERS = (REPLACEMENT_CHARACTER, NUL_CHARACTER)
 HEADER_ROW = 1
 UNREADABLE_ZIP = "not a readable .zip file"
 # Raised for damaged content, and `RuntimeError` for an encrypted member.
@@ -320,18 +323,29 @@ def _entry(
         )
     elif ama_notice != SOURCE_FALSE:
         problems.append(f"row {row_number}: {AMA_NOTICE_HEADER} must be True or False")
-    sections = _sections(cells)
-    if not sections:
-        problems.append(f"row {row_number}: no policy text")
-    elif any(
-        REPLACEMENT_CHARACTER in paragraph.text
-        for section in sections
-        for paragraph in section.paragraphs
-    ):
-        problems.append(f"row {row_number}: the policy text holds an unreadable character")
+    if _has_unreadable_character(cells[COLUMN[TITLE_HEADER]]):
+        problems.append(f"row {row_number}: the title holds an unreadable character")
+    sections: list[SectionText] = []
+    try:
+        sections = _sections(cells)
+    except UnknownTagError as exc:
+        problems.append(f"row {row_number}: the policy text holds the unknown tag <{exc.tag}>")
+    else:
+        if not sections:
+            problems.append(f"row {row_number}: no policy text")
+        elif any(
+            _has_unreadable_character(paragraph.text)
+            for section in sections
+            for paragraph in section.paragraphs
+        ):
+            problems.append(f"row {row_number}: the policy text holds an unreadable character")
     if problems or document is None:
         return None, problems
     return EvidenceCorpusEntry(document=document, chunks=tuple(chunk_document(sections))), []
+
+
+def _has_unreadable_character(text: str) -> bool:
+    return any(character in text for character in UNREADABLE_CHARACTERS)
 
 
 def _sections(cells: Sequence[str]) -> list[SectionText]:

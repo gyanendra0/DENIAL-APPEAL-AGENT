@@ -310,6 +310,44 @@ def test_an_unreadable_character_in_the_policy_text_rejects_the_file(tmp_path: P
     assert problems == ["row 3: the policy text holds an unreadable character"]
 
 
+def test_a_nul_character_in_the_policy_text_rejects_the_file(tmp_path: Path) -> None:
+    problems = _rejected(ncd_zip(tmp_path, {(3, "indctn_lmtn"): "<p>dam\x00ged</p>"}))
+
+    assert problems == ["row 3: the policy text holds an unreadable character"]
+
+
+@pytest.mark.parametrize("character", ["\ufffd", "\x00"])
+def test_an_unreadable_character_in_the_title_rejects_the_file(
+    tmp_path: Path, character: str
+) -> None:
+    problems = _rejected(ncd_zip(tmp_path, {(3, "NCD_mnl_sect_title"): f"Dam{character}ged"}))
+
+    assert problems == ["row 3: the title holds an unreadable character"]
+
+
+@pytest.mark.parametrize(
+    ("html", "tag"),
+    [
+        ("<h3>Made-up heading</h3>Made-up text.", "h3"),
+        ("<p>Made-up text.</p><script>var a = 1;</script>", "script"),
+        ("<p>Made-up text.</p><style>p {color:red}</style>", "style"),
+    ],
+)
+@pytest.mark.parametrize("header", ["itm_srvc_desc", "indctn_lmtn"])
+def test_an_unknown_tag_in_the_policy_text_rejects_the_file(
+    tmp_path: Path, header: str, html: str, tag: str
+) -> None:
+    problems = _rejected(ncd_zip(tmp_path, {(3, header): html}))
+
+    assert problems == [f"row 3: the policy text holds the unknown tag <{tag}>"]
+
+
+def test_an_unknown_tag_in_a_column_that_is_not_policy_is_not_checked(tmp_path: Path) -> None:
+    path = ncd_zip(tmp_path, {(3, "rev_hstry"): "<h3>Made-up history</h3>"})
+
+    assert len(read_evidence_corpus(path).entries) == 4
+
+
 def test_every_problem_of_a_file_is_reported_together(tmp_path: Path) -> None:
     edits = {(2, "NCD_AMA"): "True", (3, "NCD_vrsn_num"): "0", (6, "indctn_lmtn"): ""}
     edits[(6, "itm_srvc_desc")] = ""

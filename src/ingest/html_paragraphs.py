@@ -11,6 +11,8 @@ module keeps the words and the paragraph breaks and drops everything else:
 - A paragraph whose whole text is bold is marked as a heading.
 - A link keeps its visible words and loses its address. List numbers that the source keeps in
   attributes (`<ol type="a">`) are lost.
+- A tag this module does not know (a heading tag, `script`, `style`, ...) is refused with
+  `UnknownTagError`: guessing would join two words or keep text that is not policy.
 """
 
 from html.parser import HTMLParser
@@ -20,11 +22,25 @@ from src.rag.chunking import Paragraph
 BREAK_TAGS = frozenset({"p", "div", "li", "ul", "ol", "table", "tr", "hr", "br"})
 CELL_TAGS = frozenset({"td", "th"})
 BOLD_TAGS = frozenset({"strong", "b"})
+# Tags that are dropped while their words stay in the paragraph.
+IGNORED_TAGS = frozenset({"a", "em", "u", "sup", "sub", "font", "tbody"})
+KNOWN_TAGS = BREAK_TAGS | CELL_TAGS | BOLD_TAGS | IGNORED_TAGS
 CELL_SEPARATOR = " | "
 
 
+class UnknownTagError(ValueError):
+    """The HTML holds a tag that is not in `KNOWN_TAGS`."""
+
+    def __init__(self, tag: str) -> None:
+        super().__init__(f"unknown tag <{tag}>")
+        self.tag = tag
+
+
 def html_to_paragraphs(html: str) -> list[Paragraph]:
-    """Return the paragraphs of one HTML field, in reading order. No text gives an empty list."""
+    """Return the paragraphs of one HTML field, in reading order. No text gives an empty list.
+
+    Raises `UnknownTagError` for a start or end tag that is not in `KNOWN_TAGS`.
+    """
     collector = _ParagraphCollector()
     collector.feed(html)
     collector.close()
@@ -43,6 +59,8 @@ class _ParagraphCollector(HTMLParser):
         self._cell_pending = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in KNOWN_TAGS:
+            raise UnknownTagError(tag)
         if tag in BREAK_TAGS:
             self.end_paragraph()
         elif tag in CELL_TAGS:
@@ -52,6 +70,8 @@ class _ParagraphCollector(HTMLParser):
             self._bold_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag not in KNOWN_TAGS:
+            raise UnknownTagError(tag)
         if tag in BREAK_TAGS:
             self.end_paragraph()
         elif tag in BOLD_TAGS:

@@ -119,6 +119,14 @@ def test_rejected_file_exits_1_and_keeps_the_old_rows(
         ({(3, "NCD_mnl_sect_title"): ""}, "row 3: title: "),
         ({(5, "NCD_id"): "2"}, "row 5: NCD_id appears more than once in the file"),
         ({(5, "itm_srvc_desc"): "<p> </p>"}, "row 5: no policy text"),
+        (
+            {(3, "indctn_lmtn"): "<h3>Made-up heading</h3>Made-up text."},
+            "row 3: the policy text holds the unknown tag <h3>",
+        ),
+        (
+            {(3, "indctn_lmtn"): "<p>dam\x00ged</p>"},
+            "row 3: the policy text holds an unreadable character",
+        ),
     ],
 )
 def test_each_gate_exits_1_and_writes_nothing(

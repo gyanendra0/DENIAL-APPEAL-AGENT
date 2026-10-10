@@ -482,7 +482,8 @@ checks marked "every row".
 | `NCD_AMA` is not exactly `True` or `False` | Reject |
 | `NCD_AMA` is `True`: the file's own flag for text that needs the AMA copyright notice | Reject |
 | Both policy columns are empty once the markup is removed | Reject |
-| The policy text holds the character U+FFFD, the mark of bytes that could not be read | Reject |
+| The policy text holds a tag the reader does not know (a heading tag, `script`, `style` and so on) | Reject |
+| The title or the policy text holds the character U+FFFD, the mark of bytes that could not be read, or a NUL character, which the database cannot store | Reject |
 | Every row is a retired notice, so there is nothing to load | Reject |
 
 There is no gate on the number of rows: a cut-off download that still parses is not

@@ -94,6 +94,9 @@ REPLACEMENT_CHARACTER = "�"
 # Valid UTF-8, but a PostgreSQL text column cannot hold it.
 NUL_CHARACTER = "\x00"
 UNREADABLE_CHARACTERS = (REPLACEMENT_CHARACTER, NUL_CHARACTER)
+# An unknown tag is named in a problem only when it looks like a tag name. Anything else is
+# text of the cell that happened to follow a `<`.
+PLAIN_TAG_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,9}")
 HEADER_ROW = 1
 UNREADABLE_ZIP = "not a readable .zip file"
 # Raised for damaged content, and `RuntimeError` for an encrypted member.
@@ -329,7 +332,8 @@ def _entry(
     try:
         sections = _sections(cells)
     except UnknownTagError as exc:
-        problems.append(f"row {row_number}: the policy text holds the unknown tag <{exc.tag}>")
+        named = f"the unknown tag <{exc.tag}>" if _is_plain_tag_name(exc.tag) else "an unknown tag"
+        problems.append(f"row {row_number}: the policy text holds {named}")
     else:
         if not sections:
             problems.append(f"row {row_number}: no policy text")
@@ -342,6 +346,10 @@ def _entry(
     if problems or document is None:
         return None, problems
     return EvidenceCorpusEntry(document=document, chunks=tuple(chunk_document(sections))), []
+
+
+def _is_plain_tag_name(tag: str) -> bool:
+    return PLAIN_TAG_NAME_PATTERN.fullmatch(tag) is not None
 
 
 def _has_unreadable_character(text: str) -> bool:

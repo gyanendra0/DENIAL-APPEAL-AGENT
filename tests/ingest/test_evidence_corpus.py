@@ -342,6 +342,36 @@ def test_an_unknown_tag_in_the_policy_text_rejects_the_file(
     assert problems == [f"row 3: the policy text holds the unknown tag <{tag}>"]
 
 
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<p>contact <made.up@example.org> now</p>",
+        "<p>text</p><" + "a" * 5000 + " b>",
+        "<p>text</p><zz\x1b[31mred>",
+        "<p>text</p><o:p>made-up</o:p>",
+        "<p>text</p><abcdefghijk>",
+    ],
+)
+def test_an_unknown_tag_that_does_not_look_like_a_tag_name_is_not_shown(
+    tmp_path: Path, html: str
+) -> None:
+    problems = _rejected(ncd_zip(tmp_path, {(3, "indctn_lmtn"): html}))
+
+    assert problems == ["row 3: the policy text holds an unknown tag"]
+
+
+def test_an_unknown_tag_that_is_never_closed_rejects_the_file(tmp_path: Path) -> None:
+    problems = _rejected(ncd_zip(tmp_path, {(3, "indctn_lmtn"): "<h3>Made-up heading"}))
+
+    assert problems == ["row 3: the policy text holds the unknown tag <h3>"]
+
+
+def test_an_unknown_tag_in_a_retired_notice_is_not_checked(tmp_path: Path) -> None:
+    path = ncd_zip(tmp_path, {(4, "indctn_lmtn"): "<h3>Made-up heading</h3>"})
+
+    assert read_evidence_corpus(path).retired_skipped == 1
+
+
 def test_an_unknown_tag_in_a_column_that_is_not_policy_is_not_checked(tmp_path: Path) -> None:
     path = ncd_zip(tmp_path, {(3, "rev_hstry"): "<h3>Made-up history</h3>"})
 

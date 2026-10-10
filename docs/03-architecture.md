@@ -1161,6 +1161,12 @@ About the text:
 - A link keeps its words and loses its address.
 - A tag that is cut off before its closing `>` (such as `<p class=` at the very end of a
   field) is kept as text. No gate catches it.
+- A `<` written in a sentence and followed directly by a letter is read as a tag. When the
+  letters are a known tag name (`(<p 0.05)`), the text up to the next `>` is lost and no
+  gate catches it. With any other letters (`<age 65`), the file is rejected as holding an
+  unknown tag. A `<` followed by a digit or a space stays as text.
+- Comments and document declarations in the HTML are dropped with their content, and the
+  words on both sides of one are joined.
 - An empty table cell leaves no separator, so in a row with an empty cell the later cells
   move one place to the left.
 - A chunk from the middle of a long table has no header row. The Durable Medical Equipment

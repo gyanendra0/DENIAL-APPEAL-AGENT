@@ -2,7 +2,12 @@
 
 import pytest
 
-from src.ingest.html_paragraphs import KNOWN_TAGS, UnknownTagError, html_to_paragraphs
+from src.ingest.html_paragraphs import (
+    IGNORED_TAGS,
+    KNOWN_TAGS,
+    UnknownTagError,
+    html_to_paragraphs,
+)
 
 
 def _texts(html: str) -> list[str]:
@@ -146,6 +151,8 @@ def test_the_same_html_always_gives_the_same_paragraphs() -> None:
         ("<P>one</P><H2>two</H2>", "h2"),
         ("<p>one</p></h3>two", "h3"),
         ("one<wbr/>two", "wbr"),
+        ("<h3>Heading with no end", "h3"),
+        ('one<img src="x">two', "img"),
     ],
 )
 def test_a_tag_that_is_not_known_is_refused(html: str, tag: str) -> None:
@@ -153,6 +160,12 @@ def test_a_tag_that_is_not_known_is_refused(html: str, tag: str) -> None:
         html_to_paragraphs(html)
 
     assert excinfo.value.tag == tag
+
+
+def test_the_tags_dropped_without_a_break_are_exactly_these() -> None:
+    # A tag added here keeps its words with no break: check the real text before adding one.
+    assert sorted(IGNORED_TAGS) == ["a", "em", "font", "sub", "sup", "tbody", "u"]
+    assert len(KNOWN_TAGS) == 20
 
 
 @pytest.mark.parametrize("tag", sorted(KNOWN_TAGS))

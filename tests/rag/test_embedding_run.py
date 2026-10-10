@@ -30,6 +30,7 @@ from tests.rag.helpers import (
     embedding_gateway,
     evidence_tables,
     run_lock_held,
+    store_vector,
     stored_vectors,
 )
 
@@ -375,6 +376,48 @@ def test_a_corpus_replaced_during_the_run_counts_the_new_chunks_and_no_vector(
     assert summary.not_tried == 3
     assert stored_vectors(factory) == []
     assert len(embedding_calls(factory)) == 2
+
+
+def test_vectors_from_before_the_run_that_a_new_corpus_removed_are_not_counted(
+    factory: sessionmaker[Session],
+) -> None:
+    chunk_ids = _five_chunks(factory)
+    with session_scope(factory) as session:
+        for chunk_id in chunk_ids[:2]:
+            store_vector(session, chunk_id, [1.0])
+
+    def replace_corpus() -> None:
+        with session_scope(factory) as session:
+            session.execute(delete(EvidenceDocument))
+            add_document(session, "9003", 3)
+
+    summary = _run(factory, StubEmbedder(before_answer={2: replace_corpus}))
+
+    # Two chunks had a vector when the run began; the new corpus has none.
+    assert summary == EmbeddingRunSummary(
+        chunks=3,
+        already_embedded=0,
+        embedded=0,
+        stop_reason="the evidence chunks changed during the run (the call was paid for)",
+    )
+    assert summary.not_tried == 3
+
+
+def test_the_count_after_a_change_leaves_out_a_vector_of_another_model(
+    factory: sessionmaker[Session],
+) -> None:
+    chunk_ids = _five_chunks(factory)
+    with session_scope(factory) as session:
+        # The fifth chunk is in the third batch, which is never sent.
+        store_vector(session, chunk_ids[4], [1.0], model_name="another-embedding-model")
+    embedder = StubEmbedder(before_answer={2: lambda: delete_chunk(factory, chunk_ids[3])})
+
+    summary = _run(factory, embedder)
+
+    assert summary.chunks == 4
+    assert summary.already_embedded == 0
+    assert summary.embedded == 2
+    assert summary.not_tried == 2
 
 
 def test_no_stored_chunk_means_no_call(factory: sessionmaker[Session]) -> None:

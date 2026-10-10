@@ -14,7 +14,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import exists, func, select
+from sqlalchemy import Exists, exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -86,8 +86,8 @@ def run_evidence_embedding(
     answer cannot be stored: another model than `model_name`, another number of vectors than
     texts, or a vector that is not `EMBEDDING_DIMENSIONS` finite numbers. It ends early in the
     same way when a chunk of the batch is gone at the write, as after a load of the corpus
-    during the run; the counts are then read again, because such a load also removes the
-    vectors of the batches before. Nothing of such a batch is stored. It also ends early,
+    during the run. Nothing of such a batch is stored. After such a load the counts are read
+    again, because it also removes the vectors of the batches before. It also ends early,
     before any call, when another run is in progress.
     """
     if batch_size < 1:
@@ -185,8 +185,7 @@ def _embed_pending(
         # The counts read before the loop are out of date, and a load of the corpus removed
         # the vectors of the earlier batches with their chunks. Count what is there now.
         with session_scope(session_factory) as session:
-            chunks = _count_chunks(session)
-            with_vector = chunks - len(_pending_inputs(session, model_name))
+            chunks, with_vector = _count_chunks_and_vectors(session, model_name)
         already_embedded = min(already_embedded, with_vector)
         embedded = with_vector - already_embedded
     return EmbeddingRunSummary(
@@ -197,13 +196,32 @@ def _embed_pending(
     )
 
 
-def _pending_inputs(session: Session, model_name: str) -> list[tuple[int, str]]:
-    """(chunk row id, text to embed) for each chunk without a vector, in a repeatable order."""
-    has_vector = exists().where(
+def _has_vector(model_name: str) -> Exists:
+    """True for a chunk that has a vector of `model_name` and the current input version."""
+    return exists().where(
         EvidenceChunkEmbedding.evidence_chunk_id == EvidenceChunk.id,
         EvidenceChunkEmbedding.model_name == model_name,
         EvidenceChunkEmbedding.input_version == EMBEDDING_INPUT_VERSION,
     )
+
+
+def _count_chunks_and_vectors(session: Session, model_name: str) -> tuple[int, int]:
+    """(stored chunks, those of them with a vector), read in one statement.
+
+    One statement sees the database at one moment, so the two numbers always fit together,
+    also when a load of the corpus is committed at the same time.
+    """
+    chunks, with_vector = session.execute(
+        select(func.count(), func.count().filter(_has_vector(model_name))).select_from(
+            EvidenceChunk
+        )
+    ).one()
+    return chunks, with_vector
+
+
+def _pending_inputs(session: Session, model_name: str) -> list[tuple[int, str]]:
+    """(chunk row id, text to embed) for each chunk without a vector, in a repeatable order."""
+    has_vector = _has_vector(model_name)
     rows = session.execute(
         select(
             EvidenceChunk.id,

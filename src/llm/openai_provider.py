@@ -1,11 +1,15 @@
-"""A gateway provider for any service that speaks the OpenAI chat format.
+"""Gateway providers for any service that speaks the OpenAI chat and embeddings formats.
 
-The primary and the fallback provider are both this class: they differ only in base URL,
-model, key and prices, which all come from `LlmGatewaySettings`.
+The primary and the fallback chat provider are both `OpenAiChatProvider`: they differ only
+in base URL, model, key and prices. `OpenAiEmbeddingProvider` uses the primary's base URL and
+key with its own model and price. All of it comes from `LlmGatewaySettings`.
 """
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal
+from typing import Literal
 
 from openai import (
     APIConnectionError,
@@ -16,12 +20,15 @@ from openai import (
     RateLimitError,
     omit,
 )
+from openai.types.create_embedding_response import Usage
 from openai.types.shared_params import ResponseFormatJSONSchema
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm.budget import call_cost
 from src.llm.gateway import (
+    EmbeddingAnswer,
+    EmbeddingRequest,
     LlmGateway,
     LlmRequest,
     ProviderAnswer,
@@ -42,11 +49,36 @@ SDK_MAX_RETRIES = 0
 # Status codes the service uses for a passing failure that has no error class of its own:
 # request timeout and conflict.
 TEMPORARY_STATUS_CODES = frozenset({408, 409})
+# Vectors are asked for as plain lists of numbers, not as packed text.
+EMBEDDING_ENCODING_FORMAT: Literal["float"] = "float"
 # The name the service wants for a response schema. It is a label only.
 RESPONSE_SCHEMA_NAME = "answer"
 # The service aims for the schema but does not promise it. Strict mode is off because the
 # fallback service refused these schemas in strict mode (measured 2026-10-09).
 RESPONSE_SCHEMA_STRICT = False
+
+
+@contextmanager
+def _gateway_errors() -> Iterator[None]:
+    """Turn the SDK's errors into the two kinds the gateway knows.
+
+    A rate limit, a connection error, a timeout, a server error or a status in
+    `TEMPORARY_STATUS_CODES` becomes `ProviderUnavailableError`; any other status the service
+    answers with (a bad request, a wrong key) becomes `ProviderRejectedError`.
+    """
+    try:
+        yield
+    except (APIConnectionError, RateLimitError, InternalServerError) as error:
+        # The class name only: the SDK's message may quote the request.
+        raise ProviderUnavailableError(type(error).__name__) from error
+    except APIStatusError as error:
+        if error.status_code in TEMPORARY_STATUS_CODES:
+            raise ProviderUnavailableError(type(error).__name__) from error
+        # Not chained: the SDK's message holds the service's whole response body, which
+        # may quote the request or a failed answer, and a traceback would print it.
+        raise ProviderRejectedError(
+            f"{type(error).__name__} (status {error.status_code})"
+        ) from None
 
 
 def highest_input_tokens(request: LlmRequest) -> int:
@@ -108,7 +140,7 @@ class OpenAiChatProvider:
         `TEMPORARY_STATUS_CODES` is raised as `ProviderUnavailableError`; any other status
         the service answers with (a bad request, a wrong key) as `ProviderRejectedError`.
         """
-        try:
+        with _gateway_errors():
             completion = self._client.chat.completions.create(
                 model=self._model_name,
                 messages=[
@@ -118,17 +150,6 @@ class OpenAiChatProvider:
                 max_completion_tokens=request.max_tokens,
                 response_format=_response_format(request),
             )
-        except (APIConnectionError, RateLimitError, InternalServerError) as error:
-            # The class name only: the SDK's message may quote the request.
-            raise ProviderUnavailableError(type(error).__name__) from error
-        except APIStatusError as error:
-            if error.status_code in TEMPORARY_STATUS_CODES:
-                raise ProviderUnavailableError(type(error).__name__) from error
-            # Not chained: the SDK's message holds the service's whole response body, which
-            # may quote the request or a failed answer, and a traceback would print it.
-            raise ProviderRejectedError(
-                f"{type(error).__name__} (status {error.status_code})"
-            ) from None
 
         if completion.usage is None:
             # The call was answered, so it was paid for: record the most it can have cost.
@@ -155,6 +176,74 @@ class OpenAiChatProvider:
         return call_cost(
             input_tokens, output_tokens, self._input_usd_per_mtok, self._output_usd_per_mtok
         )
+
+
+def highest_embedding_tokens(request: EmbeddingRequest) -> int:
+    """Return a number of input tokens that `request` can never exceed.
+
+    It is the UTF-8 byte length of all the texts: a token is never smaller than one byte.
+    """
+    return sum(len(text.encode("utf-8")) for text in request.texts)
+
+
+class OpenAiEmbeddingProvider:
+    """Embeds texts with one model of one OpenAI-compatible service and prices the call."""
+
+    def __init__(self, *, client: OpenAI, model_name: str, usd_per_mtok: Decimal) -> None:
+        self._client = client
+        self._model_name = model_name
+        self._usd_per_mtok = usd_per_mtok
+
+    @property
+    def model_name(self) -> str:
+        """The model this provider calls."""
+        return self._model_name
+
+    def highest_cost(self, request: EmbeddingRequest) -> Decimal:
+        """Return the cost of `request` at its highest possible token count. No request is made."""
+        return self._cost(highest_embedding_tokens(request))
+
+    def run(self, request: EmbeddingRequest) -> EmbeddingAnswer:
+        """Send the texts to the service. Spends money and can take several seconds.
+
+        The errors are those of `OpenAiChatProvider.run`. The vectors come back in the order
+        of the request's texts.
+        """
+        with _gateway_errors():
+            response = self._client.embeddings.create(
+                model=self._model_name,
+                input=list(request.texts),
+                encoding_format=EMBEDDING_ENCODING_FORMAT,
+            )
+
+        # The SDK types `usage` as always there; a compatible service may still leave it out.
+        # The call was answered, so it was paid for: without usage, record the most it can
+        # have cost.
+        usage: Usage | None = response.usage
+        input_tokens = highest_embedding_tokens(request) if usage is None else usage.prompt_tokens
+        ordered = sorted(response.data, key=lambda item: item.index)
+        return EmbeddingAnswer(
+            vectors=tuple(tuple(item.embedding) for item in ordered),
+            input_tokens=input_tokens,
+            cost_usd=self._cost(input_tokens),
+        )
+
+    def _cost(self, input_tokens: int) -> Decimal:
+        return call_cost(input_tokens, 0, self._usd_per_mtok, Decimal("0"))
+
+
+def build_openai_embedding_provider(settings: LlmGatewaySettings) -> OpenAiEmbeddingProvider:
+    """Build the embedding provider on the primary provider's service. No request is made."""
+    return OpenAiEmbeddingProvider(
+        client=OpenAI(
+            api_key=settings.llm_primary_api_key.get_secret_value(),
+            base_url=settings.llm_primary_base_url,
+            max_retries=SDK_MAX_RETRIES,
+            timeout=settings.llm_timeout_seconds,
+        ),
+        model_name=settings.llm_embedding_model,
+        usd_per_mtok=settings.llm_embedding_usd_per_mtok,
+    )
 
 
 def build_openai_providers(
@@ -199,4 +288,5 @@ def build_openai_gateway(
         fallback=fallback,
         session_factory=session_factory,
         cap_usd=settings.llm_monthly_budget_usd,
+        embedder=build_openai_embedding_provider(settings),
     )

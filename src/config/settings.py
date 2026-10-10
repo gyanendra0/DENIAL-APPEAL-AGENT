@@ -57,7 +57,8 @@ class LlmGatewaySettings(BaseSettings):
     need no API key. The primary and the fallback provider are each a base URL of a service
     that speaks the OpenAI chat format, a model name, a key and two prices. Prices are in US
     dollars per million tokens. The timeout is the longest one call may take, for both
-    providers.
+    providers. Embeddings use the primary provider's base URL and key, with their own model
+    and price; they have no fallback.
     """
 
     # `hide_input_in_errors` keeps a rejected value (a key, a URL holding a password) out of
@@ -78,6 +79,9 @@ class LlmGatewaySettings(BaseSettings):
     llm_primary_api_key: SecretStr
     llm_primary_input_usd_per_mtok: UsdAmount
     llm_primary_output_usd_per_mtok: UsdAmount
+
+    llm_embedding_model: NonEmptyText
+    llm_embedding_usd_per_mtok: UsdAmount
 
     llm_fallback_base_url: str | None = None
     llm_fallback_model: NonEmptyText | None = None

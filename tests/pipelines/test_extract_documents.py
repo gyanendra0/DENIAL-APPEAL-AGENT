@@ -44,6 +44,8 @@ LLM_ENV = {
     "LLM_PRIMARY_API_KEY": "made-up-key",
     "LLM_PRIMARY_INPUT_USD_PER_MTOK": "1.00",
     "LLM_PRIMARY_OUTPUT_USD_PER_MTOK": "5.00",
+    "LLM_EMBEDDING_MODEL": "example-embedding-model",
+    "LLM_EMBEDDING_USD_PER_MTOK": "0.02",
 }
 LLM_FALLBACK_KEYS = (
     "LLM_FALLBACK_BASE_URL",

@@ -38,6 +38,7 @@ src/
   synth/        synthetic document generation
 tests/          mirrors src/ exactly
 pipelines/      runnable end-to-end scripts
+config/         prompts and evaluation question sets
 frontend/       React dashboard
 deploy/         container and deployment manifests
 ```

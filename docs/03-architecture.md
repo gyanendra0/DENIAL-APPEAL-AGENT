@@ -38,7 +38,7 @@
 | `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; OCR when needed |
 | `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
-| `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13) | pgvector, chunked policy corpus |
+| `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13; embedding and search: see 3.14) | pgvector, chunked policy corpus |
 | `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
@@ -69,7 +69,8 @@ Everything after step 1 is asynchronous. The UI polls job status.
 | `extractions` | Fields pulled from a document, with confidence and model version |
 | `predictions` | Score, model version, features used |
 | `evidence_documents` | One published policy document: source, section number, title, version |
-| `evidence_chunks` | Policy text cut into chunks; the embedding is added with retrieval |
+| `evidence_chunks` | Policy text cut into chunks |
+| `evidence_chunk_embeddings` | The vector an embedding model gave for one chunk, used by the search |
 | `drafts` | Generated letter, citations, status |
 | `reviews` | Who approved or rejected, when, why |
 | `audit_log` | Every automated decision, immutable |
@@ -95,7 +96,8 @@ An evaluation result is not stored either. The evaluation harness prints its rep
 writes nothing (see 3.12).
 
 `evidence_documents` and `evidence_chunks` exist and are public reference tables: the policy
-text is public and shared by every account. They have no embedding column yet (see 3.13).
+text is public and shared by every account (see 3.13). The vectors of the chunks are in a
+table of their own, `evidence_chunk_embeddings`, also a public reference table (see 3.14).
 
 ## 3.5 Tech stack
 
@@ -133,7 +135,7 @@ denial-appeal-agent/
 ├─ tests/           mirrors src/
 ├─ pipelines/       runnable end-to-end scripts
 ├─ frontend/        React dashboard
-├─ config/          settings, prompt and rule config
+├─ config/          prompts, evaluation question sets, rule config
 ├─ deploy/          container and deployment manifests
 └─ docs/            these documents
 ```
@@ -151,12 +153,17 @@ denial-appeal-agent/
 
 ## 3.8 LLM gateway
 
-Every model call in the project goes through one method, `LlmGateway.complete(request)`.
-Nothing else talks to a model provider. The gateway checks the monthly budget before a
-call, uses a fallback provider when the primary cannot be used, and records what each
-answered call cost. Over budget means fallback or refuse, never overspend.
+Every model call in the project goes through one object, the `LlmGateway`. It has two
+methods: `complete(request)` for a chat call, which returns text, and `embed(request)` for
+an embedding call, which returns vectors. Nothing else talks to a model provider. The
+gateway checks the monthly budget before a call, uses a fallback provider when the primary
+chat provider cannot be used, and records what each answered call cost. Over budget means
+fallback or refuse, never overspend.
 
-The gateway returns text. Parsing that text into a typed schema is the caller's job.
+Most of this section describes `complete`. What is different for `embed` is under
+"Embedding calls" below; how the vectors are used is in 3.14.
+
+`complete` returns text. Parsing that text into a typed schema is the caller's job.
 
 The tests use stub providers only and make no real call. The first real calls were made by
 the extraction work (see 3.9).
@@ -165,8 +172,8 @@ the extraction work (see 3.9).
 
 | File | Holds |
 |---|---|
-| `src/llm/gateway.py` | `LlmRequest`, `LlmResult`, the `ChatProvider` interface, `LlmGateway` and its errors |
-| `src/llm/openai_provider.py` | `OpenAiChatProvider`, the one provider class, and `build_openai_gateway(settings, session_factory)` |
+| `src/llm/gateway.py` | `LlmRequest`, `LlmResult`, the `ChatProvider` interface, `EmbeddingRequest`, `EmbeddingResult`, the `EmbeddingProvider` interface, `LlmGateway` and its errors |
+| `src/llm/openai_provider.py` | `OpenAiChatProvider`, the one chat provider class, `OpenAiEmbeddingProvider`, and `build_openai_gateway(settings, session_factory)` |
 | `src/llm/budget.py` | The budget guard: `call_cost`, `month_to_date_spend`, `check_budget`, `record_llm_call` |
 
 The primary and the fallback are the same class. Both are services that speak the OpenAI
@@ -226,6 +233,37 @@ and a traceback would print it.
 The SDK's own retries are switched off. A retry inside the SDK would be a second paid
 request under one budget check and one spend row. The fallback is the retry.
 
+### Embedding calls
+
+`LlmGateway.embed(request)` turns a batch of texts into vectors, one per text. A request
+carries the texts, an input version (the name of the recipe that built the texts, see 3.14)
+and a purpose. A result carries the vectors in the order of the texts, the model name, the
+input version, the input token count and the cost.
+
+1. **Budget check.** The highest possible cost is the UTF-8 byte length of all the texts
+   (a token is never smaller than one byte) times the embedding price. If it does not fit
+   the month's budget, `LlmBudgetExceededError` is raised and the provider is not called.
+2. **Call the embedding provider.** It is the primary provider's service (the same base URL
+   and key) with its own model and price.
+3. **Record the spend.** One row is written to `llm_calls` for the whole request:
+   `provider` is `primary`, `output_tokens` is 0, `prompt_version` holds the request's input
+   version, and `model_name` is the embedding model. If the answer has no usage numbers,
+   the highest possible token count is recorded.
+4. **Log one line** and return the result.
+
+There is no fallback for embeddings. Vectors made by two models cannot be compared, so a
+vector from a second model would be of no use to a search. An unavailable provider gives
+`LlmUnavailableError`, and a refused request gives `ProviderRejectedError` as for a chat
+call.
+
+Two more errors exist only here. `EmbeddingAnswerError`: the provider returned another
+number of vectors than texts were sent; the spend is recorded first, because the call was
+paid for. `EmbeddingNotConfiguredError`: `embed` was called on a gateway built without an
+embedding provider. `build_openai_gateway` always passes one.
+
+The gateway does not check the size of a vector. The code that stores or searches with one
+does (3.14).
+
 ### Cost and the budget
 
 - **Before a call**, the gateway needs an amount the call can never exceed. There is no
@@ -266,7 +304,16 @@ If the provider answered but the spend row could not be stored, one error line w
 same fields is logged (`llm call answered but not recorded: ...`) and the error is raised.
 The answer is not returned.
 
-A log line never holds the prompt, document text, the answer or a key. Printing a request
+An embedding call logs one line of its own, with the number of texts and no output tokens:
+
+```text
+llm embedding: model=<model> purpose=evidence_embedding texts=100 input_tokens=17340 cost_usd=0.000347
+```
+
+When its spend row could not be stored, the error line is
+`llm embedding answered but not recorded: ...` with the same fields.
+
+A log line never holds the prompt, document text, an embedded text, the answer or a key. Printing a request
 or a result leaves the prompt and the answer out too.
 
 ### Settings
@@ -290,6 +337,11 @@ fails when the gateway settings are loaded, with a message that names the key.
 | `LLM_FALLBACK_API_KEY` | no | Key for the fallback provider, if it needs one |
 | `LLM_FALLBACK_INPUT_USD_PER_MTOK` | no | Price of one million input tokens; 0 when not set |
 | `LLM_FALLBACK_OUTPUT_USD_PER_MTOK` | no | Price of one million output tokens; 0 when not set |
+| `LLM_EMBEDDING_MODEL` | yes | Model the embedding calls use, on the primary provider's service |
+| `LLM_EMBEDDING_USD_PER_MTOK` | yes | Price of one million embedding input tokens, in US dollars |
+
+The two embedding keys are required for every command that builds a gateway, also one that
+makes no embedding call, such as `extract_documents`.
 
 `LLM_FALLBACK_BASE_URL` and `LLM_FALLBACK_MODEL` are set together, or both left empty for
 no fallback. A fallback key without a fallback base URL is rejected. Amounts are exact
@@ -992,7 +1044,7 @@ limits). No claim that should be stopped passes.
 
 The evidence corpus is the policy text a draft may cite. Stage 4 builds it in two steps.
 This section covers the first: reading one public source, cutting its text into chunks and
-storing them. Nothing is embedded and nothing is searched yet; that is the retrieval step.
+storing them. The second step, embedding the chunks and searching them, is in 3.14.
 
 The one source loaded so far is the CMS national coverage determinations. What the file
 is, what is loaded from it, the quality gates, the command and the measured numbers are in
@@ -1040,7 +1092,7 @@ Both are public reference tables: loaded from a public source, shared by every a
 |---|---|
 | `evidence_document_id` | The document the chunk belongs to; removing a document removes its chunks |
 | `chunk_index` | The chunk's place in its document, from 0, in reading order; unique within a document |
-| `section_title` | The part of the document the chunk comes from; may be empty for a source without parts |
+| `section_title` | The part of the document the chunk comes from; may be NULL for a source without parts (an empty text is refused) |
 | `text` | The chunk's text |
 | `text_sha256` | The SHA-256 hash of `text` |
 | `chunker_version` | The version of the rules that cut the text |
@@ -1091,8 +1143,11 @@ new `CHUNKER_VERSION`, and every stored chunk carries the version that made it.
 
 ### What a citation will point at
 
-A citation will name one chunk by three values: the document, the chunk's `chunk_index`
-and the chunk's `text_sha256`.
+A citation will name one chunk by four values: the document's `source` and
+`source_document_id`, the chunk's `chunk_index` and the chunk's `text_sha256`. It never
+uses a row id: the load replaces the rows, so every document and chunk gets a new id each
+time. For the same reason no later table may point a foreign key at `evidence_chunks.id`
+and expect it to survive a load.
 
 The hash is what makes a citation checkable later. The load replaces the rows, so a new
 file can change the text behind a document and index. The stored hash then differs from the
@@ -1112,12 +1167,13 @@ because a determination that left the file would keep its old chunks.
 Only rows of the one source are removed, so loading a second source later will not remove
 the first.
 
-### No embedding yet
+### Where the vectors are
 
-`evidence_chunks` has no vector column. The size of a vector depends on the embedding
-model, and that model is chosen in the retrieval branch, which adds the column in its own
-migration and makes the calls through the gateway (3.8) with the budget check. Until then
-the chunks can be read but not searched by meaning.
+`evidence_chunks` has no vector column. The vectors are stored in a table of their own,
+`evidence_chunk_embeddings`, linked to the chunk (3.14). Removing a chunk removes its
+vectors, so **a load leaves the corpus without vectors**: run
+`python3 -m pipelines.embed_evidence_corpus` after every load, or the search has nothing to
+search.
 
 ### Measured
 
@@ -1184,3 +1240,290 @@ About the load:
 - There is no gate on the number of rows. A cut-off download that still parses is loaded.
 - The file states no release date. The stored date is the one the zip records for the csv
   file. It is not a date CMS states for the data.
+
+## 3.14 Evidence retrieval
+
+Retrieval makes the stored policy text searchable by meaning. It is the second step of the
+evidence work: 3.13 stores the chunks, this section gives each chunk an embedding and
+searches them.
+
+An embedding is a list of numbers (a vector) that an embedding model gives for a text. Two
+texts about the same thing get vectors that point in nearly the same direction. A search
+turns a question into a vector in the same way and returns the chunks whose vectors are
+closest to it.
+
+Every embedding call goes through the gateway and passes the budget check first (3.8). The
+corpus is public policy text and holds no patient data. Nothing here drafts a letter or
+builds a question from a claim; that is the drafting branch.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/llm/gateway.py`, `src/llm/openai_provider.py` | `LlmGateway.embed(request)` and `OpenAiEmbeddingProvider` (3.8, "Embedding calls") |
+| `src/db/models.py` | `EvidenceChunkEmbedding` and `EMBEDDING_DIMENSIONS` |
+| `src/db/migrations/versions/rev_0011_evidence_chunk_embeddings.py` | Migration 0011: the table; the downgrade drops it and keeps the `vector` extension |
+| `src/rag/embedding_input.py` | `build_embedding_input(document_title, section_title, text)` and `EMBEDDING_INPUT_VERSION` |
+| `src/rag/embedding_run.py` | `run_evidence_embedding(session_factory, gateway, *, model_name)`: embeds the chunks that have no vector |
+| `src/rag/retrieval.py` | `search_evidence_by_vector`, `search_evidence`, the result model `EvidenceMatch` and the two errors |
+| `src/evaluation/search_quality.py` | `read_search_questions`, `unknown_section_numbers`, `run_search_quality_check`: the search quality check |
+| `pipelines/embed_evidence_corpus.py` | The command that embeds the stored chunks |
+| `pipelines/check_evidence_search.py` | The command that runs the search quality check |
+| `config/evaluation/evidence_search_questions.json` | The project's 20 hand-made questions |
+
+The two commands, their exit codes and their output are in
+[02-data.md 2.9](02-data.md#29-running-the-whole-pipeline). The Python library `pgvector`
+gives SQLAlchemy the `vector` column type; the database extension of the same name is on
+since migration 0001.
+
+### The model and the cost of a call
+
+The embedding model is the setting `LLM_EMBEDDING_MODEL` and its price is
+`LLM_EMBEDDING_USD_PER_MTOK` (3.8). The model name is never written in the code. The model
+used so far is `text-embedding-3-small`: 1,536 numbers per vector, $0.02 per million
+tokens (read on the provider's pricing page on 2026-10-10).
+
+How a call is budget-checked and recorded is in 3.8, "Embedding calls". In short: the
+highest possible cost (the byte length of the texts times the price) must fit the month's
+budget or the call is refused; each request writes one `llm_calls` row with
+`output_tokens` 0; there is no fallback.
+
+Two purposes are stored in `llm_calls.purpose`:
+
+| Purpose | Written by |
+|---|---|
+| `evidence_embedding` | The embedding run, one row per batch of chunks |
+| `query_embedding` | A search by text, one row per question |
+
+### What text is embedded
+
+A chunk on its own can be one short sentence, such as "This procedure is covered under
+Medicare.", which says nothing without the document it comes from. So the embedded text is
+built by `build_embedding_input` from three parts, joined by a blank line and with no
+labels:
+
+1. the document's title,
+2. the chunk's section title, when it has one,
+3. the chunk's text.
+
+The function is pure: the same chunk always gives the same text. The stored chunk `text`
+and its `text_sha256` are not changed, so a citation still points at the chunk text alone.
+
+`EMBEDDING_INPUT_VERSION` (`v1`) names this recipe. Vectors made from two recipes cannot be
+compared, so a change to the recipe needs a new version and a new embedding run. The
+version is stored with every vector and, as `prompt_version`, with every spend row.
+
+A question is embedded as it is, with no title in front of it.
+
+### The table
+
+`evidence_chunk_embeddings` has one row per chunk, model and input version. It is a public
+reference table: made from public policy text only, no `account_id`.
+
+| Column | Holds |
+|---|---|
+| `evidence_chunk_id` | The chunk the vector belongs to; removing a chunk removes its vectors |
+| `model_name` | The model that made the vector; never empty |
+| `input_version` | The recipe that built the embedded text; never empty |
+| `embedding` | The vector, type `vector(1536)`; the database refuses another size, a NaN and an infinity |
+| `created_at`, `updated_at` | As on every table |
+
+The three first columns are unique together. The table has no index besides that key's
+(see "How search ranks and filters").
+
+The vectors are in their own table, not in a column of `evidence_chunks`, for two reasons.
+The model name and the input version are stored with every vector, and a second model can
+be tried without touching the chunks.
+
+The size 1,536 is the constant `EMBEDDING_DIMENSIONS`. It is fixed in the column type, so a
+model with another vector size needs a new migration.
+
+### The embedding run
+
+`run_evidence_embedding` embeds every stored chunk that has no vector for the model and
+the input version:
+
+1. It takes a lock in the database (see below). If another run holds it, it stops here.
+2. It reads the chunks without a vector, ordered by source, `source_document_id` and
+   `chunk_index`, and builds the text of each.
+3. It sends them in batches of 100 texts (`EMBEDDING_BATCH_SIZE`), one gateway call per
+   batch.
+4. It checks each answer, stores the batch's vectors and commits, before the next batch
+   is sent.
+
+A chunk that already has a vector is skipped. So a second run embeds nothing and spends
+nothing, and a run that stopped half way is continued, not paid for twice.
+
+The run ends early, without a traceback, in these cases. Nothing of the failing batch is
+stored. The batches finished before are kept, with one exception that follows the table:
+
+| Case | Paid for |
+|---|---|
+| The call does not fit the monthly budget | no |
+| The provider cannot answer | no |
+| The provider refuses the request (a bad request, a wrong key) | no |
+| The answer has another number of vectors than texts | yes |
+| The answer comes from another model than the configured one | yes |
+| A vector is not 1,536 finite numbers | yes |
+| A chunk of the batch is gone at the write (the corpus was loaded during the run) | yes |
+| Another embedding run is in progress | no, nothing is called |
+
+The size of a vector is checked in the code before the write, so a wrong size gives a plain
+message and not a database error.
+
+The exception is the corpus loaded during the run. The lock below stops a second embedding
+run, not the loader. A load removes every chunk and, with the chunks, every vector, also
+the ones this run stored in its earlier batches. The run then counts the chunks and the
+vectors again, so its summary says what is in the database now.
+
+**Only one run at a time.** Two runs at once would both see the same chunks as not embedded
+and both pay for them. A run therefore takes a Postgres advisory lock (a named lock the
+database keeps for one connection; the key is `EMBEDDING_RUN_LOCK_KEY`) and does not wait
+for it: a second run started meanwhile stops before it calls the provider, spends nothing
+and the command exits with 1. The database drops the lock when the connection closes, so a
+run that is killed does not leave it behind.
+
+### How search ranks and filters
+
+`src/rag/retrieval.py` has two functions with the same filters and the same order:
+
+| Function | Takes | Model call |
+|---|---|---|
+| `search_evidence_by_vector(session, query_vector, *, model_name, ...)` | A vector | None. It only reads the database |
+| `search_evidence(session, gateway, query_text, *, model_name, ...)` | A question as text | One paid embedding call through the gateway, then the first function |
+
+**Ranking.** The measure is cosine distance, which compares the direction of two vectors
+and ignores their length. The score of a result is the cosine similarity, 1 minus the
+distance: 1 means the same direction, 0 unrelated. The closest chunk comes first. Chunks
+with the same score come back by `source`, then `source_document_id`, then `chunk_index`,
+so the order is repeatable. A fixed tie order is needed because 33 of the 1,120 chunks
+repeat the text of a chunk in another document.
+
+**No index.** The database compares the question with every stored vector. With 1,120 rows
+that is fast and the answer is exact; a vector index would make the answer approximate.
+
+**Filters.**
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `model_name` | none, required | Only vectors of this model and of `EMBEDDING_INPUT_VERSION` are compared |
+| `top_k` | 5 (`DEFAULT_TOP_K`) | The most chunks returned; at least 1 |
+| `source` | none | Keeps the chunks of one source |
+| `min_similarity` | none (off) | Drops the chunks below this score; between -1 and 1 |
+
+**What comes back when there is nothing.** An empty list means that no chunk passed the
+filters. It never means that the chunks were not embedded: that case raises an error, so
+"nothing was embedded" (or a new load removed the vectors) cannot be mistaken for "no
+evidence fits".
+
+| Error | Raised when |
+|---|---|
+| `EvidenceNotEmbeddedError` | No vector is stored for the model and input version. The search by text checks this before it spends; the search by vector checks it only when nothing came back, so a normal search costs one query |
+| `QueryEmbeddingError` | The answer to a question's embedding call came from another model, or is not 1,536 finite numbers with at least one that is not zero. The call is already paid for and recorded |
+| `ValueError` | `top_k` under 1, `min_similarity` outside -1 to 1, a question with no text, or a query vector that is not 1,536 finite numbers with at least one that is not zero. Nothing is spent |
+
+The gateway's own errors (3.8) leave `search_evidence` as they are.
+
+### What a result carries
+
+A result is an `EvidenceMatch`, a Pydantic model:
+
+| Field | Holds |
+|---|---|
+| `source`, `source_document_id`, `chunk_index`, `text_sha256` | The four values a citation names a chunk by (3.13) |
+| `section_number` | The number a reader would cite, such as `220.6.17` |
+| `document_title`, `section_title` | The titles; the section title may be missing |
+| `text` | The chunk's text; left out when a result is printed |
+| `similarity` | The score |
+
+A result never carries a row id, because a new load of the corpus gives every row a new id.
+
+### The search quality check
+
+No file says which determination answers which claim (3.13), so the search is checked with
+20 hand-made questions. Each names the one determination a good search brings back, by its
+section number. `python3 -m pipelines.check_evidence_search` asks each question through
+`search_evidence` with the top 5 and counts a hit when a chunk of the expected
+determination is among the results.
+
+- The share of hits is **recorded, not a gate**: the command exits with 0 whatever the
+  share is, and the build plan has no target for it.
+- The functions in `src/evaluation/search_quality.py` call no model. The command passes the
+  search in as a function, so the paid call stays in the command and a test passes a stub.
+- A question file that expects a section number no stored determination has is refused
+  before anything is spent. Otherwise a typing mistake would be counted as a failure of the
+  search.
+- Run the command again after a new embedding run with another model or another input
+  version, and after a load of a new corpus file.
+
+### Measured
+
+**The embedding run**, on 2026-10-11 on the local database, after migration 0011:
+
+| Number | Value |
+|---|---|
+| Chunks embedded | 1,120 of 1,120 |
+| Gateway calls | 12 (11 batches of 100 and one of 20) |
+| Input tokens the provider reported | 193,883 |
+| Cost | $0.003884 |
+| Time | 37 seconds |
+| Rows in `evidence_chunk_embeddings` | 1,120, each with 1,536 numbers, all `text-embedding-3-small` / `v1` |
+| Chunks without a vector | 0 |
+| A second run | embedded 0, spent $0, exit 0 |
+
+The bound worked out before the run was $0.0237 (the byte length of the texts times the
+price). The real cost was about a sixth of it. All 12 answers carried usage numbers.
+
+**The search quality check**, on 2026-10-11, the project's 20 questions, top 5:
+
+| Number | Value |
+|---|---|
+| Questions that found their determination | 19 of 20 (95.00%) |
+| Gateway calls | 20 |
+| Cost | $0.000020 |
+| Time | 21 seconds |
+
+The one miss is question 19: it expects section 160.18 and the search returned chunks of
+160.7, 160.7.1 and 160.2.
+
+After both runs the month-to-date spend was $0.705857 of the $3.00 cap.
+
+### Known limits
+
+About what the number shows:
+
+- The quality number comes from 20 hand-made questions. It shows that the search works at
+  all; it does not prove the search is good.
+- The questions were written from the titles of the determinations, and the title is part
+  of the embedded text. A hit means the right document came back, not that the returned
+  chunk answers the question.
+- The search shows that retrieval works. It does not show that the evidence fits real
+  claims: the limits of the corpus in 3.13 all still hold.
+
+About the vectors:
+
+- A load of the corpus removes every vector, because it removes the chunks. Until
+  `pipelines.embed_evidence_corpus` runs again, a search raises `EvidenceNotEmbeddedError`.
+  Each such run pays for all chunks again.
+- A vector that is all zeros and already stored would give a score that is not a number.
+  The embedding run refuses a vector that is not finite numbers but does not refuse one of
+  zeros. No stored vector is known to be one.
+- The batch of 100 texts is a cautious pick. The largest request the provider accepts was
+  not looked up.
+
+About the budget:
+
+- The lock stops two embedding runs. It does not cover the budget check itself: an
+  embedding run and another command that calls a model at the same moment (an extraction
+  run, a search) can both pass the check (3.8).
+- The highest possible cost of an embedding call is loose, about six times the real cost on
+  the run above. It only matters within one call of the cap.
+
+About the search:
+
+- Ties are ordered by `source_document_id` as text, so `10` comes before `9`. The order is
+  repeatable, which is all it is for.
+- The `source` filter has one source to filter today. That it leaves out the chunks of
+  another source is checked in the query that is sent, not on stored rows.
+- With no index every search reads every vector. That is right for 1,120 rows and would
+  need a second look for a much larger corpus.

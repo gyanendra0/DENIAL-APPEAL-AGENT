@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
+    EMBEDDING_DIMENSIONS,
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
@@ -24,6 +25,7 @@ from src.db.models import (
     DocumentExtraction,
     DocumentType,
     EvidenceChunk,
+    EvidenceChunkEmbedding,
     EvidenceDocument,
     EvidenceSource,
     ExchangeType,
@@ -1124,3 +1126,133 @@ def test_deleting_an_evidence_document_removes_its_chunks(session: Session) -> N
     session.flush()
 
     assert session.scalars(select(EvidenceChunk)).all() == []
+
+
+EMBEDDING_MODEL = "made-up-embedding-model"
+# Halves and quarters are stored exactly in the column's four-byte numbers.
+EMBEDDING = [0.5, -0.25] * (EMBEDDING_DIMENSIONS // 2)
+
+
+def _chunk_embedding(
+    session: Session, chunk: EvidenceChunk, **overrides: Any
+) -> EvidenceChunkEmbedding:
+    fields: dict[str, Any] = {
+        "evidence_chunk_id": chunk.id,
+        "model_name": EMBEDDING_MODEL,
+        "input_version": "v1",
+        "embedding": EMBEDDING,
+    }
+    embedding = EvidenceChunkEmbedding(**(fields | overrides))
+    session.add(embedding)
+    session.flush()
+    return embedding
+
+
+def test_stores_chunk_embedding_with_its_model_input_version_and_every_number(
+    session: Session,
+) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    embedding = _chunk_embedding(session, chunk)
+    session.expire_all()
+
+    stored = session.get(EvidenceChunkEmbedding, embedding.id)
+    assert stored is not None
+    assert stored.evidence_chunk_id == chunk.id
+    assert stored.model_name == EMBEDDING_MODEL
+    assert stored.input_version == "v1"
+    assert len(stored.embedding) == EMBEDDING_DIMENSIONS
+    assert list(stored.embedding) == EMBEDDING
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_rejects_second_embedding_for_one_chunk_model_and_input_version(session: Session) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    _chunk_embedding(session, chunk)
+
+    with pytest.raises(IntegrityError, match="uq_evidence_chunk_embeddings_chunk_model_version"):
+        _chunk_embedding(session, chunk)
+
+
+def test_allows_another_model_or_input_version_for_one_chunk(session: Session) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    _chunk_embedding(session, chunk)
+    _chunk_embedding(session, chunk, model_name="other-made-up-model")
+    _chunk_embedding(session, chunk, input_version="v2")
+
+    assert len(session.scalars(select(EvidenceChunkEmbedding)).all()) == 3
+
+
+@pytest.mark.parametrize(
+    ("column", "constraint"),
+    [
+        ("model_name", "ck_evidence_chunk_embeddings_model_name_not_empty"),
+        ("input_version", "ck_evidence_chunk_embeddings_input_version_not_empty"),
+    ],
+)
+def test_rejects_chunk_embedding_with_an_empty_model_name_or_input_version(
+    session: Session, column: str, constraint: str
+) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    bad: dict[str, Any] = {column: ""}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _chunk_embedding(session, chunk, **bad)
+
+
+@pytest.mark.parametrize("size", [3, EMBEDDING_DIMENSIONS - 1, EMBEDDING_DIMENSIONS + 1])
+def test_rejects_chunk_embedding_of_another_size(session: Session, size: int) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+
+    with pytest.raises(DataError, match=f"expected {EMBEDDING_DIMENSIONS} dimensions"):
+        _chunk_embedding(session, chunk, embedding=[0.5] * size)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_rejects_chunk_embedding_with_a_number_that_is_not_finite(
+    session: Session, value: float
+) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    numbers = [value] + EMBEDDING[1:]
+
+    with pytest.raises(DataError, match="not allowed in vector"):
+        _chunk_embedding(session, chunk, embedding=numbers)
+
+
+def test_rejects_chunk_embedding_without_a_vector(session: Session) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+
+    with pytest.raises(IntegrityError, match="embedding"):
+        _chunk_embedding(session, chunk, embedding=None)
+
+
+def test_rejects_chunk_embedding_without_its_chunk(session: Session) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session))
+    missing_id = chunk.id + 1
+
+    with pytest.raises(IntegrityError, match="fk_evidence_chunk_embeddings_chunk"):
+        _chunk_embedding(session, chunk, evidence_chunk_id=missing_id)
+
+
+def test_deleting_an_evidence_chunk_removes_its_embeddings(session: Session) -> None:
+    document = _evidence_document(session)
+    chunk = _evidence_chunk(session, document)
+    kept = _chunk_embedding(session, _evidence_chunk(session, document, 1))
+    _chunk_embedding(session, chunk)
+
+    session.delete(chunk)
+    session.flush()
+
+    assert [row.id for row in session.scalars(select(EvidenceChunkEmbedding))] == [kept.id]
+
+
+def test_deleting_an_evidence_document_removes_its_chunks_embeddings(session: Session) -> None:
+    # What a new load of the corpus does: the documents go, and with them chunks and vectors.
+    document = _evidence_document(session)
+    _chunk_embedding(session, _evidence_chunk(session, document))
+    _chunk_embedding(session, _evidence_chunk(session, document, 1))
+
+    session.delete(document)
+    session.flush()
+
+    assert session.scalars(select(EvidenceChunkEmbedding)).all() == []

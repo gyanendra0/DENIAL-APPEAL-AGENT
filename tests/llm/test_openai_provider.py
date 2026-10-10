@@ -8,12 +8,14 @@ import httpx2
 import openai
 import pytest
 from openai import OpenAI
+from openai.types import CreateEmbeddingResponse
 from openai.types.chat import ChatCompletion
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import LlmGatewaySettings
 from src.llm import openai_provider
 from src.llm.gateway import (
+    EmbeddingRequest,
     LlmGateway,
     LlmRequest,
     ProviderRejectedError,
@@ -23,8 +25,11 @@ from src.llm.openai_provider import (
     MESSAGE_FRAMING_TOKENS,
     NO_API_KEY,
     OpenAiChatProvider,
+    OpenAiEmbeddingProvider,
+    build_openai_embedding_provider,
     build_openai_gateway,
     build_openai_providers,
+    highest_embedding_tokens,
     highest_input_tokens,
 )
 
@@ -271,6 +276,8 @@ def _settings(**overrides: Any) -> LlmGatewaySettings:
         "llm_primary_api_key": MADE_UP_KEY,
         "llm_primary_input_usd_per_mtok": "0.15",
         "llm_primary_output_usd_per_mtok": "0.60",
+        "llm_embedding_model": "example-embedding-model",
+        "llm_embedding_usd_per_mtok": "0.02",
     }
     return LlmGatewaySettings(_env_file=None, **(fields | overrides))  # type: ignore[call-arg]
 
@@ -351,4 +358,159 @@ def test_builds_a_gateway_from_the_settings(client_arguments: list[dict[str, Any
     gateway = build_openai_gateway(_settings(), sessionmaker[Session]())
 
     assert isinstance(gateway, LlmGateway)
-    assert len(client_arguments) == 1
+    # One client for chat and one for embeddings, both on the primary's service.
+    assert len(client_arguments) == 2
+    assert client_arguments[0] == client_arguments[1]
+
+
+class FakeEmbeddings:
+    """Stands in for the SDK's `embeddings`: no network, it remembers its arguments."""
+
+    def __init__(self, outcome: CreateEmbeddingResponse | Exception) -> None:
+        self._outcome = outcome
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> CreateEmbeddingResponse:
+        self.calls.append(kwargs)
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+def _embedding_provider(
+    outcome: CreateEmbeddingResponse | Exception,
+) -> tuple[OpenAiEmbeddingProvider, FakeEmbeddings]:
+    embeddings = FakeEmbeddings(outcome)
+    client = cast(OpenAI, SimpleNamespace(embeddings=embeddings))
+    provider = OpenAiEmbeddingProvider(
+        client=client, model_name="example-embedding-model", usd_per_mtok=Decimal("0.02")
+    )
+    return provider, embeddings
+
+
+def _embedding_response(**overrides: Any) -> CreateEmbeddingResponse:
+    fields: dict[str, Any] = {
+        "object": "list",
+        "model": "example-embedding-model",
+        "data": [
+            {"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]},
+            {"object": "embedding", "index": 1, "embedding": [0.4, 0.5, 0.6]},
+        ],
+        "usage": {"prompt_tokens": 1000, "total_tokens": 1000},
+    }
+    # A copy without a check, so a test can leave `usage` out as a compatible service might.
+    return CreateEmbeddingResponse.model_validate(fields).model_copy(update=overrides)
+
+
+def _embedding_request(*texts: str) -> EmbeddingRequest:
+    return EmbeddingRequest(
+        texts=texts or ("abcd", "efghij"), input_version="v1", purpose="evidence_embedding"
+    )
+
+
+def test_highest_embedding_tokens_is_the_byte_length_of_all_the_texts() -> None:
+    assert highest_embedding_tokens(_embedding_request()) == 4 + 6
+
+
+def test_highest_embedding_tokens_counts_bytes_not_characters() -> None:
+    # "é" is one character and two bytes; a tokenizer may spend two tokens on it.
+    assert highest_embedding_tokens(_embedding_request("é", "ab")) == 2 + 2
+
+
+def test_highest_embedding_cost_prices_the_byte_bound_and_makes_no_request() -> None:
+    provider, embeddings = _embedding_provider(_embedding_response())
+
+    cost = provider.highest_cost(_embedding_request("a" * 500_000))
+
+    # 500,000 x 0.02 / 1,000,000
+    assert cost == Decimal("0.010000")
+    assert embeddings.calls == []
+
+
+def test_embedding_run_sends_the_model_and_the_texts_in_one_request() -> None:
+    provider, embeddings = _embedding_provider(_embedding_response())
+
+    provider.run(_embedding_request())
+
+    assert embeddings.calls == [
+        {
+            "model": "example-embedding-model",
+            "input": ["abcd", "efghij"],
+            "encoding_format": "float",
+        }
+    ]
+
+
+def test_embedding_run_returns_the_vectors_and_prices_the_reported_tokens() -> None:
+    provider, _ = _embedding_provider(_embedding_response())
+
+    answer = provider.run(_embedding_request())
+
+    assert answer.vectors == ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6))
+    assert answer.input_tokens == 1000
+    # 1000 x 0.02 / 1,000,000
+    assert answer.cost_usd == Decimal("0.000020")
+
+
+def test_embedding_run_puts_the_vectors_in_the_order_of_the_texts() -> None:
+    shuffled = _embedding_response()
+    shuffled.data.reverse()
+    provider, _ = _embedding_provider(shuffled)
+
+    answer = provider.run(_embedding_request())
+
+    assert answer.vectors == ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6))
+
+
+def test_embedding_run_records_the_highest_possible_count_when_none_is_reported() -> None:
+    provider, _ = _embedding_provider(_embedding_response(usage=None))
+    request = _embedding_request("a" * 500_000)
+
+    answer = provider.run(request)
+
+    assert answer.input_tokens == 500_000
+    assert answer.cost_usd == provider.highest_cost(request) == Decimal("0.010000")
+
+
+def test_embedding_run_reports_a_passing_failure() -> None:
+    error = _status_error(openai.RateLimitError, 429)
+    provider, _ = _embedding_provider(error)
+
+    with pytest.raises(ProviderUnavailableError, match="RateLimitError") as raised:
+        provider.run(_embedding_request())
+
+    assert raised.value.__cause__ is error
+    assert "made-up failure" not in str(raised.value)
+
+
+def test_embedding_run_reports_a_refused_request_without_what_the_service_answered() -> None:
+    # The SDK puts the whole response body into its message; a body may quote a text.
+    body = {"error": {"message": "the input 'made-up policy sentence' is too long"}}
+    response = httpx2.Response(400, request=HTTP_REQUEST, json=body)
+    error = openai.BadRequestError(f"Error code: 400 - {body}", response=response, body=body)
+    provider, _ = _embedding_provider(error)
+
+    with pytest.raises(ProviderRejectedError) as raised:
+        provider.run(_embedding_request())
+
+    assert str(raised.value) == "BadRequestError (status 400)"
+    assert "made-up policy sentence" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_builds_the_embedding_provider_on_the_primarys_service(
+    client_arguments: list[dict[str, Any]],
+) -> None:
+    provider = build_openai_embedding_provider(_settings())
+
+    assert provider.model_name == "example-embedding-model"
+    # No retry inside the SDK: each retry would be a paid request with no budget check.
+    assert client_arguments == [
+        {
+            "api_key": MADE_UP_KEY,
+            "base_url": "https://primary.example.test/v1",
+            "max_retries": 0,
+            "timeout": 30.0,
+        }
+    ]
+    # 10 x 0.02 / 1,000,000 = 0.0000002, rounded up to a millionth.
+    assert provider.highest_cost(_embedding_request()) == Decimal("0.000001")

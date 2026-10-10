@@ -14,6 +14,11 @@ from src.db.session import create_session_factory, session_scope
 from src.llm import gateway as gateway_module
 from src.llm.budget import month_to_date_spend
 from src.llm.gateway import (
+    EmbeddingAnswer,
+    EmbeddingAnswerError,
+    EmbeddingNotConfiguredError,
+    EmbeddingRequest,
+    EmbeddingResult,
     LlmBudgetExceededError,
     LlmGateway,
     LlmRequest,
@@ -439,3 +444,295 @@ def test_a_request_carries_no_response_schema_unless_one_is_given() -> None:
 
     assert _request().response_schema is None
     assert _request(response_schema=schema).response_schema == schema
+
+
+EMBEDDED_TEXT = "A made-up policy sentence about a made-up service."
+OTHER_EMBEDDED_TEXT = "A second made-up policy sentence."
+VECTORS = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6))
+
+
+class StubEmbedder:
+    """An embedding provider that answers from memory and remembers how often it was called."""
+
+    def __init__(
+        self,
+        model_name: str = "example-embedding-model",
+        *,
+        highest_cost: str = "0.01",
+        cost: str = "0.000004",
+        vectors: tuple[tuple[float, ...], ...] = VECTORS,
+        error: Exception | None = None,
+    ) -> None:
+        self._model_name = model_name
+        self._highest_cost = Decimal(highest_cost)
+        self._cost = Decimal(cost)
+        self._vectors = vectors
+        self._error = error
+        self.requests: list[EmbeddingRequest] = []
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def highest_cost(self, request: EmbeddingRequest) -> Decimal:
+        return self._highest_cost
+
+    def run(self, request: EmbeddingRequest) -> EmbeddingAnswer:
+        self.requests.append(request)
+        if self._error is not None:
+            raise self._error
+        return EmbeddingAnswer(vectors=self._vectors, input_tokens=21, cost_usd=self._cost)
+
+
+def _embedding_request(**overrides: Any) -> EmbeddingRequest:
+    fields: dict[str, Any] = {
+        "texts": (EMBEDDED_TEXT, OTHER_EMBEDDED_TEXT),
+        "input_version": "v1",
+        "purpose": PURPOSE,
+    }
+    return EmbeddingRequest(**(fields | overrides))
+
+
+def _embedding_gateway(
+    factory: sessionmaker[Session],
+    embedder: StubEmbedder | None,
+    fallback: StubProvider | None = None,
+) -> tuple[LlmGateway, StubProvider]:
+    primary = StubProvider("example-small-model")
+    gateway = LlmGateway(
+        primary=primary,
+        fallback=fallback,
+        session_factory=factory,
+        cap_usd=CAP,
+        clock=lambda: NOW,
+        embedder=embedder,
+    )
+    return gateway, primary
+
+
+def test_embed_returns_one_vector_per_text_and_records_one_call(
+    session_factory: sessionmaker[Session],
+) -> None:
+    embedder = StubEmbedder()
+    gateway, _ = _embedding_gateway(session_factory, embedder)
+
+    result = gateway.embed(_embedding_request())
+
+    assert result == EmbeddingResult(
+        vectors=VECTORS,
+        model_name="example-embedding-model",
+        input_version="v1",
+        input_tokens=21,
+        cost_usd=Decimal("0.000004"),
+    )
+    assert len(embedder.requests) == 1
+    (stored,) = _new_calls(session_factory)
+    assert stored.provider is LlmProvider.PRIMARY
+    assert stored.model_name == "example-embedding-model"
+    assert stored.prompt_version == "v1"
+    assert stored.purpose == PURPOSE
+    assert stored.input_tokens == 21
+    assert stored.output_tokens == 0
+    assert stored.cost_usd == Decimal("0.000004")
+
+
+def test_embed_over_budget_calls_nothing_and_records_nothing(
+    session_factory: sessionmaker[Session],
+) -> None:
+    _spent_in_march_2031(session_factory, "3.00")
+    embedder = StubEmbedder()
+    gateway, _ = _embedding_gateway(session_factory, embedder)
+
+    with pytest.raises(LlmBudgetExceededError, match="embedding call does not fit"):
+        gateway.embed(_embedding_request())
+
+    assert embedder.requests == []
+    assert _new_calls(session_factory) == []
+
+
+def test_embed_that_lands_exactly_on_the_cap_is_made(
+    session_factory: sessionmaker[Session],
+) -> None:
+    _spent_in_march_2031(session_factory, "2.99")
+    embedder = StubEmbedder(highest_cost="0.01")
+    gateway, _ = _embedding_gateway(session_factory, embedder)
+
+    gateway.embed(_embedding_request())
+
+    assert len(embedder.requests) == 1
+
+
+def test_embed_one_millionth_of_a_dollar_over_the_cap_is_refused(
+    session_factory: sessionmaker[Session],
+) -> None:
+    _spent_in_march_2031(session_factory, "2.99")
+    embedder = StubEmbedder(highest_cost="0.010001")
+    gateway, _ = _embedding_gateway(session_factory, embedder)
+
+    with pytest.raises(LlmBudgetExceededError):
+        gateway.embed(_embedding_request())
+
+    assert embedder.requests == []
+
+
+def test_embed_with_an_unavailable_provider_is_an_error_and_no_fallback_is_tried(
+    session_factory: sessionmaker[Session],
+) -> None:
+    unavailable = ProviderUnavailableError("RateLimitError")
+    embedder = StubEmbedder(error=unavailable)
+    fallback = StubProvider("example-open-model")
+    gateway, primary = _embedding_gateway(session_factory, embedder, fallback)
+
+    with pytest.raises(LlmUnavailableError, match="embedding provider is unavailable") as raised:
+        gateway.embed(_embedding_request())
+
+    assert raised.value.__cause__ is unavailable
+    assert len(embedder.requests) == 1
+    # The chat providers make text, not vectors: neither is asked.
+    assert primary.requests == []
+    assert fallback.requests == []
+    assert _new_calls(session_factory) == []
+
+
+def test_embed_raises_a_refused_request_as_it_is(
+    session_factory: sessionmaker[Session],
+) -> None:
+    refused = ProviderRejectedError("BadRequestError (status 400)")
+    gateway, _ = _embedding_gateway(session_factory, StubEmbedder(error=refused))
+
+    with pytest.raises(ProviderRejectedError) as raised:
+        gateway.embed(_embedding_request())
+
+    assert raised.value is refused
+    assert _new_calls(session_factory) == []
+
+
+def test_embed_records_the_spend_before_refusing_a_wrong_number_of_vectors(
+    session_factory: sessionmaker[Session],
+) -> None:
+    embedder = StubEmbedder(vectors=((0.1, 0.2, 0.3),))
+    gateway, _ = _embedding_gateway(session_factory, embedder)
+
+    with pytest.raises(EmbeddingAnswerError, match="returned 1 vectors for 2 texts"):
+        gateway.embed(_embedding_request())
+
+    # The call was paid for, so its row stays.
+    (stored,) = _new_calls(session_factory)
+    assert stored.cost_usd == Decimal("0.000004")
+
+
+def test_embed_on_a_gateway_without_an_embedding_provider_is_an_error(
+    session_factory: sessionmaker[Session],
+) -> None:
+    gateway, primary = _embedding_gateway(session_factory, None)
+
+    with pytest.raises(EmbeddingNotConfiguredError, match="no embedding provider"):
+        gateway.embed(_embedding_request())
+
+    assert primary.requests == []
+    assert _new_calls(session_factory) == []
+
+
+def test_a_recorded_embedding_counts_against_the_next_call(
+    session_factory: sessionmaker[Session],
+) -> None:
+    # The real clock, because a recorded row is dated by the database.
+    with session_scope(session_factory) as reader:
+        spent = month_to_date_spend(reader, datetime.now(UTC))
+    embedder = StubEmbedder(highest_cost="0.01", cost="0.01")
+    gateway = LlmGateway(
+        primary=StubProvider("example-small-model"),
+        fallback=None,
+        session_factory=session_factory,
+        cap_usd=spent + Decimal("0.01") + ONE_MILLIONTH,
+        embedder=embedder,
+    )
+
+    gateway.embed(_embedding_request())
+    with pytest.raises(LlmBudgetExceededError):
+        gateway.embed(_embedding_request())
+
+    assert len(embedder.requests) == 1
+
+
+def test_one_log_line_per_embedding_call_without_the_texts(
+    session_factory: sessionmaker[Session], caplog: pytest.LogCaptureFixture
+) -> None:
+    gateway, _ = _embedding_gateway(session_factory, StubEmbedder())
+
+    with caplog.at_level(logging.INFO, logger="src.llm.gateway"):
+        gateway.embed(_embedding_request())
+
+    (line,) = [r.getMessage() for r in caplog.records]
+    assert line == (
+        "llm embedding: model=example-embedding-model purpose=gateway-test texts=2 "
+        "input_tokens=21 cost_usd=0.000004"
+    )
+    assert EMBEDDED_TEXT not in caplog.text
+
+
+def test_an_answered_embedding_that_cannot_be_recorded_is_logged_and_the_error_raised(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def failing_record(*_: object) -> None:
+        raise RuntimeError("made-up database failure")
+
+    monkeypatch.setattr(gateway_module, "record_llm_call", failing_record)
+    gateway, _ = _embedding_gateway(session_factory, StubEmbedder())
+
+    with (
+        caplog.at_level(logging.INFO, logger="src.llm.gateway"),
+        pytest.raises(RuntimeError, match="made-up database failure"),
+    ):
+        gateway.embed(_embedding_request())
+
+    (line,) = [r.getMessage() for r in caplog.records]
+    assert line == (
+        "llm embedding answered but not recorded: model=example-embedding-model "
+        "purpose=gateway-test texts=2 input_tokens=21 cost_usd=0.000004"
+    )
+    assert caplog.records[0].levelno == logging.ERROR
+    assert EMBEDDED_TEXT not in caplog.text
+
+
+def test_printing_an_embedding_request_shows_no_text(
+    session_factory: sessionmaker[Session],
+) -> None:
+    request = _embedding_request()
+
+    for printed in (repr(request), str(request)):
+        assert EMBEDDED_TEXT not in printed
+        assert OTHER_EMBEDDED_TEXT not in printed
+    assert "purpose='gateway-test'" in repr(request)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("texts", ()),
+        ("texts", (EMBEDDED_TEXT, "")),
+        ("input_version", ""),
+        ("input_version", "v" * 41),
+        ("purpose", ""),
+        ("purpose", "p" * 41),
+    ],
+)
+def test_embedding_request_rejects_a_value_the_gateway_cannot_use(field: str, value: Any) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _embedding_request(**{field: value})
+
+
+@pytest.mark.parametrize("cost", ["0.0000001", "1000000.000000", "-0.000001"])
+def test_embedding_answer_rejects_a_cost_the_spend_table_cannot_hold(cost: str) -> None:
+    with pytest.raises(ValidationError, match="cost_usd"):
+        EmbeddingAnswer(vectors=VECTORS, input_tokens=21, cost_usd=Decimal(cost))
+
+
+@pytest.mark.parametrize("model_name", ["", "m" * 101])
+def test_rejects_an_embedding_model_name_the_spend_table_cannot_hold(
+    session_factory: sessionmaker[Session], model_name: str
+) -> None:
+    with pytest.raises(ValueError, match="1 to 100 characters"):
+        _embedding_gateway(session_factory, StubEmbedder(model_name))

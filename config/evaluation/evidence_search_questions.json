@@ -1,0 +1,82 @@
+[
+  {
+    "question": "When does Medicare pay for oxygen equipment used at home by a patient with a long-term lung disease?",
+    "expected_section_number": "240.2"
+  },
+  {
+    "question": "Is a breathing machine worn at night covered for a patient whose airway closes during sleep?",
+    "expected_section_number": "240.4"
+  },
+  {
+    "question": "Is weight-loss surgery such as a gastric bypass covered for a severely obese patient with diabetes?",
+    "expected_section_number": "100.1"
+  },
+  {
+    "question": "Which patients qualify for an implanted device that shocks the heart out of a dangerous rhythm?",
+    "expected_section_number": "20.4"
+  },
+  {
+    "question": "Is replacing a narrowed aortic valve through a catheter instead of open-heart surgery covered?",
+    "expected_section_number": "20.32"
+  },
+  {
+    "question": "Is an implanted hearing device covered for an adult with severe hearing loss who gets little help from hearing aids?",
+    "expected_section_number": "50.3"
+  },
+  {
+    "question": "Is a scan that measures bone strength covered for a woman at risk of osteoporosis?",
+    "expected_section_number": "150.3"
+  },
+  {
+    "question": "Is a cholesterol blood test covered for a patient who takes a statin?",
+    "expected_section_number": "190.23"
+  },
+  {
+    "question": "When is a blood test of thyroid hormone levels reasonable and necessary?",
+    "expected_section_number": "190.22"
+  },
+  {
+    "question": "Is a PSA blood test covered to follow a man already treated for prostate cancer?",
+    "expected_section_number": "190.31"
+  },
+  {
+    "question": "Which tests are covered to check a person with no symptoms for colon cancer?",
+    "expected_section_number": "210.3"
+  },
+  {
+    "question": "Is a yearly low-dose chest scan covered for a long-time heavy smoker with no symptoms?",
+    "expected_section_number": "210.14"
+  },
+  {
+    "question": "Is an MRI scan covered for a patient who has an implanted pacemaker?",
+    "expected_section_number": "220.2"
+  },
+  {
+    "question": "Is a PET scan covered to see how far a cancer has spread before treatment starts?",
+    "expected_section_number": "220.6.17"
+  },
+  {
+    "question": "Is needle therapy covered for back pain that has lasted more than twelve weeks?",
+    "expected_section_number": "30.3.3"
+  },
+  {
+    "question": "Is treatment in a pressurised oxygen chamber covered for a diabetic foot wound that will not heal?",
+    "expected_section_number": "20.29"
+  },
+  {
+    "question": "When is a power wheelchair or scooter covered for a patient who cannot move around the home?",
+    "expected_section_number": "280.3"
+  },
+  {
+    "question": "Is testing a hair sample to find a mineral shortage covered?",
+    "expected_section_number": "190.6"
+  },
+  {
+    "question": "Is a nerve stimulator implanted in the neck covered for epilepsy that medicine does not control?",
+    "expected_section_number": "160.18"
+  },
+  {
+    "question": "Is treatment with a patient's own genetically modified immune cells covered for a blood cancer?",
+    "expected_section_number": "110.24"
+  }
+]

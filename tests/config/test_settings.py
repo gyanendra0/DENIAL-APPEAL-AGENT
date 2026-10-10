@@ -133,6 +133,8 @@ REQUIRED_GATEWAY_ENV = {
     "LLM_PRIMARY_API_KEY": API_KEY,
     "LLM_PRIMARY_INPUT_USD_PER_MTOK": "1.00",
     "LLM_PRIMARY_OUTPUT_USD_PER_MTOK": "5.00",
+    "LLM_EMBEDDING_MODEL": "made-up-embedding-model",
+    "LLM_EMBEDDING_USD_PER_MTOK": "0.02",
 }
 OPTIONAL_GATEWAY_KEYS = (
     "LLM_FALLBACK_BASE_URL",
@@ -163,6 +165,8 @@ def test_gateway_settings_read_the_required_values(gateway_env: pytest.MonkeyPat
     assert settings.llm_primary_api_key.get_secret_value() == API_KEY
     assert settings.llm_primary_input_usd_per_mtok == Decimal("1.00")
     assert settings.llm_primary_output_usd_per_mtok == Decimal("5.00")
+    assert settings.llm_embedding_model == "made-up-embedding-model"
+    assert settings.llm_embedding_usd_per_mtok == Decimal("0.02")
 
 
 def test_gateway_money_values_are_exact_decimals(gateway_env: pytest.MonkeyPatch) -> None:
@@ -195,7 +199,7 @@ def test_empty_required_gateway_key_counts_as_missing(
         load_llm_gateway_settings(env_file=None)
 
 
-@pytest.mark.parametrize("key", ["LLM_PRIMARY_API_KEY", "LLM_PRIMARY_MODEL"])
+@pytest.mark.parametrize("key", ["LLM_PRIMARY_API_KEY", "LLM_PRIMARY_MODEL", "LLM_EMBEDDING_MODEL"])
 def test_rejects_a_blank_key_or_model_name(gateway_env: pytest.MonkeyPatch, key: str) -> None:
     gateway_env.setenv(key, "   ")
 
@@ -209,6 +213,7 @@ def test_rejects_a_blank_key_or_model_name(gateway_env: pytest.MonkeyPatch, key:
         "LLM_MONTHLY_BUDGET_USD",
         "LLM_PRIMARY_INPUT_USD_PER_MTOK",
         "LLM_PRIMARY_OUTPUT_USD_PER_MTOK",
+        "LLM_EMBEDDING_USD_PER_MTOK",
         "LLM_FALLBACK_INPUT_USD_PER_MTOK",
         "LLM_FALLBACK_OUTPUT_USD_PER_MTOK",
     ],

@@ -20,6 +20,7 @@ from tests.rag.helpers import (
     VECTOR_STEP,
     StubEmbedder,
     add_document,
+    delete_chunk,
     embedding_calls,
     embedding_gateway,
     evidence_tables,
@@ -322,6 +323,26 @@ def test_vectors_of_another_model_than_the_one_asked_for_are_not_stored(
     )
     assert len(embedder.requests) == 1
     assert stored_vectors(factory) == []
+
+
+def test_a_chunk_removed_during_the_run_stops_it_and_stores_nothing_of_that_batch(
+    factory: sessionmaker[Session],
+) -> None:
+    chunk_ids = _five_chunks(factory)
+    # The fourth chunk goes while the second batch (chunks three and four) is at the provider.
+    embedder = StubEmbedder(before_answer={2: lambda: delete_chunk(factory, chunk_ids[3])})
+
+    summary = _run(factory, embedder)
+
+    assert summary == EmbeddingRunSummary(
+        chunks=5,
+        already_embedded=0,
+        embedded=2,
+        stop_reason="the evidence chunks changed during the run (the call was paid for)",
+    )
+    assert len(embedder.requests) == 2  # the third batch was not tried
+    assert len(embedding_calls(factory)) == 2  # the second call was paid for and is recorded
+    assert [chunk_id for chunk_id, *_ in stored_vectors(factory)] == chunk_ids[:2]
 
 
 def test_no_stored_chunk_means_no_call(factory: sessionmaker[Session]) -> None:

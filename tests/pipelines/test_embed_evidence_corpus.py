@@ -23,6 +23,7 @@ from tests.rag.helpers import (
     MODEL,
     StubEmbedder,
     add_document,
+    delete_chunk,
     embedding_gateway,
     evidence_tables,
     run_lock_held,
@@ -90,9 +91,9 @@ def stubs(factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch) -> St
     return stubs
 
 
-def _store_chunks(factory: sessionmaker[Session], chunk_count: int) -> None:
+def _store_chunks(factory: sessionmaker[Session], chunk_count: int) -> list[int]:
     with session_scope(factory) as session:
-        add_document(session, "9001", chunk_count)
+        return add_document(session, "9001", chunk_count)
 
 
 def _without_time(output: str) -> str:
@@ -181,6 +182,23 @@ def test_a_run_that_stops_early_exits_1_with_a_plain_message(
         " Run the same command again to continue.\n"
     )
     assert "Traceback" not in captured.err
+
+
+def test_chunks_removed_during_the_run_exit_1_with_a_plain_message(
+    factory: sessionmaker[Session], stubs: Stubs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chunk_ids = _store_chunks(factory, 150)
+    stubs.embedder = StubEmbedder(before_answer={2: lambda: delete_chunk(factory, chunk_ids[-1])})
+
+    exit_code = main([])
+
+    assert exit_code == 1
+    assert len(stored_vectors(factory)) == 100
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "stopped early: the evidence chunks changed during the run (the call was paid for);"
+        " 50 chunks have no vector. Run the same command again to continue.\n"
+    )
 
 
 def test_a_failed_second_batch_keeps_the_first(

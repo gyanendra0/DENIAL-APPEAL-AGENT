@@ -5,7 +5,7 @@ afterwards. No real model is called and no real policy text is used.
 """
 
 import hashlib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
@@ -53,6 +53,7 @@ class StubEmbedder:
         errors: Mapping[int, Exception] | None = None,
         filler: Mapping[int, float] | None = None,
         short_by: Mapping[int, int] | None = None,
+        before_answer: Mapping[int, Callable[[], None]] | None = None,
     ) -> None:
         self._model_name = model_name
         self._highest_cost = Decimal(highest_cost)
@@ -61,6 +62,8 @@ class StubEmbedder:
         self._errors = errors or {}
         self._filler = filler or {}
         self._short_by = short_by or {}
+        # Run while the call is "at the provider", to change the database under the caller.
+        self._before_answer = before_answer or {}
         self._answered = 0
         self.requests: list[EmbeddingRequest] = []
 
@@ -76,6 +79,8 @@ class StubEmbedder:
         call = len(self.requests)
         if call in self._errors:
             raise self._errors[call]
+        if call in self._before_answer:
+            self._before_answer[call]()
         filler = self._filler.get(call, 0.5)
         vectors = []
         for _ in request.texts[: len(request.texts) - self._short_by.get(call, 0)]:
@@ -129,6 +134,12 @@ def add_document(
     session.add_all(chunks)
     session.flush()
     return [chunk.id for chunk in chunks]
+
+
+def delete_chunk(factory: sessionmaker[Session], chunk_id: int) -> None:
+    """Remove one chunk, and with it its vector, as a new load of the corpus would."""
+    with session_scope(factory) as session:
+        session.execute(delete(EvidenceChunk).where(EvidenceChunk.id == chunk_id))
 
 
 @contextmanager

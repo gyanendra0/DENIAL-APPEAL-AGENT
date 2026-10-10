@@ -1365,6 +1365,7 @@ kept, and nothing of the failing batch is stored:
 | The answer has another number of vectors than texts | yes |
 | The answer comes from another model than the configured one | yes |
 | A vector is not 1,536 finite numbers | yes |
+| A chunk of the batch is gone at the write (the corpus was loaded during the run) | yes |
 | Another embedding run is in progress | no, nothing is called |
 
 The size of a vector is checked in the code before the write, so a wrong size gives a plain

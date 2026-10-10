@@ -15,6 +15,7 @@ from contextlib import contextmanager
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import exists, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import (
@@ -43,6 +44,7 @@ BUDGET_REACHED = "the monthly LLM budget is reached"
 NO_PROVIDER = "the embedding provider could not answer"
 REQUEST_REFUSED = "the provider refused the request"
 ANSWER_NOT_USABLE = "the answer cannot be stored (the call was paid for)"
+CHUNKS_CHANGED = "the evidence chunks changed during the run (the call was paid for)"
 RUN_IN_PROGRESS = "another embedding run is in progress"
 # The number of the advisory lock a run holds in the database while it works. Any fixed number
 # that nothing else in the project uses.
@@ -82,8 +84,10 @@ def run_evidence_embedding(
     own, so a run that stops keeps what it finished. The run ends early, without an error,
     when the budget is reached, the provider cannot answer or refuses the request, or an
     answer cannot be stored: another model than `model_name`, another number of vectors than
-    texts, or a vector that is not `EMBEDDING_DIMENSIONS` finite numbers. Nothing of such a
-    batch is stored. It also ends early, before any call, when another run is in progress.
+    texts, or a vector that is not `EMBEDDING_DIMENSIONS` finite numbers. It ends early in the
+    same way when a chunk of the batch is gone at the write, as after a load of the corpus
+    during the run. Nothing of such a batch is stored. It also ends early, before any call,
+    when another run is in progress.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be 1 or more")
@@ -158,16 +162,22 @@ def _embed_pending(
         if problem is not None:
             stop_reason = f"{ANSWER_NOT_USABLE}: {problem}"
             break
-        with session_scope(session_factory) as session:
-            session.add_all(
-                EvidenceChunkEmbedding(
-                    evidence_chunk_id=chunk_id,
-                    model_name=model_name,
-                    input_version=EMBEDDING_INPUT_VERSION,
-                    embedding=list(vector),
+        try:
+            with session_scope(session_factory) as session:
+                session.add_all(
+                    EvidenceChunkEmbedding(
+                        evidence_chunk_id=chunk_id,
+                        model_name=model_name,
+                        input_version=EMBEDDING_INPUT_VERSION,
+                        embedding=list(vector),
+                    )
+                    for (chunk_id, _), vector in zip(batch, result.vectors, strict=True)
                 )
-                for (chunk_id, _), vector in zip(batch, result.vectors, strict=True)
-            )
+        except IntegrityError:
+            # The lock stops a second run, not the corpus loader: a load during the run removes
+            # the chunks read above. The error's text would hold the vectors, so it is dropped.
+            stop_reason = CHUNKS_CHANGED
+            break
         embedded += len(batch)
     return EmbeddingRunSummary(
         chunks=chunks,

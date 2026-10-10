@@ -1,0 +1,10 @@
+NCD_id,NCD_vrsn_num,natl_cvrg_type,cvrg_lvl_cd,NCD_mnl_sect,NCD_mnl_sect_title,NCD_efctv_dt,NCD_impltn_dt,NCD_trmntn_dt,itm_srvc_desc,indctn_lmtn,xref_txt,othr_txt,trnsmtl_num,trnsmtl_issnc_dt,trnsmtl_url,chg_rqst_num,pblctn_cd,rev_hstry,under_rvw,creatd_tmstmp,last_updt_tmstmp,last_clrnc_tmstmp,NCD_lab,ncd_keyword,NCD_AMA
+1,3,True,2,10.1,Example Blanket Therapy,2024-05-27 00:00:00,2024-05-27 00:00:00,,<p> Blanket therapy is a made-up service that exists only in tests.</p>,"<p><strong>B. Nationally Covered Indications</strong></p>
+
+<p>The made-up service is covered when
+both of these apply:</p>
+<ul><li>the first made-up condition</li><li>the second made-up condition</li></ul>","See &sect;<a href=""https://example.org/ncd?id=2"">10.2</a> CROSS-REFERENCE-MARKER",<p><strong>OTHER-TEXT-MARKER</strong></p>,12345,,,,25,"<p>01/2024 - REVISION-HISTORY-MARKER, a made-up code Z9999 and its descriptor.</p>",False,2002-11-27 12:10:46,2024-05-01 10:00:00,2024-05-01 10:00:00.610000,False,"KEYWORD-MARKER, warm blanket",False
+2,1,True,2,10.2,Example Device Reference List,1966-01-01 00:00:00,,,,<table><tr><th>Item</th><th>Decision</th></tr><tr><td>Made-up device A</td><td>Covered</td></tr><tr><td>Made-up device B</td><td>Deny &amp; review</td></tr></table>,,,,,,,25,,False,2002-11-27 12:10:46,2024-05-01 10:00:00,2024-05-01 10:00:00.610000,False,,False
+3,1,True,2,20.3.1,Example Old Service - RETIRED,2023-04-10 00:00:00,,2014-12-18 00:00:00,,<p>This made-up section was retired. RETIRED-NOTICE-MARKER</p>,,,,,,,25,,False,2002-11-27 12:10:46,2024-05-01 10:00:00,2024-05-01 10:00:00.610000,False,,False
+5,1,True,2,30.4,Example  Description Only,1966-01-01 00:00:00,,,<p>A made-up service whose only text is its description.</p>,&#160;,,,,,,,25,,False,2002-11-27 12:10:46,2024-05-01 10:00:00,2024-05-01 10:00:00.610000,False,,False
+7,11,True,2,220.6.17,Example Imaging for Made-Up Conditions,2026-06-08 00:00:00,,,<p>A. General</p><p>Made-up imaging &ge; 2 times a year.</p>,Loose text outside any tag.<br>A second line after a break.,,,,,,,25,,False,2002-11-27 12:10:46,2024-05-01 10:00:00,2024-05-01 10:00:00.610000,False,,False

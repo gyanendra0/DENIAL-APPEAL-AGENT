@@ -408,7 +408,8 @@ Text the appeal letter can cite. The kinds of text the corpus is meant to hold i
 - Appeal-rights and timeline guidance published by regulators.
 
 One source is loaded so far: the CMS national coverage determinations (2.3.1). The text is
-stored cut into chunks. It is not embedded yet; that comes with retrieval. **A generated
+stored cut into chunks, and every chunk has an embedding, so the chunks can be searched by
+meaning ([03-architecture.md 3.14](03-architecture.md#314-evidence-retrieval)). **A generated
 citation is only allowed if it points at a chunk that was actually retrieved.**
 
 ### 2.3.1 Loaded source: CMS national coverage determinations
@@ -502,6 +503,11 @@ Exit code 0 means loaded, 1 means the file was rejected (the problems are listed
 problem with its row number), 2 means a bad argument or a path that is not a file. It
 calls no model and spends no money. Running it again on the same file is safe and gives the
 same chunks. It takes about a second.
+
+**After every load, embed again.** The load removes the stored chunks, and the embeddings
+of a chunk are removed with it. The search then has nothing to search until
+`python3 -m pipelines.embed_evidence_corpus` has run (2.9, "Embedding the evidence
+corpus"). That run pays for every chunk again; for this file it was $0.003884.
 
 **Measured.** Loaded on 2026-10-10 from the file downloaded that day:
 
@@ -1072,7 +1078,7 @@ reproducible by running a loader script.
 
 The policy corpus is not a set of files under `evidence/` either: the downloaded file is
 kept under `raw/evidence/`, and its chunks are stored in the `evidence_documents` and
-`evidence_chunks` tables (2.3.1).
+`evidence_chunks` tables (2.3.1). Their embeddings are stored in `evidence_chunk_embeddings`.
 
 The generated documents (denial letters, clinical notes and prior-authorisation records) are
 not files under `documents/`: they are stored as text in the `generated_documents` table
@@ -1361,3 +1367,84 @@ It does not depend on any command above and none of them depends on it: it reads
 and writes only `evidence_documents` and `evidence_chunks`. The download page, the terms to
 accept there, the gates, the exit codes and the measured numbers are in
 [2.3.1](#231-loaded-source-cms-national-coverage-determinations).
+
+### Embedding the evidence corpus
+
+The next command gives every stored chunk an embedding, the list of numbers the search
+compares ([03-architecture.md 3.14](03-architecture.md#314-evidence-retrieval)):
+
+```text
+python3 -m pipelines.embed_evidence_corpus
+```
+
+It takes no argument. It needs the evidence corpus loaded, the database at the newest
+migration and the `LLM_` keys set, among them `LLM_EMBEDDING_MODEL` and
+`LLM_EMBEDDING_USD_PER_MTOK` (03-architecture.md 3.8).
+
+**It spends money**: one embedding call per 100 chunks that have no embedding yet, each
+through the gateway and its budget check. The 1,120 chunks cost $0.003884 and took 37
+seconds. A chunk that already has an embedding for the configured model is skipped, so a
+second run spends nothing and a run that stopped can simply be started again.
+
+The output of the first run, on 2026-10-11:
+
+```text
+embedded 1120 of 1120 chunks (model text-embedding-3-small, input version v1)
+  already embedded before this run: 0
+  time: 37 s
+  spent $0.003884 in this run; $0.705837 of the $3.00 monthly budget is used
+```
+
+A second run prints `embedded 0 of 1120 chunks`, `already embedded before this run: 1120`
+and `spent $0.000000 in this run`.
+
+Exit code 0 means every chunk has an embedding. Exit code 2 means a bad argument. Exit
+code 1 means one of these, each with a plain message and no traceback:
+
+- no chunk is stored (run `pipelines.load_evidence_corpus` first);
+- the run stopped early: the monthly budget is reached, the provider cannot answer or
+  refuses the request, or an answer cannot be stored. The batches finished before are
+  kept, and the message says how many chunks are left;
+- another embedding run is in progress. Only one works at a time; the second one calls
+  nothing and spends nothing.
+
+Run it again after every load of the evidence corpus (2.3.1).
+
+### Checking the evidence search
+
+One more command asks the search a small set of hand-made questions and counts how often
+the expected determination comes back:
+
+```text
+python3 -m pipelines.check_evidence_search config/evaluation/evidence_search_questions.json
+```
+
+The file is a JSON list. Each entry has a `question` and the `expected_section_number` of
+the one determination a good search brings back. The project's set has 20 questions. They
+were written by hand from the titles of the determinations; they hold no claim and no
+patient data.
+
+**It spends money**: one small embedding call per question. The 20 questions cost
+$0.000020 and took 21 seconds. It writes nothing except the gateway's own record of each
+call, and it needs the chunks embedded first.
+
+The output of the run on 2026-10-11:
+
+```text
+top-5 share: 19 of 20 questions (95.00%) found their determination (model text-embedding-3-small, input version v1)
+  missed question 19: expected 160.18, found 160.7, 160.7.1, 160.2
+  spent $0.000020 in this run; $0.705857 of the $3.00 monthly budget is used
+```
+
+A question is a hit when a chunk of the expected determination is among the five closest
+chunks. The share is **recorded, not a gate**: a low share still exits with 0. What the
+number does and does not show is in 03-architecture.md 3.14.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | The share was measured, whatever it is |
+| 1 | It could not be measured: no embedding is stored, the monthly budget is reached, the provider cannot answer or refuses, or an answer cannot be used |
+| 2 | A bad argument, a question file that cannot be used, or an expected section number that no stored determination has |
+
+Run it again after an embedding run with another model, and after a load of a new corpus
+file.

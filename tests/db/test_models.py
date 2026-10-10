@@ -23,6 +23,9 @@ from src.db.models import (
     DenialStatus,
     DocumentExtraction,
     DocumentType,
+    EvidenceChunk,
+    EvidenceDocument,
+    EvidenceSource,
     ExchangeType,
     GeneratedDocument,
     IssuerDenialStats,
@@ -948,3 +951,176 @@ def test_extraction_stays_when_its_document_is_replaced(session: Session) -> Non
     _generated_document(session, seed=7)
 
     assert len(session.scalars(select(DocumentExtraction)).all()) == 1
+
+
+def _evidence_document(session: Session, **overrides: Any) -> EvidenceDocument:
+    fields: dict[str, Any] = {
+        "source": EvidenceSource.CMS_NCD,
+        "source_document_id": "9001",
+        "section_number": "999.1",
+        "title": "Made-up Determination",
+        "version_number": 2,
+        "effective_date": date(2020, 1, 1),
+        "source_file_date": date(2026, 10, 5),
+    }
+    document = EvidenceDocument(**(fields | overrides))
+    session.add(document)
+    session.flush()
+    return document
+
+
+def _evidence_chunk(
+    session: Session, document: EvidenceDocument, chunk_index: int = 0, **overrides: Any
+) -> EvidenceChunk:
+    fields: dict[str, Any] = {
+        "evidence_document_id": document.id,
+        "chunk_index": chunk_index,
+        "section_title": "Made-up Section",
+        "text": "Made-up policy text.",
+        "text_sha256": TEXT_SHA256,
+        "chunker_version": "v1",
+    }
+    chunk = EvidenceChunk(**(fields | overrides))
+    session.add(chunk)
+    session.flush()
+    return chunk
+
+
+def test_stores_evidence_document_with_its_chunks(session: Session) -> None:
+    document = _evidence_document(session)
+    first = _evidence_chunk(session, document)
+    _evidence_chunk(session, document, 1, text="More made-up policy text.")
+    session.expire_all()
+
+    stored = session.get(EvidenceDocument, document.id)
+    assert stored is not None
+    assert stored.source is EvidenceSource.CMS_NCD
+    assert stored.source_document_id == "9001"
+    assert stored.section_number == "999.1"
+    assert stored.title == "Made-up Determination"
+    assert stored.version_number == 2
+    assert stored.effective_date == date(2020, 1, 1)
+    assert stored.source_file_date == date(2026, 10, 5)
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+    stored_chunk = session.get(EvidenceChunk, first.id)
+    assert stored_chunk is not None
+    assert stored_chunk.evidence_document_id == document.id
+    assert stored_chunk.chunk_index == 0
+    assert stored_chunk.section_title == "Made-up Section"
+    assert stored_chunk.text == "Made-up policy text."
+    assert stored_chunk.text_sha256 == TEXT_SHA256
+    assert stored_chunk.chunker_version == "v1"
+    assert stored_chunk.created_at is not None
+    assert len(session.scalars(select(EvidenceChunk)).all()) == 2
+
+
+def test_stores_evidence_chunk_without_a_section_title(session: Session) -> None:
+    chunk = _evidence_chunk(session, _evidence_document(session), section_title=None)
+    session.expire_all()
+
+    stored = session.get(EvidenceChunk, chunk.id)
+    assert stored is not None
+    assert stored.section_title is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "constraint"),
+    [
+        ({"section_number": "999.2"}, "uq_evidence_documents_source_document"),
+        ({"source_document_id": "9002"}, "uq_evidence_documents_source_section"),
+    ],
+)
+def test_rejects_second_evidence_document_with_the_same_id_or_section_number(
+    session: Session, overrides: dict[str, Any], constraint: str
+) -> None:
+    _evidence_document(session)
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _evidence_document(session, **overrides)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("source_document_id", "", "ck_evidence_documents_source_document_id_not_empty"),
+        ("section_number", "", "ck_evidence_documents_section_number_not_empty"),
+        ("title", "", "ck_evidence_documents_title_not_empty"),
+        ("version_number", 0, "ck_evidence_documents_version_number_positive"),
+    ],
+)
+def test_rejects_evidence_document_with_an_empty_field_or_a_version_below_one(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _evidence_document(session, **bad)
+
+
+def test_rejects_unknown_evidence_source(session: Session) -> None:
+    insert = text(
+        "INSERT INTO evidence_documents (source, source_document_id, section_number, title,"
+        " version_number, effective_date, source_file_date) VALUES ('somewhere_else', '9001',"
+        " '999.1', 'Made-up Determination', 1, '2020-01-01', '2026-10-05')"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert)
+
+
+def test_rejects_second_chunk_with_the_same_index_in_one_document(session: Session) -> None:
+    document = _evidence_document(session)
+    _evidence_chunk(session, document)
+
+    with pytest.raises(IntegrityError, match="uq_evidence_chunks_document_index"):
+        _evidence_chunk(session, document, text="Other made-up text.")
+
+
+def test_allows_the_same_chunk_index_in_two_documents(session: Session) -> None:
+    _evidence_chunk(session, _evidence_document(session))
+    other = _evidence_document(session, source_document_id="9002", section_number="999.2")
+    _evidence_chunk(session, other)
+
+    assert len(session.scalars(select(EvidenceChunk)).all()) == 2
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("chunk_index", -1, "ck_evidence_chunks_chunk_index_not_negative"),
+        ("section_title", "", "ck_evidence_chunks_section_title_not_empty"),
+        ("text", "", "ck_evidence_chunks_text_not_empty"),
+        ("text_sha256", "abc123", "ck_evidence_chunks_text_sha256_format"),
+        ("text_sha256", TEXT_SHA256.upper(), "ck_evidence_chunks_text_sha256_format"),
+        ("chunker_version", "", "ck_evidence_chunks_chunker_version_not_empty"),
+    ],
+)
+def test_rejects_evidence_chunk_with_an_empty_field_a_negative_index_or_a_malformed_hash(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    document = _evidence_document(session)
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _evidence_chunk(session, document, **bad)
+
+
+def test_rejects_evidence_chunk_without_its_document(session: Session) -> None:
+    document = _evidence_document(session)
+    missing_id = document.id + 1
+
+    with pytest.raises(IntegrityError, match="fk_evidence_chunks_document"):
+        _evidence_chunk(session, document, evidence_document_id=missing_id)
+
+
+def test_deleting_an_evidence_document_removes_its_chunks(session: Session) -> None:
+    document = _evidence_document(session)
+    _evidence_chunk(session, document)
+    _evidence_chunk(session, document, 1)
+
+    session.delete(document)
+    session.flush()
+
+    assert session.scalars(select(EvidenceChunk)).all() == []

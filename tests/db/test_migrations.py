@@ -14,9 +14,11 @@ from src.db.migrations.versions import rev_0007_document_noise as migration_0007
 from src.db.migrations.versions import rev_0008_llm_calls as migration_0008
 from src.db.migrations.versions import rev_0009_document_extractions as migration_0009
 from src.db.migrations.versions import rev_0010_evidence_corpus as migration_0010
+from src.db.migrations.versions import rev_0011_evidence_chunk_embeddings as migration_0011
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
+    EMBEDDING_DIMENSIONS,
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
@@ -41,6 +43,7 @@ REFERENCE_TABLES = {
     "document_extractions",
     "evidence_documents",
     "evidence_chunks",
+    "evidence_chunk_embeddings",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls.
 OPERATIONAL_TABLES = {"llm_calls"}
@@ -55,6 +58,7 @@ LLM_CALL_TABLE = "llm_calls"
 EXTRACTION_TABLE = "document_extractions"
 EVIDENCE_DOCUMENT_TABLE = "evidence_documents"
 EVIDENCE_CHUNK_TABLE = "evidence_chunks"
+EMBEDDING_TABLE = "evidence_chunk_embeddings"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -396,7 +400,7 @@ def test_evidence_chunks_has_its_key_link_and_check_constraints(engine: Engine) 
         "ck_evidence_chunks_chunker_version_not_empty",
     }
     assert columns["section_title"]["nullable"] is True
-    # The vector column comes with the retrieval branch, once the embedding model is chosen.
+    # The vectors have their own table, so a chunk row never holds one.
     assert "embedding" not in columns
 
 
@@ -427,6 +431,72 @@ def test_migration_0010_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_evidence_chunk_embeddings_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"] for u in inspector.get_unique_constraints(EMBEDDING_TABLE)
+    }
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(EMBEDDING_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(EMBEDDING_TABLE)}
+
+    assert unique == {
+        "uq_evidence_chunk_embeddings_chunk_model_version": [
+            "evidence_chunk_id",
+            "model_name",
+            "input_version",
+        ]
+    }
+    assert foreign == {
+        "fk_evidence_chunk_embeddings_chunk": (
+            ["evidence_chunk_id"],
+            EVIDENCE_CHUNK_TABLE,
+            "CASCADE",
+        )
+    }
+    assert checks == {
+        "ck_evidence_chunk_embeddings_model_name_not_empty",
+        "ck_evidence_chunk_embeddings_input_version_not_empty",
+    }
+    # No index on the vectors: every row is compared, so the answer is exact. The only index
+    # is the one Postgres keeps for the unique key.
+    assert [i["name"] for i in inspector.get_indexes(EMBEDDING_TABLE)] == [
+        "uq_evidence_chunk_embeddings_chunk_model_version"
+    ]
+
+
+def test_evidence_chunk_embeddings_stores_a_vector_of_the_fixed_size(engine: Engine) -> None:
+    with engine.connect() as conn:
+        column_type, nullable = conn.execute(
+            text(
+                "SELECT format_type(atttypid, atttypmod), NOT attnotnull FROM pg_attribute"
+                " WHERE attrelid = 'evidence_chunk_embeddings'::regclass"
+                " AND attname = 'embedding'"
+            )
+        ).one()
+
+    assert column_type == f"vector({EMBEDDING_DIMENSIONS})"
+    assert nullable is False
+
+
+def test_migration_0011_has_the_same_vector_size_and_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[EMBEDDING_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert migration_0011.EMBEDDING_DIMENSIONS == EMBEDDING_DIMENSIONS
+    assert model_checks == {
+        "ck_evidence_chunk_embeddings_model_name_not_empty": migration_0011.MODEL_NAME_NOT_EMPTY,
+        "ck_evidence_chunk_embeddings_input_version_not_empty": (
+            migration_0011.INPUT_VERSION_NOT_EMPTY
+        ),
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -437,6 +507,25 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0010_removes_the_embeddings_table_and_keeps_the_vector_extension(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0010")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert EMBEDDING_TABLE not in tables
+        assert {EVIDENCE_DOCUMENT_TABLE, EVIDENCE_CHUNK_TABLE} <= tables
+        with engine.connect() as conn:
+            extensions = conn.scalar(
+                text("SELECT count(*) FROM pg_extension WHERE extname = 'vector'")
+            )
+        assert extensions == 1
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert EMBEDDING_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0009_removes_both_evidence_tables_and_the_enum(

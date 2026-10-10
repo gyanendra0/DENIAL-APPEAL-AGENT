@@ -5,6 +5,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -612,8 +613,8 @@ class EvidenceChunk(TimestampMixin, Base):
     its `text_sha256` (SHA-256 of `text`, UTF-8, lowercase hex), so a citation written before
     a re-load that changed the chunk is detectably out of date. `section_title` is the part of
     the document the chunk comes from, when the source has parts. `chunker_version` names the
-    rules that cut the text; the same text and version always give the same chunks. There is
-    no embedding column yet.
+    rules that cut the text; the same text and version always give the same chunks. The
+    chunk's vectors are in `EvidenceChunkEmbedding`.
     """
 
     __tablename__ = "evidence_chunks"
@@ -642,3 +643,47 @@ class EvidenceChunk(TimestampMixin, Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     chunker_version: Mapped[str] = mapped_column(String(20), nullable=False)
+
+
+# The number of values in one stored vector. The column is created with this size, so a model
+# that returns another size cannot be stored.
+EMBEDDING_DIMENSIONS = 1536
+
+
+class EvidenceChunkEmbedding(TimestampMixin, Base):
+    """The vector an embedding model gave for one `EvidenceChunk`, used to search the chunks.
+
+    Public reference table, no `account_id`: it is made from public policy text only.
+    `model_name` is the model that made the vector and `input_version` names how the embedded
+    text was built from the chunk; vectors are only comparable when both are the same, so a
+    chunk has one row per pair. `embedding` always holds `EMBEDDING_DIMENSIONS` values.
+    Deleting a chunk deletes its vectors, so a new load of the evidence corpus leaves this
+    table empty until the chunks are embedded again.
+    """
+
+    __tablename__ = "evidence_chunk_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "evidence_chunk_id",
+            "model_name",
+            "input_version",
+            name="uq_evidence_chunk_embeddings_chunk_model_version",
+        ),
+        CheckConstraint(
+            "model_name <> ''", name="ck_evidence_chunk_embeddings_model_name_not_empty"
+        ),
+        CheckConstraint(
+            "input_version <> ''", name="ck_evidence_chunk_embeddings_input_version_not_empty"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    evidence_chunk_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "evidence_chunks.id", name="fk_evidence_chunk_embeddings_chunk", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)

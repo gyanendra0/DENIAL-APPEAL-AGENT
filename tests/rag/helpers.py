@@ -5,7 +5,7 @@ afterwards. No real model is called and no real policy text is used.
 """
 
 import hashlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
@@ -23,7 +23,9 @@ from src.db.models import (
 )
 from src.db.session import create_session_factory, session_scope
 from src.llm.gateway import EmbeddingAnswer, EmbeddingRequest, LlmGateway
+from src.rag.embedding_input import EMBEDDING_INPUT_VERSION
 from src.rag.embedding_run import EMBEDDING_RUN_LOCK_KEY, EVIDENCE_EMBEDDING_PURPOSE
+from src.rag.retrieval import QUERY_EMBEDDING_PURPOSE
 from tests.extraction.helpers import CAP, StubProvider
 
 MODEL = "example-embedding-model"
@@ -144,7 +146,11 @@ def _remove(factory: sessionmaker[Session]) -> None:
     with session_scope(factory) as session:
         # The chunks and their vectors go with the documents.
         session.execute(delete(EvidenceDocument))
-        session.execute(delete(LlmCall).where(LlmCall.purpose == EVIDENCE_EMBEDDING_PURPOSE))
+        session.execute(
+            delete(LlmCall).where(
+                LlmCall.purpose.in_([EVIDENCE_EMBEDDING_PURPOSE, QUERY_EMBEDDING_PURPOSE])
+            )
+        )
 
 
 def stored_vectors(factory: sessionmaker[Session]) -> list[tuple[int, str, str, float, int]]:
@@ -167,15 +173,38 @@ def stored_vectors(factory: sessionmaker[Session]) -> list[tuple[int, str, str, 
         ]
 
 
-def embedding_calls(factory: sessionmaker[Session]) -> list[LlmCall]:
+def embedding_calls(
+    factory: sessionmaker[Session], purpose: str = EVIDENCE_EMBEDDING_PURPOSE
+) -> list[LlmCall]:
     with session_scope(factory) as session:
         return list(
-            session.scalars(
-                select(LlmCall)
-                .where(LlmCall.purpose == EVIDENCE_EMBEDDING_PURPOSE)
-                .order_by(LlmCall.id)
-            )
+            session.scalars(select(LlmCall).where(LlmCall.purpose == purpose).order_by(LlmCall.id))
         )
+
+
+def padded_vector(head: Sequence[float], filler: float = 0.0) -> list[float]:
+    """A full-size vector: `head`, then `filler` up to `EMBEDDING_DIMENSIONS` numbers."""
+    return [*head, *[filler] * (EMBEDDING_DIMENSIONS - len(head))]
+
+
+def store_vector(
+    session: Session,
+    chunk_id: int,
+    head: Sequence[float],
+    *,
+    filler: float = 0.0,
+    model_name: str = MODEL,
+    input_version: str = EMBEDDING_INPUT_VERSION,
+) -> None:
+    """Store a made-up vector for a chunk: `head`, then `filler` up to the full size."""
+    session.add(
+        EvidenceChunkEmbedding(
+            evidence_chunk_id=chunk_id,
+            model_name=model_name,
+            input_version=input_version,
+            embedding=padded_vector(head, filler),
+        )
+    )
 
 
 @contextmanager

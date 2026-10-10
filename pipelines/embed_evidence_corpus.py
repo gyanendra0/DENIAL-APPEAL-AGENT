@@ -12,7 +12,8 @@ A chunk that already has a vector for the configured model and the input version
 so a second run embeds nothing and a run that stopped can be started again. When the monthly
 budget is reached, the provider cannot answer or refuses the request (a bad request, a wrong
 key), or an answer cannot be stored (a vector of the wrong size), the run stops and keeps the
-batches it finished.
+batches it finished. Only one run works at a time: a second one started meanwhile stops before
+it calls the provider and spends nothing.
 
 At the end the command prints the counts, the time and the money spent.
 

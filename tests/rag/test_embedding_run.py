@@ -23,6 +23,7 @@ from tests.rag.helpers import (
     embedding_calls,
     embedding_gateway,
     evidence_tables,
+    run_lock_held,
     stored_vectors,
 )
 
@@ -359,3 +360,82 @@ def test_the_run_leaves_the_chunk_text_and_its_hash_as_they_were(
 def test_a_batch_size_below_one_is_refused(factory: sessionmaker[Session]) -> None:
     with pytest.raises(ValueError, match="batch_size must be 1 or more"):
         _run(factory, StubEmbedder(), batch_size=0)
+
+
+def test_a_run_stops_before_any_call_while_another_run_is_in_progress(
+    factory: sessionmaker[Session], engine: Engine
+) -> None:
+    _five_chunks(factory)
+    embedder = StubEmbedder()
+
+    with run_lock_held(engine) as other_run_has_the_lock:
+        summary = _run(factory, embedder)
+
+    assert other_run_has_the_lock
+    assert summary == EmbeddingRunSummary(
+        chunks=5,
+        already_embedded=0,
+        embedded=0,
+        stop_reason="another embedding run is in progress",
+    )
+    assert summary.not_tried == 5
+    assert embedder.requests == []
+    assert embedding_calls(factory) == []
+    assert stored_vectors(factory) == []
+
+
+def test_a_run_refused_for_another_run_leaves_that_runs_lock_alone(
+    factory: sessionmaker[Session], engine: Engine
+) -> None:
+    _five_chunks(factory)
+
+    with run_lock_held(engine):
+        _run(factory, StubEmbedder())
+        # Still held by the first holder: a third run is refused too.
+        assert _run(factory, StubEmbedder()).stop_reason == "another embedding run is in progress"
+
+
+@pytest.mark.parametrize(
+    "embedder",
+    [
+        StubEmbedder(),
+        StubEmbedder(errors={2: ProviderUnavailableError("timeout")}),
+        StubEmbedder(highest_cost="5.00"),
+    ],
+    ids=["finished", "stopped early", "over budget"],
+)
+def test_the_lock_is_free_again_after_a_run(
+    factory: sessionmaker[Session], engine: Engine, embedder: StubEmbedder
+) -> None:
+    _five_chunks(factory)
+
+    _run(factory, embedder)
+
+    with run_lock_held(engine) as free:
+        assert free
+
+
+def test_the_lock_is_free_again_after_a_run_that_raised(
+    factory: sessionmaker[Session], engine: Engine
+) -> None:
+    _five_chunks(factory)
+
+    with pytest.raises(RuntimeError, match="made-up failure"):
+        _run(factory, StubEmbedder(errors={1: RuntimeError("made-up failure")}))
+
+    with run_lock_held(engine) as free:
+        assert free
+
+
+def test_a_run_right_after_another_embeds_what_is_left(
+    factory: sessionmaker[Session], engine: Engine
+) -> None:
+    _five_chunks(factory)
+    with run_lock_held(engine):
+        _run(factory, StubEmbedder())
+
+    summary = _run(factory, StubEmbedder())
+
+    assert summary == EmbeddingRunSummary(
+        chunks=5, already_embedded=0, embedded=5, stop_reason=None
+    )

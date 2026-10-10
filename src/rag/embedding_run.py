@@ -3,10 +3,15 @@
 A chunk that already has a vector for the model and the input version is skipped: a run that
 stopped half way is continued, not paid for twice. A new load of the evidence corpus deletes
 the chunks and with them the vectors, so this run is needed again afterwards.
+
+Only one run works at a time. Two runs at once would both see the same chunks as not embedded
+and both pay for them, so a run first takes a lock in the database and a second run stops
+before it calls the provider.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import exists, func, select
@@ -38,6 +43,10 @@ BUDGET_REACHED = "the monthly LLM budget is reached"
 NO_PROVIDER = "the embedding provider could not answer"
 REQUEST_REFUSED = "the provider refused the request"
 ANSWER_NOT_USABLE = "the answer cannot be stored (the call was paid for)"
+RUN_IN_PROGRESS = "another embedding run is in progress"
+# The number of the advisory lock a run holds in the database while it works. Any fixed number
+# that nothing else in the project uses.
+EMBEDDING_RUN_LOCK_KEY = 4_111_001
 
 
 class EmbeddingRunSummary(BaseModel):
@@ -74,12 +83,51 @@ def run_evidence_embedding(
     when the budget is reached, the provider cannot answer or refuses the request, or an
     answer cannot be stored: another model than `model_name`, another number of vectors than
     texts, or a vector that is not `EMBEDDING_DIMENSIONS` finite numbers. Nothing of such a
-    batch is stored.
+    batch is stored. It also ends early, before any call, when another run is in progress.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be 1 or more")
+    with _single_run_lock(session_factory) as acquired:
+        if not acquired:
+            with session_scope(session_factory) as session:
+                chunks = _count_chunks(session)
+                waiting = len(_pending_inputs(session, model_name))
+            return EmbeddingRunSummary(
+                chunks=chunks,
+                already_embedded=chunks - waiting,
+                embedded=0,
+                stop_reason=RUN_IN_PROGRESS,
+            )
+        return _embed_pending(session_factory, gateway, model_name, batch_size)
+
+
+@contextmanager
+def _single_run_lock(session_factory: sessionmaker[Session]) -> Iterator[bool]:
+    """Take the run's advisory lock without waiting; yield whether this run got it.
+
+    The lock belongs to one database connection, so the session is kept open, and its
+    connection with it, until the run ends. The database drops the lock by itself when the
+    connection closes, so a run that is killed does not leave it behind.
+    """
+    with session_factory() as session:
+        acquired = bool(session.scalar(select(func.pg_try_advisory_lock(EMBEDDING_RUN_LOCK_KEY))))
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                session.scalar(select(func.pg_advisory_unlock(EMBEDDING_RUN_LOCK_KEY)))
+
+
+def _count_chunks(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(EvidenceChunk)) or 0
+
+
+def _embed_pending(
+    session_factory: sessionmaker[Session], gateway: LlmGateway, model_name: str, batch_size: int
+) -> EmbeddingRunSummary:
+    # Read after the lock is taken, so the list cannot hold a chunk another run just embedded.
     with session_scope(session_factory) as session:
-        chunks = session.scalar(select(func.count()).select_from(EvidenceChunk)) or 0
+        chunks = _count_chunks(session)
         pending = _pending_inputs(session, model_name)
 
     embedded = 0

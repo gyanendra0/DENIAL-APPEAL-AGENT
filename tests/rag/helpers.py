@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import (
@@ -23,7 +23,7 @@ from src.db.models import (
 )
 from src.db.session import create_session_factory, session_scope
 from src.llm.gateway import EmbeddingAnswer, EmbeddingRequest, LlmGateway
-from src.rag.embedding_run import EVIDENCE_EMBEDDING_PURPOSE
+from src.rag.embedding_run import EMBEDDING_RUN_LOCK_KEY, EVIDENCE_EMBEDDING_PURPOSE
 from tests.extraction.helpers import CAP, StubProvider
 
 MODEL = "example-embedding-model"
@@ -176,3 +176,20 @@ def embedding_calls(factory: sessionmaker[Session]) -> list[LlmCall]:
                 .order_by(LlmCall.id)
             )
         )
+
+
+@contextmanager
+def run_lock_held(engine: Engine) -> Iterator[bool]:
+    """Hold the embedding run's lock on a connection of its own, as a second run would.
+
+    Yields whether the lock was free to take.
+    """
+    with engine.connect() as connection:
+        acquired = bool(
+            connection.scalar(select(func.pg_try_advisory_lock(EMBEDDING_RUN_LOCK_KEY)))
+        )
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                connection.scalar(select(func.pg_advisory_unlock(EMBEDDING_RUN_LOCK_KEY)))

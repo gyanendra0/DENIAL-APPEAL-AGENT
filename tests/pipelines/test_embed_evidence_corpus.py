@@ -25,6 +25,7 @@ from tests.rag.helpers import (
     add_document,
     embedding_gateway,
     evidence_tables,
+    run_lock_held,
     stored_vectors,
 )
 
@@ -190,6 +191,34 @@ def test_a_failed_second_batch_keeps_the_first(
 
     assert main([]) == 1
     assert len(stored_vectors(factory)) == 100
+
+
+def test_a_second_run_at_the_same_time_exits_1_and_spends_nothing(
+    factory: sessionmaker[Session],
+    stubs: Stubs,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _store_chunks(factory, 3)
+
+    with run_lock_held(engine):
+        exit_code = main([])
+
+    assert exit_code == 1
+    assert stubs.embedder.requests == []
+    assert stored_vectors(factory) == []
+    captured = capsys.readouterr()
+    assert _without_time(captured.out).splitlines() == [
+        f"embedded 0 of 3 chunks (model {MODEL}, input version v1)",
+        "  already embedded before this run: 0",
+        "  time: N s",
+        # No call was recorded this month, so the sum has no decimal places.
+        "  spent $0 in this run; $0 of the $3.00 monthly budget is used",
+    ]
+    assert captured.err == (
+        "stopped early: another embedding run is in progress; 3 chunks have no vector."
+        " Run the same command again to continue.\n"
+    )
 
 
 def test_no_stored_chunk_exits_1_and_names_the_command_to_run_first(

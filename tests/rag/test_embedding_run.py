@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.db.models import EMBEDDING_DIMENSIONS, EvidenceChunk, EvidenceChunkEmbedding
+from src.db.models import (
+    EMBEDDING_DIMENSIONS,
+    EvidenceChunk,
+    EvidenceChunkEmbedding,
+    EvidenceDocument,
+)
 from src.db.session import session_scope
 from src.llm.gateway import ProviderRejectedError, ProviderUnavailableError
 from src.rag.embedding_run import (
@@ -334,15 +339,42 @@ def test_a_chunk_removed_during_the_run_stops_it_and_stores_nothing_of_that_batc
 
     summary = _run(factory, embedder)
 
+    # The counts are those after the change: four chunks are left, two of them with a vector.
     assert summary == EmbeddingRunSummary(
-        chunks=5,
+        chunks=4,
         already_embedded=0,
         embedded=2,
         stop_reason="the evidence chunks changed during the run (the call was paid for)",
     )
+    assert summary.not_tried == 2
     assert len(embedder.requests) == 2  # the third batch was not tried
     assert len(embedding_calls(factory)) == 2  # the second call was paid for and is recorded
     assert [chunk_id for chunk_id, *_ in stored_vectors(factory)] == chunk_ids[:2]
+
+
+def test_a_corpus_replaced_during_the_run_counts_the_new_chunks_and_no_vector(
+    factory: sessionmaker[Session],
+) -> None:
+    _five_chunks(factory)
+
+    def replace_corpus() -> None:
+        # As a new load does: every document goes, and its chunks and vectors with it.
+        with session_scope(factory) as session:
+            session.execute(delete(EvidenceDocument))
+            add_document(session, "9003", 3)
+
+    summary = _run(factory, StubEmbedder(before_answer={2: replace_corpus}))
+
+    # The first batch was stored and is gone again with its chunks.
+    assert summary == EmbeddingRunSummary(
+        chunks=3,
+        already_embedded=0,
+        embedded=0,
+        stop_reason="the evidence chunks changed during the run (the call was paid for)",
+    )
+    assert summary.not_tried == 3
+    assert stored_vectors(factory) == []
+    assert len(embedding_calls(factory)) == 2
 
 
 def test_no_stored_chunk_means_no_call(factory: sessionmaker[Session]) -> None:

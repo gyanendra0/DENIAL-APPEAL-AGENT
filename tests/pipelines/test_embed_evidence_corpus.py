@@ -195,9 +195,11 @@ def test_chunks_removed_during_the_run_exit_1_with_a_plain_message(
     assert exit_code == 1
     assert len(stored_vectors(factory)) == 100
     captured = capsys.readouterr()
+    # Counted again after the change: 149 chunks are left and 100 of them have a vector.
+    assert captured.out.startswith("embedded 100 of 149 chunks")
     assert captured.err == (
         "stopped early: the evidence chunks changed during the run (the call was paid for);"
-        " 50 chunks have no vector. Run the same command again to continue.\n"
+        " 49 chunks have no vector. Run the same command again to continue.\n"
     )
 
 

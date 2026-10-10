@@ -86,8 +86,9 @@ def run_evidence_embedding(
     answer cannot be stored: another model than `model_name`, another number of vectors than
     texts, or a vector that is not `EMBEDDING_DIMENSIONS` finite numbers. It ends early in the
     same way when a chunk of the batch is gone at the write, as after a load of the corpus
-    during the run. Nothing of such a batch is stored. It also ends early, before any call,
-    when another run is in progress.
+    during the run; the counts are then read again, because such a load also removes the
+    vectors of the batches before. Nothing of such a batch is stored. It also ends early,
+    before any call, when another run is in progress.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be 1 or more")
@@ -179,9 +180,18 @@ def _embed_pending(
             stop_reason = CHUNKS_CHANGED
             break
         embedded += len(batch)
+    already_embedded = chunks - len(pending)
+    if stop_reason == CHUNKS_CHANGED:
+        # The counts read before the loop are out of date, and a load of the corpus removed
+        # the vectors of the earlier batches with their chunks. Count what is there now.
+        with session_scope(session_factory) as session:
+            chunks = _count_chunks(session)
+            with_vector = chunks - len(_pending_inputs(session, model_name))
+        already_embedded = min(already_embedded, with_vector)
+        embedded = with_vector - already_embedded
     return EmbeddingRunSummary(
         chunks=chunks,
-        already_embedded=chunks - len(pending),
+        already_embedded=already_embedded,
         embedded=embedded,
         stop_reason=stop_reason,
     )

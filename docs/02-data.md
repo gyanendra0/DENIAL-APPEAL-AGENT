@@ -1403,9 +1403,11 @@ code 1 means one of these, each with a plain message and no traceback:
 
 - no chunk is stored (run `pipelines.load_evidence_corpus` first);
 - the run stopped early: the monthly budget is reached, the provider cannot answer or
-  refuses the request, an answer cannot be stored, or the chunks changed during the run
-  (the corpus was loaded at the same time). The batches finished before are kept, and the
-  message says how many chunks are left;
+  refuses the request, or an answer cannot be stored. The batches finished before are
+  kept, and the message says how many chunks are left;
+- the chunks changed during the run, because the corpus was loaded at the same time. Such
+  a load removes every embedding, also the ones this run had stored, so the counts are
+  read again and the message says how many chunks are left now;
 - another embedding run is in progress. Only one works at a time; the second one calls
   nothing and spends nothing.
 

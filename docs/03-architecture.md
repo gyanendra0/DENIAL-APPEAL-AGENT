@@ -1354,8 +1354,8 @@ the input version:
 A chunk that already has a vector is skipped. So a second run embeds nothing and spends
 nothing, and a run that stopped half way is continued, not paid for twice.
 
-The run ends early, without a traceback, in these cases. The batches finished before are
-kept, and nothing of the failing batch is stored:
+The run ends early, without a traceback, in these cases. Nothing of the failing batch is
+stored. The batches finished before are kept, with one exception that follows the table:
 
 | Case | Paid for |
 |---|---|
@@ -1370,6 +1370,11 @@ kept, and nothing of the failing batch is stored:
 
 The size of a vector is checked in the code before the write, so a wrong size gives a plain
 message and not a database error.
+
+The exception is the corpus loaded during the run. The lock below stops a second embedding
+run, not the loader. A load removes every chunk and, with the chunks, every vector, also
+the ones this run stored in its earlier batches. The run then counts the chunks and the
+vectors again, so its summary says what is in the database now.
 
 **Only one run at a time.** Two runs at once would both see the same chunks as not embedded
 and both pay for them. A run therefore takes a Postgres advisory lock (a named lock the

@@ -13,7 +13,8 @@ A draft passes only when every `policy` paragraph
 
 Whitespace is the only difference a quote may have: runs of spaces and line breaks count as
 one space. Everything else is exact. Upper and lower case differ, and a curly quotation mark
-is not a straight one, so a quote the model tidied up is blocked.
+is not a straight one, so a quote the model tidied up is blocked. A quote must also start
+and end where a word does: "covered at home" is not found in "uncovered at home".
 
 What this does NOT check: that the cited text is the right policy for the claim, or that a
 paragraph marked `other` states no policy. A problem carries the paragraph's position and the
@@ -106,9 +107,29 @@ def _citation_problem_kinds(
     evidence_text = text_by_label.get(citation.label)
     if evidence_text is None:
         kinds.append(CitationProblemKind.UNKNOWN_LABEL)
-    elif not too_short and quote not in evidence_text:
+    elif not too_short and not _holds_whole_words(evidence_text, quote):
         kinds.append(CitationProblemKind.QUOTE_NOT_IN_EVIDENCE)
     return kinds
+
+
+def _holds_whole_words(evidence_text: str, quote: str) -> bool:
+    """True when `quote` is in `evidence_text` at a place where it cuts no word in two.
+
+    Every place the quote is found is tried, so a quote that is once part of a longer word
+    and once made of whole words passes.
+    """
+    start = evidence_text.find(quote)
+    while start != -1:
+        end = start + len(quote)
+        if not _splits_a_word(evidence_text, start) and not _splits_a_word(evidence_text, end):
+            return True
+        start = evidence_text.find(quote, start + 1)
+    return False
+
+
+def _splits_a_word(text: str, position: int) -> bool:
+    """True when the characters on both sides of `position` are letters or digits."""
+    return 0 < position < len(text) and text[position - 1].isalnum() and text[position].isalnum()
 
 
 def _collapse_whitespace(text: str) -> str:

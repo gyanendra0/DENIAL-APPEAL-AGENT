@@ -183,10 +183,62 @@ def test_a_quote_under_the_minimum_length_is_blocked_although_the_text_holds_it(
 
 
 def test_a_quote_of_exactly_the_minimum_length_passes() -> None:
-    quote = "Blue widgets are cov"
+    quote = "when a doctor orders"
     assert len(quote) == MIN_QUOTE_CHARACTERS
 
     assert validate_citations(_draft(_policy(("E1", quote))), MATCHES).passed is True
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        # "covered" is the end of "uncovered": the quote would say the opposite of the text.
+        "covered when it is used at home",
+        # "it is use" stops inside "used".
+        "is uncovered when it is use",
+        "covered when it is use",
+    ],
+)
+def test_a_quote_that_starts_or_ends_inside_a_word_is_blocked(quote: str) -> None:
+    matches = [_match(0, "The made-up widget is uncovered when it is used at home.")]
+
+    check = validate_citations(_draft(_policy(("E1", quote))), matches)
+
+    assert check.problems == (_problem(CitationProblemKind.QUOTE_NOT_IN_EVIDENCE, 0, "E1"),)
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "The made-up widget(type 2)",  # the start of the text
+        "when it is used at home.",  # the end of the text
+        "when it is used at home",  # a full stop follows
+        "up widget(type 2) is uncovered",  # a hyphen comes before
+        "(type 2) is uncovered when",  # the quote itself starts with a bracket
+    ],
+)
+def test_a_quote_next_to_punctuation_or_the_edge_of_the_text_passes(quote: str) -> None:
+    matches = [_match(0, "The made-up widget(type 2) is uncovered when it is used at home.")]
+
+    assert validate_citations(_draft(_policy(("E1", quote))), matches).passed is True
+
+
+def test_a_quote_found_inside_a_word_and_again_as_whole_words_passes() -> None:
+    text = "A widget is uncovered when used at home. It is covered when used at home by a nurse."
+    matches = [_match(0, text)]
+
+    check = validate_citations(_draft(_policy(("E1", "covered when used at home"))), matches)
+
+    assert check.passed is True
+
+
+def test_a_quote_found_only_inside_longer_words_is_blocked_wherever_it_is() -> None:
+    text = "It is uncovered when used at home. It is undiscovered when used at home."
+    matches = [_match(0, text)]
+
+    check = validate_citations(_draft(_policy(("E1", "covered when used at home"))), matches)
+
+    assert check.problems == (_problem(CitationProblemKind.QUOTE_NOT_IN_EVIDENCE, 0, "E1"),)
 
 
 def test_spaces_do_not_make_a_short_quote_long_enough() -> None:

@@ -1670,8 +1670,10 @@ A draft passes only when every `policy` paragraph:
 Whitespace is the only difference a quote may have: runs of spaces and line breaks count as
 one space, and the length is measured after that. Everything else is exact. Upper and lower
 case differ, and a curly quotation mark is not a straight one, so a quote the model tidied
-up is blocked. The minimum length is there because a few words such as "is covered" are in
-almost every chunk and would prove nothing.
+up is blocked. A quote must also start and end where a word does: "covered at home" is not
+found in "uncovered at home", because that quote would say the opposite of the text. The
+minimum length is there because a few words such as "is covered" are in almost every chunk
+and would prove nothing.
 
 The answer is a `CitationCheck` with every problem found, not only the first. Each problem
 has a kind, the paragraph's position and the label. It never holds quote or chunk text.

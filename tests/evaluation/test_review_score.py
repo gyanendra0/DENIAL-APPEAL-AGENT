@@ -155,6 +155,26 @@ def test_a_claim_scored_twice_is_refused(tmp_path: Path) -> None:
     assert _problems(path) == ("line 4: the claim is already scored on line 2",)
 
 
+def test_a_problem_names_the_line_of_the_file_after_a_note_with_a_line_break(
+    tmp_path: Path,
+) -> None:
+    # The first row takes lines 2 and 3 of the file, so the bad row is on line 4.
+    path = _write(tmp_path, _row(1, "accept", note='"first line\nsecond line"'), _row(2, "maybe"))
+
+    (problem,) = _problems(path)
+
+    assert problem.startswith("line 4: verdict: ")
+
+
+def test_a_row_whose_note_has_a_line_break_is_read_with_its_last_line(tmp_path: Path) -> None:
+    path = _write(tmp_path, _row(1, "accept", note='"first line\nsecond line"'), _row(2, "accept"))
+
+    scores = read_review_scores(path)
+
+    assert [score.line for score in scores] == [3, 4]
+    assert scores[0].note == "first line\nsecond line"
+
+
 def test_every_problem_is_reported_and_none_quotes_a_value_of_the_file(tmp_path: Path) -> None:
     path = _write(
         tmp_path,

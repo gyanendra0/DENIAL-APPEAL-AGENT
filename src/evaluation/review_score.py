@@ -144,16 +144,19 @@ def read_review_scores(path: Path) -> tuple[ReviewScore, ...]:
     except (OSError, UnicodeDecodeError) as error:
         raise ScoreFileError([f"the score file cannot be read ({type(error).__name__})"]) from None
     try:
-        rows = list(csv.reader(io.StringIO(text, newline="")))
+        reader = csv.reader(io.StringIO(text, newline=""))
+        # `line_num` is the line of the file a row ends on. A note may hold a line break,
+        # so counting the rows would name the wrong line.
+        rows = [(reader.line_num, cells) for cells in reader]
     except csv.Error:
         raise ScoreFileError(["the score file is not a CSV file"]) from None
-    if not rows or tuple(rows[0]) != SCORE_COLUMNS:
+    if not rows or tuple(rows[0][1]) != SCORE_COLUMNS:
         raise ScoreFileError([f"the first line must be: {','.join(SCORE_COLUMNS)}"])
 
     problems: list[str] = []
     scores: list[ReviewScore] = []
     first_line_of: dict[str, int] = {}
-    for line, cells in enumerate(rows[1:], start=FIRST_ROW_LINE):
+    for line, cells in rows[1:]:
         if not any(cell.strip() for cell in cells):
             continue  # an empty line, often the last one
         if len(cells) != len(SCORE_COLUMNS):

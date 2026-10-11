@@ -236,6 +236,36 @@ def test_a_cited_chunk_that_is_gone_exits_1_and_writes_nothing(
     assert "Traceback" not in captured.err
 
 
+def test_a_folder_that_cannot_be_made_exits_1_with_a_plain_message(
+    factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a_file").write_text("made up", encoding="utf-8")
+    folder = tmp_path / "a_file" / "review"
+
+    exit_code = _export(folder)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"cannot write the files into {folder} (NotADirectoryError)\n"
+
+
+def test_a_file_to_read_that_cannot_be_written_leaves_no_score_file(
+    factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A folder where the file to read should go makes its write fail.
+    (tmp_path / REVIEW_FILE_NAME).mkdir()
+
+    exit_code = _export(tmp_path)
+
+    assert exit_code == 1
+    assert not (tmp_path / SCORES_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"cannot write the files into {tmp_path} (IsADirectoryError)\n"
+    assert "Traceback" not in captured.err
+
+
 def test_an_existing_score_file_is_never_overwritten(
     factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

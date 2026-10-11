@@ -2274,8 +2274,9 @@ refuses the row. So do not run the agent loop between `export` and `score`.
 **What `score` checks before it gives a share.** The verdict is one of the three; a
 `reject` has a reason and the other two have none; the reason is one of the five; no claim
 is scored twice; the number of rows equals `--size`; every row belongs to a draft that can
-be reviewed. Every problem names a line of the file and quotes no value from it. A file
-with an empty verdict gives no share at all, only the number of drafts still open.
+be reviewed. Every problem about a row names its line in the file (for a row whose note
+runs over several lines, the last of them), and no problem quotes a value from the file.
+A file with an empty verdict gives no share at all, only the number of drafts still open.
 
 **The 60% is a gate.** `score` exits with 0 at 60% or more and with 1 below it. A share of
 exactly 60% passes. A printed share is never rounded up to a target it misses.

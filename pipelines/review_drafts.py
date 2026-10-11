@@ -111,15 +111,19 @@ def _export(out_dir: Path, size: int, seed: int) -> int:
     finally:
         engine.dispose()
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     review_path = out_dir / REVIEW_FILE_NAME
     try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # The file to read goes first: a failure here leaves no score file behind, so the
+        # next export into this folder is not refused.
+        review_path.write_text(build_review_text(items), encoding="utf-8")
         # "x": the score file is created, never replaced.
         with scores_path.open("x", encoding="utf-8", newline="") as file:
             file.write(build_scores_csv(items))
     except FileExistsError:
         return _fail(f"{scores_path} already exists and is not overwritten")
-    review_path.write_text(build_review_text(items), encoding="utf-8")
+    except OSError as exc:
+        return _fail(f"cannot write the files into {out_dir} ({type(exc).__name__})")
 
     cited = sum(bool(item.evidence) for item in items)
     print(

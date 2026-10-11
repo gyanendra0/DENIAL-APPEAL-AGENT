@@ -1385,7 +1385,14 @@ About the text of the manual chapters (what the PDF reader loses):
   revision line would get version 1 and the file date; none of the loaded sections is one.
 - The repeated-page-text gate looks only at the first and the last line of each page. A
   page header or footer on half of the pages or fewer, one of two lines, or one whose words
-  change from page to page, is not seen and would be loaded as text.
+  change from page to page, is not seen and would be loaded as text. A file of very few
+  pages can be rejected wrongly: three pages that end in `100`, `250` and a word have "the
+  same line" at the bottom of 2 of 3 pages, because every number is read as the same. The
+  shortest of the four chapters has 39 pages.
+- A revision line inside a heading that cannot be read (`(Rev. 5, 13-45-03)`, a date that
+  does not exist) does not reject the file, as the same line under the heading would. The
+  section gets version 1 and the file date and is counted in the report line "sections
+  without a revision line".
 - 22 chunks are shorter than 100 characters, the shortest 7.
 
 About the load:

@@ -399,11 +399,47 @@ def test_a_number_alone_at_the_end_of_one_page_is_text(tmp_path: Path) -> None:
     assert "stops in the 12 middle of a sentence." in _text(_by_number(batch)["100-02-99-10"])
 
 
-def test_a_page_with_no_text_is_not_counted_as_a_page_with_a_repeated_line(
+def _four_pages_with_a_top_line(tmp_path: Path, page_numbers: set[int]) -> Path:
+    """The fixture cut into four pages, with one made-up line at the top of the pages named."""
+    front, back = MANUAL_PAGES
+    pages = [front[:10], front[10:], back[:14], back[14:]]
+    return write_text_pdf(
+        tmp_path / "four.pdf",
+        [
+            [*(["MADE-UP-HEADER Example Manual"] if number in page_numbers else []), *page]
+            for number, page in enumerate(pages, start=1)
+        ],
+    )
+
+
+def test_rejects_the_same_line_on_more_than_half_of_the_pages(tmp_path: Path) -> None:
+    assert _rejected(_four_pages_with_a_top_line(tmp_path, {2, 3, 4})) == [
+        "four.pdf: the same line is at the top of 3 of 4 pages: "
+        "a page header, footer or page number"
+    ]
+
+
+def test_the_same_line_on_half_of_the_pages_is_text(tmp_path: Path) -> None:
+    batch = _read(_four_pages_with_a_top_line(tmp_path, {2, 3}))
+    assert batch.chunk_count == 4
+    assert "MADE-UP-HEADER Example Manual" in _text(_by_number(batch)["100-02-99-10"])
+
+
+def test_the_share_of_a_repeated_line_counts_only_the_pages_that_hold_text(
     tmp_path: Path,
 ) -> None:
-    path = write_text_pdf(tmp_path / "gap.pdf", [MANUAL_PAGES[0], [], MANUAL_PAGES[1], [""]])
-    assert _read(path).chunk_count == 4
+    header = "MADE-UP-HEADER Example Manual"
+    pages = [[header, *MANUAL_PAGES[0]], [], [], [header, *MANUAL_PAGES[1]], [""]]
+    assert _rejected(write_text_pdf(tmp_path / "gaps.pdf", pages)) == [
+        "gaps.pdf: the same line is at the top of 2 of 2 pages: "
+        "a page header, footer or page number"
+    ]
+
+
+def test_pages_with_no_text_are_not_pages_with_the_same_line(tmp_path: Path) -> None:
+    # Three pages with no text against two with text: counted, they would be most pages.
+    pages = [MANUAL_PAGES[0], [], MANUAL_PAGES[1], [""], []]
+    assert _read(write_text_pdf(tmp_path / "gap.pdf", pages)).chunk_count == 4
 
 
 def test_one_bad_file_rejects_the_good_one_too(tmp_path: Path) -> None:

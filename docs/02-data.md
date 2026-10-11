@@ -1451,3 +1451,74 @@ number does and does not show is in 03-architecture.md 3.14.
 
 Run it again after an embedding run with another model, and after a load of a new corpus
 file.
+
+### Drafting the appeal letters
+
+The last command drafts an appeal letter for the denied claims of one split and stores the
+letters that pass the citation check
+([03-architecture.md 3.15](03-architecture.md#315-cited-appeal-drafting)):
+
+```text
+python3 -m pipelines.draft_appeals --split test --limit 50
+```
+
+It needs the database at the newest migration, the documents of the split extracted
+(`pipelines.extract_documents`), the evidence corpus loaded and embedded
+(`pipelines.embed_evidence_corpus`), and the `LLM_` keys set. It adds no key of its own.
+
+**It spends money**: for each claim without a draft, one small embedding call for the
+search question and one model call for the letter, both through the gateway and its budget
+check. One draft cost about $0.0005 and took about 5 seconds.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--split` | none, required | `train`, `validation` or `test`: the split whose denied claims are drafted |
+| `--limit` | all of them | Only the first this many claims, in claim id order, so the same limit always means the same claims |
+| `--prompt-version` | `v1` | The version of the drafting prompt |
+
+Only a denied claim whose denial letter has a current extraction is selected, and `--limit`
+counts only those. The command prints how many denied claims of the split were left out.
+
+Each checked letter is saved as soon as it arrives. A claim that already has a draft of the
+prompt version is skipped, so after exit code 1 the same command continues where the run
+stopped. A draft that the citation check blocks, and an answer that cannot be used, is
+counted and **nothing is stored for it**; the run goes on. Such a claim is tried again by
+the next run. So a run drafts 0 claims and spends $0 once every selected claim has a draft,
+which can take more than two runs.
+
+The output of the first run, on 2026-10-11:
+
+```text
+drafted 46 of 50 selected claims (test split, prompt v1, search question v1)
+  already drafted before this run: 0
+  drafted with at least one citation: 15
+  blocked by the citation validator: 1
+    policy_without_citation: 0
+    unknown_label: 0
+    quote_too_short: 0
+    quote_not_in_evidence: 1
+  failed to parse: 3
+  stopped for length: 0
+  answered by the fallback: 0
+  denied claims of the split left out (no current letter extraction): 10
+  time: 235 s
+  spent $0.024261 in this run; $0.730118 of the $3.00 monthly budget is used
+```
+
+A second run drafted the 4 claims left over for $0.001811. A third run printed
+`drafted 0 of 50 selected claims`, `already drafted before this run: 50` and
+`spent $0.000000 in this run`. The other figures of the runs are in 03-architecture.md
+3.15.
+
+The report prints counts only: no letter text and no document text. A stored draft is for
+a person to review. Nothing is sent anywhere.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Every selected claim was looked at. Some may have no draft: see the blocked and failed counts |
+| 1 | The run stopped early (the monthly budget is reached, no provider could answer, a provider refused the request, the evidence has no embedding, or the answer to a search cannot be used), or the split has no denied claim with a current letter extraction |
+| 2 | A bad argument, a prompt version with no prompt file included |
+
+Run it again after a new drafting prompt version. A claim keeps its old draft when its
+letter document or the evidence corpus changes; what that means is in the known limits of
+03-architecture.md 3.15.

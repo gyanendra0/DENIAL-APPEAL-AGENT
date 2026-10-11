@@ -687,3 +687,52 @@ class EvidenceChunkEmbedding(TimestampMixin, Base):
     model_name: Mapped[str] = mapped_column(String(100), nullable=False)
     input_version: Mapped[str] = mapped_column(String(40), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
+
+
+class StoredAppealDraft(TimestampMixin, Base):
+    """A drafted appeal letter that passed the citation validator, kept for a person to review.
+
+    Public reference table, no `account_id`: it only ever holds drafts for the fabricated
+    claims of the synthetic claims sample. One row per claim and prompt version, so a new
+    prompt version keeps the old drafts and a second run can skip what is already there.
+    `text_sha256` is the SHA-256 of the denial letter document the draft was built from
+    (UTF-8, lowercase hex); a draft whose value differs from the stored document's is out of
+    date. `letter` holds the validated `AppealLetter` of `src/drafting/schemas.py`; its
+    contents are not checked by the table. A citation inside it names its chunk by `source`,
+    `source_document_id`, `chunk_index` and `text_sha256`, never by a row id, and no foreign
+    key points at the evidence tables: a new load of the evidence corpus gives new row ids
+    and must not remove a draft. `search_question_version` names the wording of the question
+    that found the evidence. `provider` is the role that answered; `model_name` and
+    `prompt_version` are stored with every draft. Nothing here is ever sent to an insurer.
+    """
+
+    __tablename__ = "appeal_drafts"
+    __table_args__ = (
+        UniqueConstraint("source_claim_id", "prompt_version", name="uq_appeal_drafts_claim_prompt"),
+        CheckConstraint("prompt_version <> ''", name="ck_appeal_drafts_prompt_version_not_empty"),
+        CheckConstraint(
+            "search_question_version <> ''",
+            name="ck_appeal_drafts_search_question_version_not_empty",
+        ),
+        CheckConstraint("model_name <> ''", name="ck_appeal_drafts_model_name_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_appeal_drafts_text_sha256_format"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey(
+            "claim_samples.source_claim_id", name="fk_appeal_drafts_claim", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    search_question_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[LlmProvider] = mapped_column(
+        Enum(LlmProvider, name="llm_provider", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    letter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

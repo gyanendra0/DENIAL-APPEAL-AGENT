@@ -39,6 +39,7 @@
 | `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
 | `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13; embedding and search: see 3.14) | pgvector, chunked policy corpus |
+| `drafting` | Write an appeal letter from the letter's fields and the evidence found; block a draft with a bad citation (see 3.15) | The model writes labels and quotes; a pure function checks them |
 | `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
@@ -71,6 +72,7 @@ Everything after step 1 is asynchronous. The UI polls job status.
 | `evidence_documents` | One published policy document: source, section number, title, version |
 | `evidence_chunks` | Policy text cut into chunks |
 | `evidence_chunk_embeddings` | The vector an embedding model gave for one chunk, used by the search |
+| `appeal_drafts` | A drafted appeal letter that passed the citation validator, for one claim of the synthetic sample |
 | `drafts` | Generated letter, citations, status |
 | `reviews` | Who approved or rejected, when, why |
 | `audit_log` | Every automated decision, immutable |
@@ -99,6 +101,9 @@ writes nothing (see 3.12).
 text is public and shared by every account (see 3.13). The vectors of the chunks are in a
 table of their own, `evidence_chunk_embeddings`, also a public reference table (see 3.14).
 
+The business table `drafts` does not exist yet either. A drafted letter for a claim of the
+synthetic sample is stored in the public reference table `appeal_drafts` (see 3.15).
+
 ## 3.5 Tech stack
 
 | Layer | Choice | Why |
@@ -124,6 +129,7 @@ denial-appeal-agent/
 │  ├─ agent/        orchestration loop and tools
 │  ├─ api/          FastAPI routes, auth, schemas
 │  ├─ db/           models, migrations, session
+│  ├─ drafting/     cited appeal letters and the citation validator
 │  ├─ evaluation/   measured results against the stage targets
 │  ├─ extraction/   document → fields
 │  ├─ ingest/       loaders, file handling
@@ -1143,7 +1149,7 @@ new `CHUNKER_VERSION`, and every stored chunk carries the version that made it.
 
 ### What a citation will point at
 
-A citation will name one chunk by four values: the document's `source` and
+A citation names one chunk by four values: the document's `source` and
 `source_document_id`, the chunk's `chunk_index` and the chunk's `text_sha256`. It never
 uses a row id: the load replaces the rows, so every document and chunk gets a new id each
 time. For the same reason no later table may point a foreign key at `evidence_chunks.id`
@@ -1155,7 +1161,7 @@ one in an older citation, and the citation is known to be out of date instead of
 pointing at other words. The drafting step can also compare a quoted sentence with the
 exact stored text.
 
-Nothing writes or checks a citation yet. That is the drafting branch.
+Citations are written and checked by the drafting step (3.15).
 
 ### The load
 
@@ -1254,7 +1260,7 @@ closest to it.
 
 Every embedding call goes through the gateway and passes the budget check first (3.8). The
 corpus is public policy text and holds no patient data. Nothing here drafts a letter or
-builds a question from a claim; that is the drafting branch.
+builds a question from a claim; that is the drafting step (3.15).
 
 ### Where the code is
 
@@ -1527,3 +1533,331 @@ About the search:
   another source is checked in the query that is sent, not on stored rows.
 - With no index every search reads every vector. That is right for 1,120 rows and would
   need a second look for a much larger corpus.
+
+## 3.15 Cited appeal drafting
+
+Drafting turns one denied claim into an appeal letter for a person to review. It is the
+third step of the evidence work: 3.13 stores the policy text, 3.14 searches it, and this
+section writes a letter that may lean on what the search found.
+
+One rule shapes everything here: **every policy statement in a draft must cite evidence
+that was really retrieved, with a quote that is really in that evidence**. A function
+called the citation validator checks this. A draft that fails is blocked: it is counted and
+not stored. This is the hard rule "no draft released without a valid citation for every
+policy statement" ([conventions 6.8](06-conventions.md#68-hard-rules)).
+
+Every model call goes through the gateway and passes the budget check first (3.8). The
+claims are the made-up claims of the synthetic sample, so no real patient data is involved.
+A stored draft is never sent anywhere.
+
+The agent loop is not built yet. Drafting does not look at the rules verdict (3.11) or the
+win score (3.10): the command drafts for every selected denied claim.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/drafting/schemas.py` | The draft as the model answers it (`AppealDraft`, `DraftParagraph`, `DraftCitation`), the checked letter (`AppealLetter`, `LetterParagraph`, `Citation`) and `evidence_label(position)` |
+| `src/drafting/citation_validator.py` | `validate_citations(draft, matches)`, its answer `CitationCheck`, the four problem kinds and `MIN_QUOTE_CHARACTERS` |
+| `src/drafting/search_question.py` | `build_search_question(category, procedure_codes)`, `SEARCH_PHRASES` and `SEARCH_QUESTION_VERSION` |
+| `src/drafting/prompts.py` | `load_drafting_prompt(prompt_dir, version)` and the default prompt version |
+| `src/drafting/drafter.py` | `draft_appeal(gateway, prompt, letter, matches)`, its result and its three errors |
+| `src/drafting/store.py` | Reads the claims that can be drafted; saves rows of `appeal_drafts` |
+| `src/drafting/run.py` | `run_drafting(...)`: many claims, one at a time, each checked letter saved as it arrives |
+| `src/db/models.py` | `StoredAppealDraft`, the table `appeal_drafts` |
+| `src/db/migrations/versions/rev_0012_appeal_drafts.py` | Migration 0012: the table; the downgrade drops it |
+| `pipelines/draft_appeals.py` | The command ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
+| `config/prompts/drafting/<version>/appeal_letter.txt` | The prompt |
+
+The database model is named `StoredAppealDraft` because `AppealDraft` is already the name
+of the Pydantic shape of the model's answer.
+
+### One claim, step by step
+
+1. Read the extracted fields of the claim's denial letter (the `document_extractions` row
+   of extraction prompt `v2`, 3.9).
+2. Build the search question from the denial reason and the procedure codes.
+3. Search the evidence with `search_evidence` (3.14) and keep the top 5 results. This is
+   one small paid embedding call.
+4. Call the model once with the letter's values and the 5 results. This is the paid
+   drafting call.
+5. Parse the answer into the draft shape.
+6. Run the citation validator on the draft and the same 5 results.
+7. Turn each label into the four citation fields and store the checked letter.
+
+Steps 4 to 6 are `draft_appeal`. Its docstring says it spends money. A failure at step 4, 5
+or 6 ends the work on this claim: nothing is repaired and the model is not called a second
+time.
+
+### What the model is given
+
+The user message is one JSON object with two keys:
+
+| Key | Holds |
+|---|---|
+| `denial_letter` | The 15 values of the letter extraction (claim number, dates, codes, the denied lines, amounts, the reason category, the names, the reference number, the appeal deadline). A value the extraction did not find is null. The confidence scores are left out |
+| `evidence` | The search results in their order. Each has a `label`, the `document_title`, the `section_number`, the `section_title` and the `text` |
+
+The label of a result is its position: `E1` is the first result, `E2` the second, up to
+`E5`. `evidence_label(position)` builds it.
+
+The model is **not** given the raw text of any document, the clinical note, the
+prior-authorisation record, the rules verdict or the win score.
+
+The system message is the prompt file. It is read from the folder in settings, and its
+version (`v1`, the constant `DRAFTING_PROMPT_VERSION`) is stored with every draft and with
+every spend row. The prompt holds no secret. It tells the model to write a policy paragraph
+only when a passage supports the appeal of this claim, and otherwise to write the letter
+with `other` paragraphs only.
+
+Every drafting call is recorded in `llm_calls` with the purpose `drafting`. The output
+limit is 1,500 tokens (`DRAFTING_MAX_OUTPUT_TOKENS`).
+
+### The search question
+
+A denial letter holds a reason category and procedure codes. It holds no words about the
+service. So the question is one fixed phrase for the category, followed by the codes:
+
+```text
+Medicare coverage of the item or service and the conditions under which it is covered. Procedure codes: <code>, <code>.
+```
+
+The phrases are the named constant `SEARCH_PHRASES`, one for each of the six denial reason
+categories. A letter whose reason is unknown gets the phrase of `other`. Each code is added
+once; with no code the question is the phrase alone.
+
+`build_search_question` is pure: no model call, no database. `SEARCH_QUESTION_VERSION`
+(`v1`) names the phrases and the way the codes are added. A change to either changes what a
+search finds, so it needs a new version. The version is stored with every draft.
+
+### The output shape
+
+The model answers with one JSON object, a list of paragraphs. The answer is parsed into the
+Pydantic model `AppealDraft`:
+
+| Field | Holds |
+|---|---|
+| `kind` | `policy` or `other` |
+| `text` | The paragraph as it stands in the letter |
+| `citations` | A list of `label` + `quote`. Only a `policy` paragraph may have one |
+
+A paragraph is `policy` when it says anything about what a coverage policy, a
+determination, a rule or a regulation says, allows, requires or covers. Everything else is
+`other`: the opening, the facts of the claim, the request, the closing.
+
+The shape itself refuses three things, before the validator runs: an extra key, a citation
+on an `other` paragraph, and a label that is not `E` followed by a number from 1 to 99.
+
+**The model writes labels and quotes only.** It never writes the four values that name a
+chunk. After the validator has passed the draft, the code looks each label up in the search
+results and fills `source`, `source_document_id`, `chunk_index` and `text_sha256` (3.13).
+The result is an `AppealLetter`. A citation in it never holds a row id.
+
+### The citation validator
+
+`validate_citations(draft, matches)` is a pure function: no model call, no database, no
+clock. The same draft and the same results always give the same answer. `matches` must be
+the same list, in the same order, that the model was shown, because a label is a position
+in it.
+
+A draft passes only when every `policy` paragraph:
+
+1. has at least one citation;
+2. cites only labels that are among the search results;
+3. gives a quote of at least 20 characters (`MIN_QUOTE_CHARACTERS`) that is found word for
+   word in the text of the cited chunk.
+
+Whitespace is the only difference a quote may have: runs of spaces and line breaks count as
+one space, and the length is measured after that. Everything else is exact. Upper and lower
+case differ, and a curly quotation mark is not a straight one, so a quote the model tidied
+up is blocked. A quote must also start and end where a word does: "covered at home" is not
+found in "uncovered at home", because that quote would say the opposite of the text. A
+hyphen, an apostrophe, a point or a comma with a letter or digit on both sides is part of
+the word or number, so "covered at home" is not found in "non-covered at home" and "200
+units" is not found in "1,200 units". The minimum length is there because a few words such
+as "is covered" are in almost every chunk and would prove nothing.
+
+The answer is a `CitationCheck` with every problem found, not only the first. Each problem
+has a kind, the paragraph's position and the label. It never holds quote or chunk text.
+
+| Problem kind | Means |
+|---|---|
+| `policy_without_citation` | A `policy` paragraph has no citation |
+| `unknown_label` | A cited label is not among the search results |
+| `quote_too_short` | A quote is under 20 characters |
+| `quote_not_in_evidence` | A quote is not in the text of the cited chunk |
+
+A draft with only `other` paragraphs passes: it makes no policy statement, so there is
+nothing to cite.
+
+### A draft that cannot be used
+
+`draft_appeal` returns a checked letter or raises one of three errors:
+
+| Error | Raised when |
+|---|---|
+| `DraftTruncatedError` | The answer reached the output limit before it was complete |
+| `DraftParseError` | The answer is not JSON, or does not fit the draft shape |
+| `DraftBlockedError` | The validator found a problem; `problems` holds every one |
+
+In all three cases the call is already paid for and recorded, **nothing is stored**, and
+there is no repair and no second call. The run counts the case and goes on to the next
+claim. The gateway's own errors (over budget, no provider available) pass through.
+
+No error message quotes the model's answer, a quote or evidence text. The parser's own
+error would quote the answer, so it is dropped (`raise ... from None`).
+
+### The table
+
+`appeal_drafts` has one row per claim and drafting prompt version. It is a public reference
+table with no `account_id`: it holds only drafts for the made-up claims of the synthetic
+sample, like `document_extractions` (3.9). A customer's draft will get its own business
+table with `account_id` (the `drafts` table of 3.4, not built yet).
+
+| Column | Holds |
+|---|---|
+| `source_claim_id` | The claim, a link to `claim_samples`; removing a claim removes its drafts |
+| `prompt_version` | The drafting prompt version; never empty |
+| `search_question_version` | The version of the search question; never empty |
+| `model_name` | The model that answered; never empty |
+| `provider` | The role that answered: `primary` or `fallback` |
+| `text_sha256` | The hash of the denial letter document the draft was built from |
+| `letter` | The checked `AppealLetter` as JSON: each paragraph's kind and text, and per citation the four citation fields and the quote |
+| `created_at`, `updated_at` | As on every table |
+
+`source_claim_id` and `prompt_version` are unique together, so a new prompt version keeps
+the old drafts.
+
+**No foreign key points at the evidence tables.** A new load of the corpus gives every
+chunk a new row id (3.13), and it must not remove a draft. A citation names its chunk by
+the four values instead.
+
+The table does not check what is inside `letter`. The only code that writes it is
+`save_appeal_draft`, which is given what `draft_appeal` returned. A test proves that a
+blocked draft leaves no row.
+
+### A run over many claims
+
+`run_drafting` takes the claims the command selected and works through them one at a time.
+
+**Which claims are selected.** A claim is selected when it is denied, it is in the chosen
+split, and its denial letter has a current extraction: a `document_extractions` row whose
+hash equals the hash of the letter text stored now. The order is claim id, so the same
+`--limit` always means the same claims. The command prints how many denied claims of the
+split were left out for having no current extraction.
+
+**Which are skipped.** A claim that already has a draft of the prompt version is skipped
+and costs nothing. Each letter is committed on its own, so a run that stopped keeps what it
+finished and the same command continues it.
+
+**A claim with no usable draft is tried again by the next run.** Nothing is stored for a
+blocked draft or an unusable answer, so the next run sees the claim as not drafted and pays
+for one more try. A run drafts 0 and spends $0 only once every selected claim has a draft.
+
+The run ends early, without a traceback, in these cases. What was finished before is kept:
+
+| Case | Why the run stops |
+|---|---|
+| The monthly budget is reached | Every further call would be refused |
+| No provider can answer | The next claim would most likely fail the same way |
+| A provider refuses a request (a bad request, a wrong key) | The same |
+| The evidence has no stored vector | Nothing can be searched until the embedding run (3.14) |
+| The answer to a search question's embedding call cannot be used | A wrong model or vector size would repeat on every claim, each time paid for |
+
+The command's report gives the counts, the time and the money. It prints no letter text and
+no document text.
+
+### Measured
+
+Measured on 2026-10-11 on the local database, after migration 0012: the test split,
+`--limit 50`, drafting prompt `v1`, search question `v1`, model `gpt-4o-mini`. The split
+has 759 denied claims; 749 have a current letter extraction and 10 were left out.
+
+| Run | Drafted | Blocked | Failed to parse | Cost | Time |
+|---|---|---|---|---|---|
+| 1 | 46 | 1 (`quote_not_in_evidence`) | 3 | $0.024261 | 235 seconds |
+| 2 | the 4 left over | 0 | 0 | $0.001811 | not recorded |
+| 3 | 0 | 0 | 0 | $0 | not recorded |
+
+In run 1, stored drafts + blocked drafts + other failures = 46 + 1 + 3 = 50.
+
+| Number | Value |
+|---|---|
+| Drafts stored after the three runs | 50 |
+| Stored drafts with at least one citation | 15 |
+| Citations in them | 15, to 5 distinct determinations |
+| Citations whose four values name a chunk in `evidence_chunks` | 15 of 15 |
+| Answered by the fallback | 0 |
+| Cost of the three runs | $0.026072 |
+| Cost of one draft | about $0.0005 (about 2,080 input and 280 output tokens) |
+| Month-to-date spend after the runs | $0.731929 of the $3.00 cap |
+
+The citation check in the fourth row was a one-off read-only query, not a command.
+
+Stored drafts with a citation, by the letter's denial reason:
+
+| Denial reason | With a citation |
+|---|---|
+| `other` | 7 of 27 |
+| `noncovered` | 6 of 16 |
+| `medical_necessity` | 2 of 2 |
+| `coordination_of_benefits` | 0 of 4 |
+| `duplicate` | 0 of 1 |
+
+**35 of the 50 stored letters make no policy statement.** They are letters of `other`
+paragraphs only: the facts of the claim and a request to review it. That is what the prompt
+asks for when no passage fits, and it is the expected result of the weak search question
+(see the limits below).
+
+The share of drafts a reviewer accepts (the 60% target of Stage 4) is **not** measured
+here. It needs a person and a written rubric.
+
+### Known limits
+
+About the evidence a draft gets:
+
+- The search question has no words about the service: a fixed phrase and code numbers. Only
+  4 of the 1,530 distinct procedure codes on denied lines appear as a word in any evidence
+  chunk. So the passages found may not be about the claim's service.
+- 394 of the 759 denied test claims are not about coverage policy (their reason is not
+  `noncovered` or `medical_necessity`), and the corpus has no appeal-rights text for them.
+  The CMS manuals that hold it are not loaded (3.13).
+- The policy text is the 2026 version and the claims are from 2008 to 2010. The letters
+  name made-up payers, while the evidence is Medicare policy. The drafts show the mechanism
+  (retrieve, cite, check); they are not real appeals.
+
+About what the validator proves:
+
+- It checks that a quote is in the cited text. It does **not** check that the text is the
+  right policy for the claim, or that the paragraph says what the quote says.
+- A policy statement in a paragraph the model marked `other` is not caught. The prompt asks
+  the model not to do this; nothing checks it. This is why a person reviews every draft.
+- The match is exact apart from whitespace. A correct quote with a changed capital letter
+  or quotation mark is blocked, and so is a quote that starts or ends in the middle of a
+  word, a hyphenated word ("term care" out of "long-term care") or a number. That is the
+  safe side, and it costs some good drafts.
+
+About stored drafts:
+
+- A draft is not redone when its letter document changes. The claim is skipped as already
+  drafted. The draft can be found as out of date, because its `text_sha256` no longer
+  equals the stored letter's, but nothing marks it.
+- A draft is not marked when the evidence corpus is loaded again. A citation whose
+  `text_sha256` no longer matches a stored chunk is out of date; nothing looks for it.
+- A claim whose draft is blocked or unusable is paid for again on every run until it gets
+  a draft. Nothing limits the number of tries.
+
+About the run that was measured:
+
+- Why the 3 answers of run 1 failed to parse was not looked into. All 3 claims got a draft
+  on the next try.
+- The exit code of run 1 was not captured. Runs 2 and 3 exited with 0.
+- The per-kind counts in the report count drafts, not problems: a draft with two kinds of
+  problem is counted under both, and one with the same kind twice is counted once.
+- Every answer came from the primary model. Whether the fallback model can fill this output
+  shape was not tried.
+- The output limit of 1,500 tokens is an estimate. No answer of the run reached it.
+
+About the budget:
+
+- Two processes that call a model at the same moment can both pass the budget check (3.8).

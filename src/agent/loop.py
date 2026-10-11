@@ -35,7 +35,11 @@ from src.drafting.drafter import (
     draft_appeal,
 )
 from src.drafting.prompts import DraftingPrompt
-from src.drafting.search_question import SEARCH_QUESTION_VERSION, build_search_question
+from src.drafting.search_question import (
+    MIN_EVIDENCE_SIMILARITY,
+    SEARCH_QUESTION_VERSION,
+    build_search_question,
+)
 from src.drafting.store import DraftCandidate, build_appeal_draft_row, save_appeal_draft
 from src.extraction.schemas import DenialLetterExtraction
 from src.llm.gateway import LlmGateway
@@ -81,6 +85,9 @@ def run_agent_for_claim(
     Spends money and can take several seconds when the claim reaches the last two steps: one
     embedding call and one model call through `gateway`. A claim the rules or the threshold
     stop costs nothing. `embedding_model` must be the model the gateway embeds with.
+
+    A chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown
+    to the drafting model. A claim with no chunk left is still drafted, with no evidence.
 
     A checked letter is stored in `appeal_drafts`, in its own commit, replacing the draft the
     claim had for the prompt version. The trace is returned, not stored. A draft that is
@@ -129,11 +136,18 @@ def run_agent_for_claim(
         ],
     )
     with session_scope(session_factory) as session:
-        matches = search_evidence(session, gateway, question, model_name=embedding_model)
+        matches = search_evidence(
+            session,
+            gateway,
+            question,
+            model_name=embedding_model,
+            min_similarity=MIN_EVIDENCE_SIMILARITY,
+        )
     retrieval = RetrievalStep(
         status=StepStatus.DONE,
         search_question_version=SEARCH_QUESTION_VERSION,
         embedding_model=embedding_model,
+        min_similarity=MIN_EVIDENCE_SIMILARITY,
         matches=tuple(
             EvidenceReference(
                 source=match.source,

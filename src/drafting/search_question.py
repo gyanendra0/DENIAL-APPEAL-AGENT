@@ -17,8 +17,9 @@ from collections.abc import Mapping, Sequence
 
 from src.db.models import DenialReasonCategory
 
-# Names the phrases below and the way the codes are added. Stored with every draft.
-SEARCH_QUESTION_VERSION = "v1"
+# Names the phrases below, the way the codes are added and the minimum similarity. Stored with
+# every draft. `v2` added the minimum; the phrases and the codes are those of `v1`.
+SEARCH_QUESTION_VERSION = "v2"
 SEARCH_PHRASES: Mapping[DenialReasonCategory, str] = {
     DenialReasonCategory.NONCOVERED: (
         "Medicare coverage of the item or service and the conditions under which it is covered"

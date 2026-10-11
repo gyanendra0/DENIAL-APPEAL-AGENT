@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pipelines import review_drafts
 from pipelines.review_drafts import main
+from src.agent.trace import AGENT_VERSION
 from src.config.settings import get_settings
 from src.db.models import (
     AgentRun,
@@ -40,7 +41,7 @@ from tests.evaluation.review_helpers import (
 )
 from tests.extraction.helpers import CLAIM_1, CLAIM_2, CLAIM_3, LETTER, PATIENT_NAME, document_text
 
-HEADLINE = "drafts that can be reviewed (seed 42, agent v1, drafting prompt v1)"
+HEADLINE = "drafts that can be reviewed (seed 42, agent v2, drafting prompt v1)"
 HIDDEN_NOTE = "a made-up note nobody may print"
 
 
@@ -174,7 +175,7 @@ def test_only_needs_review_drafts_are_exported(
             .where(AgentRun.source_claim_id == CLAIM_2)
             .values(
                 end_state=EndState.STOPPED_BY_RULES,
-                trace={"end_state": "stopped_by_rules", "agent_version": "v1"},
+                trace={"end_state": "stopped_by_rules", "agent_version": AGENT_VERSION},
             )
         )
 
@@ -444,7 +445,7 @@ def test_a_row_for_a_claim_that_is_no_longer_needs_review_is_refused(
             .where(AgentRun.source_claim_id == CLAIM_1)
             .values(
                 end_state=EndState.BELOW_THRESHOLD,
-                trace={"end_state": "below_threshold", "agent_version": "v1"},
+                trace={"end_state": "below_threshold", "agent_version": AGENT_VERSION},
             )
         )
     capsys.readouterr()

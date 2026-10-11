@@ -1,3 +1,4 @@
+import json
 import re
 from collections.abc import Iterator
 from datetime import date
@@ -31,6 +32,7 @@ from src.db.session import session_scope
 from src.drafting.citation_validator import CitationProblemKind
 from src.drafting.schemas import AppealLetter
 from src.drafting.search_question import (
+    MIN_EVIDENCE_SIMILARITY,
     SEARCH_PHRASES,
     SEARCH_QUESTION_VERSION,
     build_search_question,
@@ -63,6 +65,7 @@ from tests.drafting.helpers import (
     stored_drafts,
     two_problem_answer,
     uncited_answer,
+    weaken_second_chunk,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -187,6 +190,7 @@ def test_the_trace_records_the_facts_of_every_step(factory: sessionmaker[Session
     )
     assert trace.retrieval.search_question_version == SEARCH_QUESTION_VERSION
     assert trace.retrieval.embedding_model == MODEL
+    assert trace.retrieval.min_similarity == MIN_EVIDENCE_SIMILARITY
     closest, second = trace.retrieval.matches
     assert (closest.source, closest.source_document_id, closest.chunk_index) == (
         EvidenceSource.CMS_NCD,
@@ -225,6 +229,38 @@ def test_a_letter_without_a_reason_or_lines_is_searched_with_the_phrase_of_other
 
     assert trace.end_state is EndState.NEEDS_REVIEW
     assert embedder.requests[0].texts == (SEARCH_PHRASES[DenialReasonCategory.OTHER],)
+
+
+def test_a_match_below_the_minimum_similarity_is_not_shown_to_the_model(
+    factory: sessionmaker[Session],
+) -> None:
+    weaken_second_chunk(factory)
+    primary = StubProvider(good_answer)
+
+    trace = _run(factory, primary)
+
+    (shown,) = json.loads(primary.requests[0].user)["evidence"]
+    assert shown["text"].startswith(CHUNK_TEXT)
+    (kept,) = trace.retrieval.matches
+    assert (kept.chunk_index, kept.similarity >= MIN_EVIDENCE_SIMILARITY) == (0, True)
+
+
+def test_a_claim_with_no_match_at_the_minimum_is_drafted_with_no_evidence(
+    factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider(uncited_answer)
+    # A question vector that points away from both stored chunks.
+    embedder = StubEmbedder(filler={1: -0.5})
+
+    trace = _run(factory, primary, embedder=embedder)
+
+    assert json.loads(primary.requests[0].user)["evidence"] == []
+    assert trace.end_state is EndState.NEEDS_REVIEW
+    assert (trace.retrieval.status, trace.retrieval.matches) == (StepStatus.DONE, ())
+    assert trace.retrieval.min_similarity == MIN_EVIDENCE_SIMILARITY
+    assert trace.drafting.cited_paragraphs == 0
+    letter = AppealLetter.model_validate(stored_drafts(factory)[CLAIM_1].letter)
+    assert [paragraph.citations for paragraph in letter.paragraphs] == [()]
 
 
 def test_a_hard_fail_stops_the_claim_with_no_model_call_and_no_draft(

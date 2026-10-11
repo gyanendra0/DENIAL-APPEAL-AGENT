@@ -11,10 +11,16 @@ from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.db.models import DocumentExtraction, LlmProvider, StoredAppealDraft
+from src.db.models import (
+    DocumentExtraction,
+    EvidenceChunk,
+    EvidenceChunkEmbedding,
+    LlmProvider,
+    StoredAppealDraft,
+)
 from src.db.session import session_scope
 from src.drafting.prompts import DraftingPrompt
 from src.extraction.prompts import EXTRACTION_PROMPT_VERSION
@@ -33,7 +39,13 @@ from tests.extraction.helpers import (
     stored_documents,
 )
 from tests.rag.helpers import CALL_COST as EMBEDDING_COST
-from tests.rag.helpers import StubEmbedder, add_document, evidence_tables, store_vector
+from tests.rag.helpers import (
+    StubEmbedder,
+    add_document,
+    evidence_tables,
+    padded_vector,
+    store_vector,
+)
 
 SYSTEM_TEXT = "Draft the made-up appeal letter."
 # The drafting prompt carries the version whose `llm_calls` rows `stored_documents` removes.
@@ -147,6 +159,19 @@ def drafting_data(engine: Engine, *, embedded: bool = True) -> Iterator[sessionm
                 store_vector(session, chunk_ids[0], [0.0], filler=0.5)
                 store_vector(session, chunk_ids[1], [-9.0], filler=0.5)
         yield factory
+
+
+def weaken_second_chunk(factory: sessionmaker[Session]) -> None:
+    """Move the second chunk's vector away, so its similarity to any question is under 0.5."""
+    with session_scope(factory) as session:
+        chunk_id = session.scalars(
+            select(EvidenceChunk.id).where(EvidenceChunk.chunk_index == 1)
+        ).one()
+        session.execute(
+            update(EvidenceChunkEmbedding)
+            .where(EvidenceChunkEmbedding.evidence_chunk_id == chunk_id)
+            .values(embedding=padded_vector([-40.0], 0.5))
+        )
 
 
 def stored_drafts(factory: sessionmaker[Session]) -> dict[str, StoredAppealDraft]:

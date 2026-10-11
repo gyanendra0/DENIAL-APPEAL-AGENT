@@ -17,8 +17,8 @@ def test_every_denial_reason_category_has_its_own_phrase() -> None:
 
 def test_the_phrases_are_the_decided_ones() -> None:
     # A change to a phrase needs a new version: stored drafts name the wording they used.
-    # The minimum similarity leaves the wording alone, so these stay the first version's phrases.
-    assert SEARCH_QUESTION_VERSION == "v1"
+    # `v2` added the minimum similarity and left the wording alone: these are the `v1` phrases.
+    assert SEARCH_QUESTION_VERSION == "v2"
     assert {category.value: phrase for category, phrase in SEARCH_PHRASES.items()} == {
         "noncovered": (
             "Medicare coverage of the item or service and the conditions under which it is covered"

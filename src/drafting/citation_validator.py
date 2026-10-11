@@ -14,7 +14,10 @@ A draft passes only when every `policy` paragraph
 Whitespace is the only difference a quote may have: runs of spaces and line breaks count as
 one space. Everything else is exact. Upper and lower case differ, and a curly quotation mark
 is not a straight one, so a quote the model tidied up is blocked. A quote must also start
-and end where a word does: "covered at home" is not found in "uncovered at home".
+and end where a word does: "covered at home" is not found in "uncovered at home", and not
+in "non-covered at home" either. A hyphen, an apostrophe, a point or a comma with a letter
+or digit on both sides is part of the word or number, so "200 units" is not found in
+"1,200 units".
 
 What this does NOT check: that the cited text is the right policy for the claim, or that a
 paragraph marked `other` states no policy. A problem carries the paragraph's position and the
@@ -32,6 +35,10 @@ from src.rag.retrieval import EvidenceMatch
 # The shortest quote that counts, measured after whitespace is collapsed. A few words such
 # as "is covered" are in almost every chunk and would prove nothing.
 MIN_QUOTE_CHARACTERS = 20
+
+# Characters that join the letters or digits on both sides of them into one word or number:
+# "non-covered", "patient's", "12.5", "1,200".
+JOINING_CHARACTERS = frozenset("-'’.,")
 
 
 class CitationProblemKind(StrEnum):
@@ -128,8 +135,21 @@ def _holds_whole_words(evidence_text: str, quote: str) -> bool:
 
 
 def _splits_a_word(text: str, position: int) -> bool:
-    """True when the characters on both sides of `position` are letters or digits."""
-    return 0 < position < len(text) and text[position - 1].isalnum() and text[position].isalnum()
+    """True when a cut between `position - 1` and `position` goes through a word or number.
+
+    That is the case when both neighbours are letters or digits, or when one neighbour is a
+    joining character that has a letter or digit on each side of it ("non-|covered", "1|,200").
+    """
+    if not 0 < position < len(text):
+        return False
+    before, after = text[position - 1], text[position]
+    if before.isalnum() and after.isalnum():
+        return True
+    if before.isalnum() and after in JOINING_CHARACTERS:
+        return position + 1 < len(text) and text[position + 1].isalnum()
+    if before in JOINING_CHARACTERS and after.isalnum():
+        return position >= 2 and text[position - 2].isalnum()
+    return False
 
 
 def _collapse_whitespace(text: str) -> str:

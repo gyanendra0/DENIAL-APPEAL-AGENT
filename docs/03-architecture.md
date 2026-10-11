@@ -1671,9 +1671,11 @@ Whitespace is the only difference a quote may have: runs of spaces and line brea
 one space, and the length is measured after that. Everything else is exact. Upper and lower
 case differ, and a curly quotation mark is not a straight one, so a quote the model tidied
 up is blocked. A quote must also start and end where a word does: "covered at home" is not
-found in "uncovered at home", because that quote would say the opposite of the text. The
-minimum length is there because a few words such as "is covered" are in almost every chunk
-and would prove nothing.
+found in "uncovered at home", because that quote would say the opposite of the text. A
+hyphen, an apostrophe, a point or a comma with a letter or digit on both sides is part of
+the word or number, so "covered at home" is not found in "non-covered at home" and "200
+units" is not found in "1,200 units". The minimum length is there because a few words such
+as "is covered" are in almost every chunk and would prove nothing.
 
 The answer is a `CitationCheck` with every problem found, not only the first. Each problem
 has a kind, the paragraph's position and the label. It never holds quote or chunk text.
@@ -1831,7 +1833,9 @@ About what the validator proves:
 - A policy statement in a paragraph the model marked `other` is not caught. The prompt asks
   the model not to do this; nothing checks it. This is why a person reviews every draft.
 - The match is exact apart from whitespace. A correct quote with a changed capital letter
-  or quotation mark is blocked. That is the safe side, and it costs some good drafts.
+  or quotation mark is blocked, and so is a quote that starts or ends in the middle of a
+  word, a hyphenated word ("term care" out of "long-term care") or a number. That is the
+  safe side, and it costs some good drafts.
 
 About stored drafts:
 

@@ -213,7 +213,6 @@ def test_a_quote_that_starts_or_ends_inside_a_word_is_blocked(quote: str) -> Non
         "The made-up widget(type 2)",  # the start of the text
         "when it is used at home.",  # the end of the text
         "when it is used at home",  # a full stop follows
-        "up widget(type 2) is uncovered",  # a hyphen comes before
         "(type 2) is uncovered when",  # the quote itself starts with a bracket
     ],
 )
@@ -221,6 +220,69 @@ def test_a_quote_next_to_punctuation_or_the_edge_of_the_text_passes(quote: str) 
     matches = [_match(0, "The made-up widget(type 2) is uncovered when it is used at home.")]
 
     assert validate_citations(_draft(_policy(("E1", quote))), matches).passed is True
+
+
+@pytest.mark.parametrize(
+    ("text", "quote"),
+    [
+        # A hyphen joins "non" and "covered": the quote would say the opposite of the text.
+        (
+            "The made-up widget is non-covered when it is used at home.",
+            "covered when it is used at home",
+        ),
+        ("The made-up widget is uncovered at home.", "up widget is uncovered at home."),
+        ("A made-up visit is covered in non-hospital places.", "A made-up visit is covered in non"),
+        # A comma or a point inside a number: the quote would give another number.
+        ("Made-up visits are limited to 1,200 units in each year.", "200 units in each year."),
+        ("The made-up dose is 12.5 units on every day.", "5 units on every day."),
+        ("Made-up visits are limited to 1,200 units.", "visits are limited to 1"),
+        ("The patient's condition must be written down.", "s condition must be written down."),
+        ("The patient’s condition must be written down.", "s condition must be written down."),
+        # The quote itself starts with the hyphen.
+        ("The made-up widget is non-covered when used at home.", "-covered when used at home."),
+    ],
+)
+def test_a_quote_cut_at_a_hyphen_an_apostrophe_or_inside_a_number_is_blocked(
+    text: str, quote: str
+) -> None:
+    check = validate_citations(_draft(_policy(("E1", quote))), [_match(0, text)])
+
+    assert check.problems == (_problem(CitationProblemKind.QUOTE_NOT_IN_EVIDENCE, 0, "E1"),)
+
+
+@pytest.mark.parametrize(
+    ("text", "quote"),
+    [
+        # A full stop or a comma followed by a space ends a word, it joins nothing.
+        (
+            "It is always used at home. It is covered when a nurse visits.",
+            "It is always used at home",
+        ),
+        (
+            "It is always used at home. It is covered when a nurse visits.",
+            "It is covered when a nurse",
+        ),
+        ("When it is used at home, a nurse must visit often.", "When it is used at home"),
+        ("When it is used at home, a nurse must visit often.", "a nurse must visit often."),
+        # A whole hyphenated word and a whole number are fine.
+        ("The made-up widget is non-covered at home.", "non-covered at home."),
+        ("Made-up visits are limited to 1,200 units.", "limited to 1,200 units"),
+        # A hyphen with nothing before it joins nothing.
+        ("-covered when it is used at home.", "covered when it is used at home."),
+    ],
+)
+def test_a_quote_next_to_a_mark_that_joins_nothing_passes(text: str, quote: str) -> None:
+    assert validate_citations(_draft(_policy(("E1", quote))), [_match(0, text)]).passed is True
+
+
+def test_a_whole_word_place_that_overlaps_a_refused_place_is_still_found() -> None:
+    # The first place found starts inside "xab"; the only good place begins 3 characters on.
+    quote = "ab ab ab ab ab ab ab"
+    assert len(quote) == MIN_QUOTE_CHARACTERS
+
+    check = validate_citations(_draft(_policy(("E1", quote))), [_match(0, f"x{quote} ab")])
+
+    assert check.passed is True
 
 
 def test_a_quote_found_inside_a_word_and_again_as_whole_words_passes() -> None:

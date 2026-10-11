@@ -1,8 +1,10 @@
-"""Read chapters of the CMS Internet-Only Manuals (PDF files) as evidence.
+"""Load chapters of the CMS Internet-Only Manuals (PDF files) as evidence.
 
 One file is one chapter. Each numbered section of the chapter (for example `50.4.1`) becomes
 one document, and its text is cut into chunks (`src.rag.chunking`). A file that fails any
-quality gate rejects the whole batch: nothing is returned.
+quality gate rejects the whole batch: nothing is returned. The sections then replace the
+stored ones of the source `cms_manual` in `evidence_documents` and `evidence_chunks`, public
+reference tables (no `account_id`); the coverage determinations stay as they are.
 
 How a chapter is read:
 
@@ -33,9 +35,10 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlalchemy.orm import Session
 
 from src.db.models import EvidenceSource
-from src.ingest.evidence_corpus import UNREADABLE_CHARACTERS
+from src.ingest.evidence_corpus import UNREADABLE_CHARACTERS, replace_source_documents
 from src.ingest.marketplace_denials import BatchRejectedError
 from src.ingest.pdf_text import read_pdf_pages
 from src.rag.chunking import Chunk, Paragraph, SectionText, chunk_document
@@ -197,6 +200,20 @@ def read_manual_chapters(paths: Sequence[Path], *, source_file_date: date) -> Ma
         counts.empty_skipped,
     )
     return batch
+
+
+def replace_manual_chapters(session: Session, batch: ManualChapterBatch) -> tuple[int, int]:
+    """Make the stored manual sections exactly `batch`: remove them all, then store `batch`.
+
+    Only rows of the source `cms_manual` are removed; their chunks and vectors go with them.
+    A chapter that is not in `batch` is gone afterwards. Returns (documents, chunks) written.
+    Does not commit: the caller owns the transaction, so a failure brings the old rows back.
+    """
+    return replace_source_documents(
+        session,
+        EvidenceSource.CMS_MANUAL,
+        [(entry.document.model_dump(), entry.chunks) for entry in batch.entries],
+    )
 
 
 def _chapter_entries(

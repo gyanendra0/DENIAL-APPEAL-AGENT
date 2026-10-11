@@ -19,7 +19,7 @@ import logging
 import re
 import zlib
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -212,31 +212,53 @@ def replace_evidence_corpus(session: Session, batch: EvidenceCorpusBatch) -> tup
     chunks) written. Does not commit: the caller owns the transaction, so a failure brings
     the old rows back.
     """
-    session.execute(
-        delete(EvidenceDocument).where(EvidenceDocument.source == EvidenceSource.CMS_NCD)
+    return replace_source_documents(
+        session,
+        EvidenceSource.CMS_NCD,
+        [(entry.document.model_dump(), entry.chunks) for entry in batch.entries],
     )
-    if not batch.entries:
+
+
+def replace_source_documents(
+    session: Session,
+    source: EvidenceSource,
+    entries: Sequence[tuple[Mapping[str, Any], Sequence[Chunk]]],
+) -> tuple[int, int]:
+    """Make the stored documents of `source` exactly `entries`: remove them all, then store.
+
+    An entry is a validated document row, with the columns of `evidence_documents`, and its
+    chunks. Rows of every other source stay as they are. The chunks of a removed document go
+    with it, and their vectors too. Returns (documents, chunks) written. Does not commit.
+    Raises `ValueError` if a document belongs to another source: nothing is removed then.
+    """
+    if any(document["source"] != source for document, _ in entries):
+        raise ValueError(f"every document must have the source {source.value}")
+    session.execute(delete(EvidenceDocument).where(EvidenceDocument.source == source))
+    if not entries:
         return 0, 0
     stored = session.execute(
         insert(EvidenceDocument).returning(
             EvidenceDocument.source_document_id, EvidenceDocument.id
         ),
-        [entry.document.model_dump() for entry in batch.entries],
+        [dict(document) for document, _ in entries],
     )
     document_ids = {source_document_id: row_id for source_document_id, row_id in stored}
-    session.execute(
-        insert(EvidenceChunk),
-        [
-            {
-                "evidence_document_id": document_ids[entry.document.source_document_id],
-                **chunk.model_dump(),
-            }
-            for entry in batch.entries
-            for chunk in entry.chunks
-        ],
+    chunk_rows = [
+        {
+            "evidence_document_id": document_ids[document["source_document_id"]],
+            **chunk.model_dump(),
+        }
+        for document, chunks in entries
+        for chunk in chunks
+    ]
+    session.execute(insert(EvidenceChunk), chunk_rows)
+    logger.info(
+        "stored %d %s evidence documents and %d chunks",
+        len(entries),
+        source.value,
+        len(chunk_rows),
     )
-    logger.info("stored %d evidence documents and %d chunks", len(batch.entries), batch.chunk_count)
-    return len(batch.entries), batch.chunk_count
+    return len(entries), len(chunk_rows)
 
 
 def _csv_rows(path: Path) -> tuple[list[list[str]], date]:

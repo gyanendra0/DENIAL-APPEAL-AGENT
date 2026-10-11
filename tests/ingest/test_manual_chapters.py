@@ -1,4 +1,4 @@
-"""Manual chapter reader tests. The fixture is a made-up chapter 99 of two pages.
+"""Manual chapter reader and store tests. The fixture is a made-up chapter 99 of two pages.
 
 Its table of contents lists five sections. Section 10 runs over the page end and holds a word
 cut at a line end and a numbered line that is not a heading. Section 10.1 has a heading and a
@@ -12,20 +12,31 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from src.db.models import EvidenceSource
+from src.db.models import EvidenceChunk, EvidenceChunkEmbedding, EvidenceDocument, EvidenceSource
+from src.ingest.evidence_corpus import (
+    read_evidence_corpus,
+    replace_evidence_corpus,
+    replace_source_documents,
+)
 from src.ingest.manual_chapters import (
     MAX_TITLE_CHARS,
     ManualChapterBatch,
     ManualSectionEntry,
     read_manual_chapters,
+    replace_manual_chapters,
 )
 from src.ingest.marketplace_denials import BatchRejectedError
 from src.ingest.pdf_text import read_pdf_pages
 from src.rag.chunking import CHUNKER_VERSION, MAX_CHUNK_CHARS
-from tests.ingest.helpers import MANUAL_FIXTURE, manual_pdf, write_text_pdf
+from tests.ingest.helpers import MANUAL_FIXTURE, manual_pdf, ncd_zip, write_text_pdf
+from tests.rag.helpers import store_vector
 
 FILE_DATE = date(2026, 10, 11)
+MANUALS = EvidenceSource.CMS_MANUAL
+DETERMINATIONS = EvidenceSource.CMS_NCD
 MANUAL_LINE = "    Medicare Benefit Policy Manual"
 CHAPTER_LINE = "Chapter 99 - Made-Up Example Services"
 FIRST_HEADING = "10 - Example Coverage Rules"
@@ -485,3 +496,180 @@ def test_rejects_text_with_an_unreadable_character(
     assert _rejected(MANUAL_FIXTURE) == [
         "manual_chapter_sample.pdf: section 10.1: the text holds an unreadable character"
     ]
+
+
+# Writing.
+
+
+def _stored(session: Session, source: EvidenceSource) -> list[tuple[str, int, str, bool]]:
+    """(document id, chunk index, text hash, has a vector) per stored chunk of one source."""
+    rows = session.execute(
+        select(
+            EvidenceDocument.source_document_id,
+            EvidenceChunk.chunk_index,
+            EvidenceChunk.text_sha256,
+            EvidenceChunkEmbedding.id.is_not(None),
+        )
+        .join(EvidenceChunk, EvidenceChunk.evidence_document_id == EvidenceDocument.id)
+        .outerjoin(
+            EvidenceChunkEmbedding, EvidenceChunkEmbedding.evidence_chunk_id == EvidenceChunk.id
+        )
+        .where(EvidenceDocument.source == source)
+        .order_by(EvidenceDocument.source_document_id, EvidenceChunk.chunk_index)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+def _store_determinations_with_vectors(session: Session, tmp_path: Path) -> None:
+    replace_evidence_corpus(session, read_evidence_corpus(ncd_zip(tmp_path)))
+    for chunk_id in session.scalars(select(EvidenceChunk.id)).all():
+        store_vector(session, chunk_id, [1.0, 0.0])
+    session.flush()
+
+
+def test_replace_stores_every_section_and_chunk(session: Session) -> None:
+    written = replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+
+    assert written == (4, 4)
+    assert [(document_id, index) for document_id, index, _, _ in _stored(session, MANUALS)] == [
+        ("100-02-99-10", 0),
+        ("100-02-99-10.1", 0),
+        ("100-02-99-20.1", 0),
+        ("100-02-99-30", 0),
+    ]
+
+
+def test_replace_stores_every_field(session: Session) -> None:
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+
+    document = session.scalars(
+        select(EvidenceDocument).where(
+            EvidenceDocument.source == MANUALS,
+            EvidenceDocument.source_document_id == "100-02-99-20.1",
+        )
+    ).one()
+    chunk = session.scalars(
+        select(EvidenceChunk).where(EvidenceChunk.evidence_document_id == document.id)
+    ).one()
+    assert (
+        document.section_number,
+        document.title,
+        document.version_number,
+        document.effective_date,
+        document.source_file_date,
+    ) == (
+        "100-02-99-20.1",
+        "Example With a Short Revision Line",
+        7,
+        date(2005, 11, 12),
+        FILE_DATE,
+    )
+    text = "This section's revision line names no effective date."
+    assert (chunk.chunk_index, chunk.section_title, chunk.text, chunk.chunker_version) == (
+        0,
+        None,
+        text,
+        CHUNKER_VERSION,
+    )
+    assert chunk.text_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_a_second_load_replaces_the_first_instead_of_adding_to_it(
+    session: Session, tmp_path: Path
+) -> None:
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    without_the_last = manual_pdf(
+        tmp_path,
+        {NO_REVISION_HEADING: None, "This section has a heading and no revision line.": None},
+    )
+
+    written = replace_manual_chapters(session, _read(without_the_last))
+
+    assert written == (3, 3)
+    assert [document_id for document_id, _, _, _ in _stored(session, MANUALS)] == [
+        "100-02-99-10",
+        "100-02-99-10.1",
+        "100-02-99-20.1",
+    ]
+
+
+def test_replacing_twice_leaves_the_same_rows_and_hashes(session: Session) -> None:
+    batch = _read(MANUAL_FIXTURE)
+    replace_manual_chapters(session, batch)
+    first = _stored(session, MANUALS)
+
+    replace_manual_chapters(session, batch)
+
+    assert _stored(session, MANUALS) == first
+    assert len(first) == 4
+
+
+def test_a_manual_load_leaves_the_determinations_and_their_vectors_as_they_were(
+    session: Session, tmp_path: Path
+) -> None:
+    _store_determinations_with_vectors(session, tmp_path)
+    before = _stored(session, DETERMINATIONS)
+
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+
+    assert _stored(session, DETERMINATIONS) == before
+    assert len(before) == 6
+    assert all(has_vector for _, _, _, has_vector in before)
+    assert len(_stored(session, MANUALS)) == 4
+
+
+def test_a_reload_removes_the_vectors_of_the_manual_chunks(session: Session) -> None:
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    for chunk_id in session.scalars(select(EvidenceChunk.id)).all():
+        store_vector(session, chunk_id, [1.0, 0.0])
+    session.flush()
+
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+
+    assert [has_vector for _, _, _, has_vector in _stored(session, MANUALS)] == [False] * 4
+
+
+def test_a_determinations_load_leaves_the_manual_sections_as_they_were(
+    session: Session, tmp_path: Path
+) -> None:
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    before = _stored(session, MANUALS)
+
+    replace_evidence_corpus(session, read_evidence_corpus(ncd_zip(tmp_path)))
+
+    assert _stored(session, MANUALS) == before
+    assert len(before) == 4
+
+
+def test_replacing_with_an_empty_batch_removes_only_the_manual_sections(
+    session: Session, tmp_path: Path
+) -> None:
+    _store_determinations_with_vectors(session, tmp_path)
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    empty = ManualChapterBatch(
+        entries=[], empty_skipped=0, without_revision_line=0, effective_date_from_issued=0
+    )
+
+    written = replace_manual_chapters(session, empty)
+
+    assert written == (0, 0)
+    assert _stored(session, MANUALS) == []
+    assert len(_stored(session, DETERMINATIONS)) == 6
+
+
+def test_a_document_of_another_source_is_refused_and_nothing_is_removed(
+    session: Session, tmp_path: Path
+) -> None:
+    replace_manual_chapters(session, _read(MANUAL_FIXTURE))
+    determinations = read_evidence_corpus(ncd_zip(tmp_path))
+
+    with pytest.raises(ValueError, match="every document must have the source cms_manual"):
+        replace_source_documents(
+            session,
+            MANUALS,
+            [(entry.document.model_dump(), entry.chunks) for entry in determinations.entries],
+        )
+
+    assert len(_stored(session, MANUALS)) == 4
+    assert _stored(session, DETERMINATIONS) == []

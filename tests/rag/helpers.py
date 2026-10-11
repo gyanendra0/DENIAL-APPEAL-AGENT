@@ -105,10 +105,11 @@ def add_document(
     chunk_count: int,
     *,
     section_title: str | None = SECTION_TITLE,
+    source: EvidenceSource = EvidenceSource.CMS_NCD,
 ) -> list[int]:
     """Store one made-up document with `chunk_count` chunks; return the chunk row ids."""
     document = EvidenceDocument(
-        source=EvidenceSource.CMS_NCD,
+        source=source,
         source_document_id=source_document_id,
         section_number=f"999.{source_document_id}",
         title=f"{DOCUMENT_TITLE} {source_document_id}",

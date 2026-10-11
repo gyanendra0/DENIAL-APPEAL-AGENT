@@ -2171,7 +2171,8 @@ About the run that was measured:
   draft on the next try.
 - Every answer came from the primary model. Whether the fallback model can fill the draft
   shape was not tried.
-- A spend of exactly zero prints as `$0`, without decimal places.
+- When the month has no recorded call at all, the report prints the spend as `$0`, without
+  the six decimal places it has otherwise.
 
 About the budget:
 

@@ -1598,7 +1598,7 @@ ran the agent loop for 50 of 50 selected claims (test split, agent v1, drafting 
 
 A second run took the one failed claim again for $0.000467; it ended as `needs_review`. A
 third run printed `ran the agent loop for 0 of 50 selected claims`,
-`finished before this run: 50` and `spent $0 in this run`. The other figures of the runs
+`finished before this run: 50` and `spent $0.000000 in this run`. The other figures of the runs
 are in 03-architecture.md 3.16.
 
 The report prints counts only: no letter text, no document text and no extracted value.

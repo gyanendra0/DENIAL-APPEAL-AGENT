@@ -1573,7 +1573,7 @@ they let through.
 |---|---|
 | `src/drafting/schemas.py` | The draft as the model answers it (`AppealDraft`, `DraftParagraph`, `DraftCitation`), the checked letter (`AppealLetter`, `LetterParagraph`, `Citation`) and `evidence_label(position)` |
 | `src/drafting/citation_validator.py` | `validate_citations(draft, matches)`, its answer `CitationCheck`, the four problem kinds and `MIN_QUOTE_CHARACTERS` |
-| `src/drafting/search_question.py` | `build_search_question(category, procedure_codes)`, `SEARCH_PHRASES` and `SEARCH_QUESTION_VERSION` |
+| `src/drafting/search_question.py` | `build_search_question(category, procedure_codes)`, `SEARCH_PHRASES`, `SEARCH_QUESTION_VERSION` and `MIN_EVIDENCE_SIMILARITY` |
 | `src/drafting/prompts.py` | `load_drafting_prompt(prompt_dir, version)` and the default prompt version |
 | `src/drafting/drafter.py` | `draft_appeal(gateway, prompt, letter, matches)`, its result and its three errors |
 | `src/drafting/store.py` | Reads the claims that can be drafted; saves rows of `appeal_drafts` |
@@ -1591,12 +1591,13 @@ of the Pydantic shape of the model's answer.
 1. Read the extracted fields of the claim's denial letter (the `document_extractions` row
    of extraction prompt `v2`, 3.9).
 2. Build the search question from the denial reason and the procedure codes.
-3. Search the evidence with `search_evidence` (3.14) and keep the top 5 results. This is
-   one small paid embedding call.
-4. Call the model once with the letter's values and the 5 results. This is the paid
-   drafting call.
+3. Search the evidence with `search_evidence` (3.14) and keep at most 5 results, each with
+   a similarity of at least 0.55 (see "The search question" below). This is one small paid
+   embedding call. The search may return fewer than 5 results, or none.
+4. Call the model once with the letter's values and the results. This is the paid drafting
+   call. It is made also when there is no result.
 5. Parse the answer into the draft shape.
-6. Run the citation validator on the draft and the same 5 results.
+6. Run the citation validator on the draft and the same results.
 7. Turn each label into the four citation fields and store the checked letter.
 
 Steps 4 to 6 are `draft_appeal`. Its docstring says it spends money. A failure at step 4, 5
@@ -1613,7 +1614,7 @@ The user message is one JSON object with two keys:
 | `evidence` | The search results in their order. Each has a `label`, the `document_title`, the `section_number`, the `section_title` and the `text` |
 
 The label of a result is its position: `E1` is the first result, `E2` the second, up to
-`E5`. `evidence_label(position)` builds it.
+`E5`. `evidence_label(position)` builds it. With no result the `evidence` list is empty.
 
 The model is **not** given the raw text of any document, the clinical note, the
 prior-authorisation record, the rules verdict or the win score.
@@ -1640,9 +1641,38 @@ The phrases are the named constant `SEARCH_PHRASES`, one for each of the six den
 categories. A letter whose reason is unknown gets the phrase of `other`. Each code is added
 once; with no code the question is the phrase alone.
 
-`build_search_question` is pure: no model call, no database. `SEARCH_QUESTION_VERSION`
-(`v1`) names the phrases and the way the codes are added. A change to either changes what a
-search finds, so it needs a new version. The version is stored with every draft.
+`build_search_question` is pure: no model call, no database.
+
+**The minimum similarity.** The search always has a best match, also when nothing in the
+corpus is about the claim. So the caller passes `MIN_EVIDENCE_SIMILARITY` (0.55) to
+`search_evidence` as `min_similarity` (3.14). A match with a lower score is left out: the
+model never sees it, so it cannot cite it. The number is one named constant; no call site
+holds it. Both callers pass it: the agent loop (3.16) and the command of this section.
+
+**A claim with no match is still drafted.** The model is called with an empty evidence
+list, and the prompt tells it to write `other` paragraphs only. Such a letter has no
+citation, passes the validator and is stored. In the measured run this was 41 of the 56
+drafted claims (3.17).
+
+`SEARCH_QUESTION_VERSION` names how the search is asked: the phrases, the way the codes are
+added, and the minimum. A change to any of them changes what a search finds, so it needs a
+new version. The version is stored with every draft.
+
+| Version | Means |
+|---|---|
+| `v1` | The six phrases and the codes; no minimum, the top 5 results whatever their score |
+| `v2` | The same question text; a result must have a similarity of at least 0.55. Today's version |
+
+The value 0.55 is a **judgement**, not a measurement of what fits. It was set on 2026-10-11
+from two small sets of scores, which overlap:
+
+| Set | Similarity | Kept at 0.55 |
+|---|---|---|
+| The best match of each of the 55 claims the loop had drafted for | 0.4219 to 0.6634, median 0.5309 | 14 of 55 claims keep any match |
+| The expected determination of the 19 correct hits of the search check (3.14) | 0.5224 to 0.7802, median 0.6213 | 17 of 19 |
+
+Of the 28 citations in the 55 drafts of search question `v1`, 10 had a similarity of at
+least 0.55.
 
 ### The output shape
 
@@ -1787,6 +1817,10 @@ Measured on 2026-10-11 on the local database, after migration 0012: the test spl
 `--limit 50`, drafting prompt `v1`, search question `v1`, model `gpt-4o-mini`. The split
 has 759 denied claims; 749 have a current letter extraction and 10 were left out.
 
+These are the numbers of search question `v1`, **before the minimum similarity**. The
+command of this section has not been run with `v2`. The agent loop has, and its `v2`
+numbers are in 3.17.
+
 | Run | Drafted | Blocked | Failed to parse | Cost | Time |
 |---|---|---|---|---|---|
 | 1 | 46 | 1 (`quote_not_in_evidence`) | 3 | $0.024261 | 235 seconds |
@@ -1832,7 +1866,18 @@ About the evidence a draft gets:
 
 - The search question has no words about the service: a fixed phrase and code numbers. Only
   4 of the 1,530 distinct procedure codes on denied lines appear as a word in any evidence
-  chunk. So the passages found may not be about the claim's service.
+  chunk, and 0 of the 66 distinct codes of the 55 claims measured for the minimum. So the
+  codes say almost nothing to the search, and the passages found may not be about the
+  claim's service. Version `v2` did not change the question text.
+- The minimum of 0.55 is a judgement from 19 hand-made questions and 55 claims. The two
+  score ranges overlap, so no value separates a passage that fits from one that does not.
+- A correct passage below the minimum is lost: 2 of the 19 correct hits of the search check
+  score under 0.55.
+- A similarity of at least 0.55 does not prove a fit. In the second review all 6 sampled
+  drafts with a citation quote a determination that is not about the denied service (3.17).
+  No code checks that a citation fits the service; the reviewer judges it.
+- Most claims now get no evidence at all (41 of 56 in the measured run), so their letters
+  make no policy statement.
 - 394 of the 759 denied test claims are not about coverage policy (their reason is not
   `noncovered` or `medical_necessity`), and the corpus has no appeal-rights text for them.
   The CMS manuals that hold it are not loaded (3.13).
@@ -1923,8 +1968,8 @@ it as a column.
 | 1. Extraction | Reads the claim's stored letter extraction (the `document_extractions` row of extraction prompt `v2`, 3.9). It makes **no** extraction call | no |
 | 2. Rules | Calls `evaluate_rules` with the letter date, the appeal deadline and the total allowed charge from the extraction, and with "today" and the amount floor passed in | no |
 | 3. Scoring | Scores the claim with the saved win model. The three features come from the claim's stored rows through `build_claim_features` (`FEATURE_VERSION` `v1`), not from the letter | no |
-| 4. Retrieval | Builds the search question with `build_search_question` and calls `search_evidence`, top 5 | one small embedding call |
-| 5. Drafting | Calls `draft_appeal` with the letter's values and the 5 results. A checked letter is stored in `appeal_drafts` | one model call |
+| 4. Retrieval | Builds the search question with `build_search_question` and calls `search_evidence` with `min_similarity=MIN_EVIDENCE_SIMILARITY` (0.55, see 3.15): at most 5 results, possibly none | one small embedding call |
+| 5. Drafting | Calls `draft_appeal` with the letter's values and the results. A checked letter is stored in `appeal_drafts` | one model call |
 
 `run_agent_for_claim` takes a ready `AgentCandidate`: the claim id, the extracted letter,
 the hash of the letter document, the extraction prompt version and the features. It returns
@@ -1936,6 +1981,11 @@ the clock or the settings.
 The loop **always drafts fresh**. A letter that passes the citation validator replaces the
 draft the claim already had for the same drafting prompt version, so a `needs_review` trace
 always describes the draft that is stored.
+
+**A claim whose search returns no match goes on to drafting.** The retrieval step is `done`
+with an empty list of results, the model is called with no evidence, and a checked letter
+with no citation ends as `needs_review`. There is no status and no end state of its own for
+"no evidence". A test proves it.
 
 ### What stops the loop
 
@@ -1984,7 +2034,7 @@ A step that did not run holds its status and nothing else. The facts each step r
 | `extraction` | The extraction prompt version and the `text_sha256` of the letter document |
 | `rules` | The rules version, "today", the amount floor, the outcome and every reason that fired |
 | `scoring` | The feature version, the model version, the score and the threshold |
-| `retrieval` | The search question version, the embedding model, and per result the four citation fields (`source`, `source_document_id`, `chunk_index`, `text_sha256`, see 3.13) and its `similarity` |
+| `retrieval` | The search question version, the embedding model, the minimum similarity the search used (`min_similarity`), and per result the four citation fields (`source`, `source_document_id`, `chunk_index`, `text_sha256`, see 3.13) and its `similarity` |
 | `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`) and, when blocked, the kinds of problem the validator found |
 
 **A trace never holds document text, an extracted value, the search question or letter
@@ -1993,7 +2043,17 @@ guards this. The letter itself is in `appeal_drafts`; the trace names it by the 
 the drafting prompt version.
 
 Any change to a step, to what stops the loop or to an end state needs a new `AGENT_VERSION`
-(today `v1`).
+(today `v2`).
+
+| Version | Means |
+|---|---|
+| `v1` | The search had no minimum: the top 5 results whatever their score |
+| `v2` | The search drops a result below 0.55, and the trace records the minimum. Today's version |
+
+`min_similarity` is optional in the type. It is empty in a step that did not run and in a
+stored `v1` trace, so **a `v1` trace still validates** as an `AgentTrace`; a test guards
+it. A new agent version also means every claim is taken again, because a claim is skipped
+only for a trace of the same version (see "A run over many claims").
 
 ### The table
 
@@ -2085,6 +2145,9 @@ Measured on 2026-10-11 on the local database, after migration 0013: the test spl
 drafting prompt `v1`, model `gpt-4o-mini`. The split has 759 denied claims; 749 have a
 current letter extraction and 10 were left out.
 
+These are the numbers of agent `v1`, **before the minimum similarity**. The run of agent
+`v2` on 120 claims is in 3.17, under "Second measurement".
+
 | Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 50 | 26 | 5 | 18 | 0 | 1 (not parseable) | $0.013362 | 127 seconds |
@@ -2165,6 +2228,11 @@ About stored drafts:
   the first.
 - 17 of the 27 drafts make no policy statement. That is the weak search question of 3.15,
   which the loop uses unchanged.
+- The run of agent `v2` wrote over the drafts of agent `v1`. The drafting prompt is still
+  `v1` and `appeal_drafts` has one row per claim and prompt version, so the 55 drafts of
+  the first review are no longer in the table. The `v1` traces stay in `agent_runs`, but a
+  `v1` trace that ended as `needs_review` now describes a draft that was replaced. Keeping
+  both drafts of a claim would need a migration.
 
 About the run that was measured:
 
@@ -2196,9 +2264,15 @@ Three things hold for the command:
 - **The terminal shows counts and shares only.** Letter text and document text go into one
   local file and are never printed.
 
-The first measurement, on 2026-10-11, gave **0 of 30 drafts accepted**, and its verdicts
-were given **by a model, not by a person** (see "Who scored" below). The done condition is
-not met.
+The share has been measured twice, both times on 2026-10-11:
+
+| Measurement | Drafts of | Accepted | Scored by |
+|---|---|---|---|
+| First | agent `v1`, search question `v1` | **0 of 30 (0.00%)** | a model |
+| Second | agent `v2`, search question `v2` (the minimum similarity of 3.15) | **0 of 30 (0.00%)** | a model |
+
+Every verdict was given **by a model, not by a person** (see "Who scored" below). The done
+condition is not met.
 
 ### Where the code is
 
@@ -2243,8 +2317,9 @@ all scored drafts. A draft with no citation is judged by the same rubric.
 ### The method
 
 **Which drafts can be sampled.** A claim whose trace in `agent_runs` ended as
-`needs_review` (agent `v1`), that has a draft in `appeal_drafts` (drafting prompt `v1`), and
-whose denial letter document stored now is the one the draft was built from. A claim with
+`needs_review` for the current agent version (`AGENT_VERSION`, today `v2`; `v1` at the first
+measurement), that has a draft in `appeal_drafts` (drafting prompt `v1`), and whose denial
+letter document stored now is the one the draft was built from. A claim with
 another end state or with no trace is never sampled, so the 23 older drafts on claims the
 rules now stop (3.16) are left out. A draft whose letter document changed is left out too
 and counted.
@@ -2282,6 +2357,9 @@ A file with an empty verdict gives no share at all, only the number of drafts st
 exactly 60% passes. A printed share is never rounded up to a target it misses.
 
 ### Measured
+
+This is the first measurement, on the drafts of agent `v1`. The second is in the next
+sub-section.
 
 Measured on 2026-10-11 on the local database, at migration 0013.
 
@@ -2327,14 +2405,83 @@ Both runs exited with 0. The blocked claim was not tried a third time.
 | `poor_wording` | 0 |
 | `other` | 1 |
 
-The command exited with 1.
+The command exited with 1. **A model gave these 30 verdicts, not a person.**
+
+### Second measurement (search question `v2`)
+
+The first measurement rejected 14 of 30 drafts because the cited text did not fit. So the
+search got a minimum similarity of 0.55 (3.15), and the share was measured again with the
+same rubric, the same command, the same sample size and the same seed. Measured on
+2026-10-11 on the local database, at migration 0013.
+
+**Step 1, the loop again.** Agent `v2` ran on the same 120 test claims (`--limit 120`,
+`--rules-today 2010-01-01`, amount floor 25, threshold 0.30, drafting prompt `v1`, model
+`gpt-4o-mini`). A new agent version takes every claim again.
+
+| Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 120 | 56 | 15 | 48 | 1 | 0 | $0.019025 | 230 seconds |
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | $0.000000 | 0 seconds |
+
+Both runs exited with 0. Run 2 found all 120 claims finished and made no call.
+
+| Number | Value | First measurement |
+|---|---|---|
+| `needs_review` drafts | 56 | 55 |
+| Of them, with at least one citation | 13 | 27 |
+| Of them, drafted with no evidence (the search returned no match) | 41 | 0 |
+| Evidence results named in the `v2` traces | 37, similarity 0.5501 to 0.6634 | 5 per claim, no minimum |
+| Citations in the drafts | 14, in 13 drafts, to 5 distinct determinations | 28, to 5 distinct determinations |
+| Of them, with a similarity in the claim's trace of at least 0.55 | 14 of 14 (0.5504 to 0.6634) | 10 of 28 |
+| Of them, whose four values name a chunk in `evidence_chunks` | 14 of 14 | not recorded |
+| Cost of the two runs | $0.019025 (the limit set for the run was $0.05) | $0.015793 |
+| Month-to-date spend after the runs | $0.780622 of the $3.00 cap | $0.761551 |
+
+The rows on citations and results were checked with one-off read-only queries, not a
+command.
+
+After the runs `agent_runs` holds 120 traces of `v1` and 120 of `v2`. `appeal_drafts` holds
+the 56 drafts of search question `v2` and the 23 older drafts of 3.16.
+
+**Step 2, the sample.** `export` wrote into a new folder and drew 30 of the 56 drafts that
+can be reviewed, with seed 42. 6 of the 30 carry at least one citation. No draft was left
+out for a changed letter. 29 of the 30 claims are also in the first sample; every one of
+them has a new draft.
+
+**Step 3, the verdicts.**
+
+| Number | Second measurement | First measurement |
+|---|---|---|
+| Drafts scored | 30 | 30 |
+| `accept` | 0 | 0 |
+| `accept_light_edits` | 0 | 0 |
+| `reject` | 30 | 30 |
+| **Acceptance share** | **0 of 30 (0.00%), below the 60% target** | **0 of 30 (0.00%)** |
+| Drafts with a citation | 0 of 6 accepted | 0 of 15 accepted |
+| Drafts without a citation | 0 of 24 accepted | 0 of 15 accepted |
+
+| Reject reason | Second measurement | First measurement |
+|---|---|---|
+| `no_policy_argument` | 21 | 13 |
+| `citation_does_not_fit` | 6 | 14 |
+| `wrong_fact` | 3 | 2 |
+| `poor_wording` | 0 | 0 |
+| `other` | 0 | 1 |
+
+The command exited with 1. **A model gave these 30 verdicts, not a person**, and it was the
+same model that had given the first 30 and knew their result.
 
 ### Who scored
 
-**A model gave the 30 verdicts, not a person.** The model was Claude, the coding assistant
-used to build this project. It read the same file a person would read and applied the
-rubric above. The project owner decided on 2026-10-11 to record this as the measurement
-for now. **No person has scored the sample yet.**
+**A model gave the verdicts of both measurements, not a person.** The model was Claude, the
+coding assistant used to build this project. It read the same file a person would read and
+applied the rubric above. The project owner decided on 2026-10-11 to record this as the
+measurement, with a model acting in place of the reviewer. **No person has scored either
+sample.**
+
+The second measurement was scored by the same model, after it had scored the first and knew
+the result was 0 of 30. It also knew what the change between the two was meant to do. So
+the second set of verdicts is not independent of the first.
 
 So the number answers a narrower question than the done condition asks. It says what a
 model found when it compared each draft with its denial letter and its cited text. It does
@@ -2343,11 +2490,12 @@ not say what a person who files appeals would accept.
 The model read the rubric strictly: every draft that gives no argument for overturning the
 denial was rejected, also when its facts were right. The model's own estimate is that a
 lenient reader could accept about 6 of the 15 drafts without a citation, which would give
-at most about 20%. That figure is an estimate, not a measurement, and it is also below the
-target.
+at most about 20%. For the second measurement the same estimate is again about 6 of 30:
+the drafts with correct facts, no placeholder and no citation that does not fit. Both
+figures are estimates, not measurements, and both are below the target.
 
-The model's verdicts are in a local file of their own. The score file `export` wrote is
-still empty, ready for a person.
+The model's verdicts are in a local file of their own in each review folder. The score file
+`export` wrote is still empty in both, ready for a person.
 
 ### What the rejected drafts show
 
@@ -2367,11 +2515,35 @@ still empty, ready for a person.
 Both main faults come from the search question (3.15), which holds one fixed phrase per
 denial reason and the procedure codes, and no words about the service.
 
+The points above are from the first measurement. The second shows what the minimum
+similarity changed, as judged by the model:
+
+- **Fewer drafts quote a text that does not fit.** 15 of the 30 sampled drafts carried a
+  citation before, 6 do now, and `citation_does_not_fit` fell from 14 to 6.
+- **A similarity of 0.55 does not make a citation fit.** All 6 sampled drafts with a
+  citation still quote a determination that is not about the denied service: endoscopy,
+  sterilization, colorectal cancer screening and laser procedures. The 14 citations of all
+  56 drafts name only five determinations.
+- **Most drafts now argue nothing.** `no_policy_argument` rose from 13 to 21. A claim with
+  no evidence gets a letter that states the facts and asks for a review. The minimum takes
+  a wrong argument away and puts no right one in its place.
+- **The drafting faults are still there.** The drafting prompt did not change:
+  placeholders, an invented street address (1 draft), the internal category word `other`
+  and a claim total given as a line amount are in the new drafts too. Several drafts argue
+  medical necessity or "not covered" against a denial the letter gives another reason for.
+
+So the share did not move, as expected before the change was built. The corpus has no text
+about most denied services and none about appeal rights (3.13), and no search question can
+find what is not there.
+
 ### When the share is below 60%
 
 The done condition stays as it is: the target is not lowered and not reworded. Stage 4 is
-not released as `v0.5.0`. The most common reject reason picks the next piece of work, here
-a better search question, and the share is then measured again with the same command.
+not released as `v0.5.0`. The most common reject reason picks the next piece of work, and
+the share is then measured again with the same command. After the first measurement that
+was the search (`citation_does_not_fit`). After the second it is `no_policy_argument`: the
+CMS manual chapters, for evidence that applies to more claims, and a drafting prompt `v2`,
+for the faults that repeat. Neither is built yet.
 
 A new measurement needs a new export into another folder, because a draft that was written
 again has a new fingerprint.
@@ -2385,6 +2557,19 @@ About who scored:
 - One reviewer gave every verdict, and no second reviewer checked any of them.
 - Nothing ties the score file to a reviewer. It is a local file that can be changed later,
   and nothing records who filled it in or when.
+- The second measurement was scored by the same model that had scored the first and knew
+  its result. A reviewer who expects no change is more likely to find none.
+- 29 of the 30 claims are in both samples, but each has a new draft, written by a model
+  whose answer changes from call to call. A difference between the two measurements is
+  partly the minimum and partly that chance.
+
+About the first measurement's files:
+
+- Its drafts are overwritten in `appeal_drafts` (3.16). Their text is only in the local
+  file the reviewer read, which is not committed.
+- Its score file can no longer be scored with the command. Every one of its 30 drafts was
+  written again, so `score` refuses each row as "drafted again". The recorded 0 of 30
+  cannot be reproduced from the database.
 
 About the sample:
 

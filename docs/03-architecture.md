@@ -1905,8 +1905,9 @@ About stored drafts:
 - A draft is not redone when the search question version changes. The drafting command
   skips a claim that has a draft for the drafting prompt version, so after the change to
   `v2` it drafts 0 for those claims and their drafts keep the evidence of `v1`, found with
-  no minimum. The row's `search_question_version` shows which version a draft used. Only a
-  new drafting prompt version, or the agent loop taking the claim again, replaces it.
+  no minimum. The row's `search_question_version` shows which version a draft used. Only
+  the agent loop taking the claim again replaces it; a new drafting prompt version writes a
+  new draft beside it.
 - A draft is not marked when the evidence corpus is loaded again. A citation whose
   `text_sha256` no longer matches a stored chunk is out of date; nothing looks for it.
 - A claim whose draft is blocked or unusable is paid for again on every run until it gets
@@ -2232,9 +2233,10 @@ About stored drafts:
 - The draft and the trace are stored in two commits. A crash between them leaves a draft
   without a trace. The next run takes the claim again, pays for one more draft and replaces
   the first.
-- With agent `v1`, 17 of the 27 drafts of the first run make no policy statement. That is
-  the weak search question of 3.15. With agent `v2` the question text is the same and the
-  minimum drops the weak results, so 41 of the 56 drafts get no evidence at all.
+- With agent `v1`, 17 of the 27 drafts of the run measured in this section make no policy
+  statement. That is the weak search question of 3.15. With agent `v2` the question text
+  is the same and the minimum drops the weak results, so 41 of the 56 drafts get no
+  evidence at all.
 - The run of agent `v2` wrote over the drafts of agent `v1`. The drafting prompt is still
   `v1` and `appeal_drafts` has one row per claim and prompt version, so the 55 drafts of
   the first review are no longer in the table. The `v1` traces stay in `agent_runs`, but a
@@ -2448,7 +2450,7 @@ The rows on citations and results were checked with one-off read-only queries, n
 command.
 
 The month-to-date spend rose by $0.019071 between the two measurements: $0.019025 for the
-two runs and $0.000046 for 40 query embeddings made while the minimum of 0.55 was chosen
+two runs and $0.000046 for 46 query embeddings made while the minimum of 0.55 was chosen
 (3.15).
 
 After the runs `agent_runs` holds 120 traces of `v1` and 120 of `v2`. `appeal_drafts` holds

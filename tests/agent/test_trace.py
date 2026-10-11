@@ -31,8 +31,61 @@ RULES = RulesStep(
 )
 
 
-def test_the_agent_version_is_v1() -> None:
-    assert AGENT_VERSION == "v1"
+def test_the_agent_version_is_v2() -> None:
+    assert AGENT_VERSION == "v2"
+
+
+def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
+    # What a `v1` loop stored: the retrieval step has no `min_similarity`.
+    stored = {
+        "end_state": "needs_review",
+        "agent_version": "v1",
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+            "reasons": [],
+        },
+        "scoring": {
+            "status": "done",
+            "feature_version": "v1",
+            "model_version": "v1",
+            "score": 0.75,
+            "threshold": 0.3,
+        },
+        "retrieval": {
+            "status": "done",
+            "search_question_version": "v1",
+            "embedding_model": "example-embedding-model",
+            "matches": [
+                {
+                    "source": "cms_ncd",
+                    "source_document_id": "1",
+                    "chunk_index": 0,
+                    "text_sha256": MADE_UP_HASH,
+                    "similarity": 0.45,
+                }
+            ],
+        },
+        "drafting": {
+            "status": "done",
+            "prompt_version": "v1",
+            "provider": "primary",
+            "model_name": "example-model",
+            "cited_paragraphs": 1,
+            "failure": None,
+            "problem_kinds": [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.agent_version == "v1"
+    assert trace.retrieval.min_similarity is None
+    assert trace.retrieval.matches[0].similarity == 0.45
 
 
 def test_a_step_is_done_stopped_failed_or_not_run() -> None:
@@ -83,6 +136,7 @@ def test_a_trace_reads_back_from_its_json_values() -> None:
             status=StepStatus.DONE,
             search_question_version="v1",
             embedding_model="example-embedding-model",
+            min_similarity=0.55,
             matches=(
                 EvidenceReference(
                     source=EvidenceSource.CMS_NCD,

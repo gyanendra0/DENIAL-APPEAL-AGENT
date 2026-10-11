@@ -64,7 +64,7 @@ LLM_FALLBACK_KEYS = (
     "LLM_FALLBACK_OUTPUT_USD_PER_MTOK",
 )
 VALIDATION = ["--split", "validation", "--prompt-version", PROMPT_VERSION]
-HEADLINE = "selected claims (validation split, prompt v999, search question v1)"
+HEADLINE = "selected claims (validation split, prompt v999, search question v2)"
 
 
 class Stubs:

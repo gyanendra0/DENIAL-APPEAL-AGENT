@@ -2,10 +2,12 @@ import pytest
 
 from src.db.models import DenialReasonCategory
 from src.drafting.search_question import (
+    MIN_EVIDENCE_SIMILARITY,
     SEARCH_PHRASES,
     SEARCH_QUESTION_VERSION,
     build_search_question,
 )
+from src.rag.retrieval import HIGHEST_SIMILARITY, LOWEST_SIMILARITY
 
 
 def test_every_denial_reason_category_has_its_own_phrase() -> None:
@@ -15,7 +17,8 @@ def test_every_denial_reason_category_has_its_own_phrase() -> None:
 
 def test_the_phrases_are_the_decided_ones() -> None:
     # A change to a phrase needs a new version: stored drafts name the wording they used.
-    assert SEARCH_QUESTION_VERSION == "v1"
+    # `v2` added the minimum similarity and left the wording alone: these are the `v1` phrases.
+    assert SEARCH_QUESTION_VERSION == "v2"
     assert {category.value: phrase for category, phrase in SEARCH_PHRASES.items()} == {
         "noncovered": (
             "Medicare coverage of the item or service and the conditions under which it is covered"
@@ -28,6 +31,15 @@ def test_the_phrases_are_the_decided_ones() -> None:
         "coordination_of_benefits": "Medicare as secondary payer and coverage by another insurer",
         "other": "coverage of the item or service",
     }
+
+
+def test_the_minimum_similarity_is_the_decided_one() -> None:
+    # A change to the minimum changes what a search finds, so it needs a new version too.
+    assert MIN_EVIDENCE_SIMILARITY == 0.55
+
+
+def test_the_minimum_similarity_is_a_value_the_search_accepts() -> None:
+    assert LOWEST_SIMILARITY <= MIN_EVIDENCE_SIMILARITY <= HIGHEST_SIMILARITY
 
 
 @pytest.mark.parametrize("category", list(DenialReasonCategory))

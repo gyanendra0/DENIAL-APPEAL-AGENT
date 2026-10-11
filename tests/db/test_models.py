@@ -1401,6 +1401,10 @@ def test_appeal_draft_stays_when_the_evidence_it_cites_is_replaced(session: Sess
     assert stored.letter == DRAFT_LETTER
 
 
+# An agent version that is never the current one.
+OTHER_AGENT_VERSION = "v999"
+
+
 def _agent_trace(text_sha256: str) -> dict[str, Any]:
     """A trace of a claim the rules stopped, as the loop would write it."""
     trace = AgentTrace(
@@ -1465,7 +1469,9 @@ def test_allows_another_agent_version_for_one_claim(session: Session) -> None:
     _claim_sample(session)
     _agent_run(session)
     _agent_run(
-        session, agent_version="v2", trace=_agent_trace(TEXT_SHA256) | {"agent_version": "v2"}
+        session,
+        agent_version=OTHER_AGENT_VERSION,
+        trace=_agent_trace(TEXT_SHA256) | {"agent_version": OTHER_AGENT_VERSION},
     )
 
     assert len(session.scalars(select(AgentRun)).all()) == 2
@@ -1494,7 +1500,7 @@ def test_rejects_agent_run_with_an_empty_version_or_a_malformed_text_hash(
     ("overrides", "constraint"),
     [
         ({"end_state": EndState.NEEDS_REVIEW}, "ck_agent_runs_trace_end_state_matches"),
-        ({"agent_version": "v2"}, "ck_agent_runs_trace_agent_version_matches"),
+        ({"agent_version": OTHER_AGENT_VERSION}, "ck_agent_runs_trace_agent_version_matches"),
         ({"trace": {"agent_version": AGENT_VERSION}}, "ck_agent_runs_trace_end_state_matches"),
         (
             {"trace": {"end_state": "stopped_by_rules"}},

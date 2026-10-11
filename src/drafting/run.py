@@ -22,7 +22,7 @@ from src.drafting.drafter import (
     draft_appeal,
 )
 from src.drafting.prompts import DraftingPrompt
-from src.drafting.search_question import build_search_question
+from src.drafting.search_question import MIN_EVIDENCE_SIMILARITY, build_search_question
 from src.drafting.store import (
     DraftCandidate,
     build_appeal_draft_row,
@@ -94,8 +94,10 @@ def run_drafting(
     """Draft an appeal for each of `candidates` that has no draft of `prompt`'s version.
 
     Spends money and can take minutes: one embedding call and one model call per claim,
-    several seconds each. `embedding_model` must be the model the gateway embeds with. Each
-    letter is committed on its own, so a run that stops keeps what it finished. A draft that
+    several seconds each. `embedding_model` must be the model the gateway embeds with. A
+    chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown to
+    the model; a claim with no chunk left is drafted with no evidence. Each letter is
+    committed on its own, so a run that stops keeps what it finished. A draft that
     is blocked, cut off or not parseable is counted and nothing is stored for it. The run
     ends early, without an error, when the budget is reached, no provider can answer, a
     provider refuses a request, the evidence has no stored vector, or the answer to a search
@@ -124,7 +126,11 @@ def run_drafting(
             try:
                 with session_scope(session_factory) as session:
                     matches = search_evidence(
-                        session, gateway, question, model_name=embedding_model
+                        session,
+                        gateway,
+                        question,
+                        model_name=embedding_model,
+                        min_similarity=MIN_EVIDENCE_SIMILARITY,
                     )
                 result = draft_appeal(gateway, prompt, letter, matches)
             except DraftTruncatedError:

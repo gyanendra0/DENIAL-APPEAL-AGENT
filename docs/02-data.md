@@ -1479,6 +1479,11 @@ check. One draft cost about $0.0005 and took about 5 seconds.
 Only a denied claim whose denial letter has a current extraction is selected, and `--limit`
 counts only those. The command prints how many denied claims of the split were left out.
 
+Since search question `v2` the search behind a draft keeps only passages with a similarity
+of at least 0.55 (the constant `MIN_EVIDENCE_SIMILARITY`), at most 5. A claim with no such
+passage is still drafted, with no evidence, and its letter has no citation. Why 0.55 is in
+03-architecture.md 3.15.
+
 Each checked letter is saved as soon as it arrives. A claim that already has a draft of the
 prompt version is skipped, so after exit code 1 the same command continues where the run
 stopped. A draft that the citation check blocks, and an answer that cannot be used, is
@@ -1486,7 +1491,8 @@ counted and **nothing is stored for it**; the run goes on. Such a claim is tried
 the next run. So a run drafts 0 claims and spends $0 once every selected claim has a draft,
 which can take more than two runs.
 
-The output of the first run, on 2026-10-11:
+The output of the first run, on 2026-10-11, with search question `v1` (no minimum). The
+first line now ends with `search question v2`; this command has not been run with `v2`:
 
 ```text
 drafted 46 of 50 selected claims (test split, prompt v1, search question v1)
@@ -1520,8 +1526,8 @@ a person to review. Nothing is sent anywhere.
 | 2 | A bad argument, a prompt version with no prompt file included |
 
 Run it again after a new drafting prompt version. A claim keeps its old draft when its
-letter document or the evidence corpus changes; what that means is in the known limits of
-03-architecture.md 3.15.
+letter document, the evidence corpus or the search question version changes; what that
+means is in the known limits of 03-architecture.md 3.15.
 
 ### Running the agent loop
 
@@ -1572,9 +1578,14 @@ taken again by the next run and its trace is replaced. So a run takes 0 claims a
 $0 once no selected claim is left as `draft_failed`.
 
 A skipped claim is **not** looked at again when `--rules-today`, the floor, the threshold
-or `--prompt-version` changes.
+or `--prompt-version` changes. Only a new agent version takes every claim again.
 
-The output of the first run, on 2026-10-11:
+Since agent `v2` the search keeps only passages with a similarity of at least 0.55, at most
+5, as in the drafting command above. A claim with no such passage is still drafted, with no
+evidence, and ends as `needs_review` with a letter that has no citation. Its new draft
+replaces the one the claim had, because the drafting prompt version is the same.
+
+The output of the first run, on 2026-10-11, with agent `v1` (no minimum):
 
 ```text
 ran the agent loop for 50 of 50 selected claims (test split, agent v1, drafting prompt v1)
@@ -1600,6 +1611,13 @@ A second run took the one failed claim again for $0.000467; it ended as `needs_r
 third run printed `ran the agent loop for 0 of 50 selected claims`,
 `finished before this run: 50` and `spent $0.000000 in this run`. The other figures of the runs
 are in 03-architecture.md 3.16.
+
+With agent `v2` the first line reads `agent v2`. The `v2` run of 2026-10-11, with
+`--limit 120`, took all 120 claims again: 56 `needs_review` (13 drafted with at least one
+citation), 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold`, 0
+`draft_failed`, in 230 seconds for $0.019025; $0.780622 of the $3.00 monthly budget was
+then used. A second run took 0 of 120 claims and spent $0.000000. The other figures are in
+03-architecture.md 3.17.
 
 The report prints counts only: no letter text, no document text and no extracted value.
 Nothing is sent anywhere.
@@ -1647,10 +1665,14 @@ files into `--out-dir`:
 that is never committed.** `data/` is git-ignored, so `data/review/` is safe. An existing
 `review_scores.csv` is never overwritten: give another folder, or move the file away first.
 
-A draft can be reviewed when its claim ended as `needs_review`, the draft is stored, and
-the denial letter document stored now is the one the draft was built from.
+A draft can be reviewed when its claim ended as `needs_review` for the current agent
+version, the draft is stored, and the denial letter document stored now is the one the
+draft was built from.
 
-The output of the export on 2026-10-11:
+**A new measurement needs a new folder.** The second measurement was exported with
+`--out-dir data/review/v2`, so the files of the first stay as they are.
+
+The output of the first export on 2026-10-11, with agent `v1`:
 
 ```text
 exported 30 of 55 drafts that can be reviewed (seed 42, agent v1, drafting prompt v1)
@@ -1677,7 +1699,7 @@ fingerprint, and `score` then refuses its row.
 | the path | none, required | The filled-in score file |
 | `--size` | 30 | How many drafts were sampled. A file with another number of rows is refused |
 
-The output on 2026-10-11:
+The output of the first measurement on 2026-10-11:
 
 ```text
 scored 30 drafts (acceptance target 60.00%)
@@ -1697,6 +1719,31 @@ scored 30 drafts (acceptance target 60.00%)
 **A model gave these 30 verdicts, not a person.** They were read from a second score file
 with the same columns; the file `export` wrote is still empty. Who scored, what the
 rejected drafts show and the known limits are in 03-architecture.md 3.17.
+
+The second measurement, on 2026-10-11, after the minimum similarity (agent `v2`): `export`
+drew 30 of 56 drafts with seed 42, 6 with at least one citation and none left out. The
+output of `score`:
+
+```text
+scored 30 drafts (acceptance target 60.00%)
+  accept: 0
+  accept_light_edits: 0
+  reject: 30
+    wrong_fact: 3
+    no_policy_argument: 21
+    citation_does_not_fit: 6
+    poor_wording: 0
+    other: 0
+  acceptance share: 0 of 30 (0.00%), below the target
+  drafts with a citation: 0 of 6 (0.00%)
+  drafts without a citation: 0 of 24 (0.00%)
+```
+
+It exited with 1. **A model gave these 30 verdicts too, not a person**, and it was the same
+model, which knew the first result.
+
+The first measurement's score file can no longer be scored with the command: the agent
+loop ran again and wrote every one of its drafts anew, so `score` refuses each row.
 
 Both steps print counts and shares only: no letter text, no document text and no extracted
 value. Nothing is sent anywhere.

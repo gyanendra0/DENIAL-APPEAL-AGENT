@@ -20,7 +20,8 @@ from src.db.models import EndState, EvidenceSource, LlmProvider
 from src.drafting.citation_validator import CitationProblemKind
 from src.rules.verdict import RuleOutcome, RuleReason
 
-AGENT_VERSION = "v1"
+# `v2`: the evidence search drops a match below a minimum similarity.
+AGENT_VERSION = "v2"
 
 
 class StepStatus(StrEnum):
@@ -89,13 +90,19 @@ class EvidenceReference(BaseModel):
 
 
 class RetrievalStep(BaseModel):
-    """What the evidence search was run with and the chunks it found, the closest first."""
+    """What the evidence search was run with and the chunks it found, the closest first.
+
+    `min_similarity` is the lowest similarity a match could have. It is None when the step
+    did not run and in a trace of agent version `v1`, whose search had no minimum. A step
+    that is done with no match means no chunk reached the minimum.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: StepStatus
     search_question_version: str | None = None
     embedding_model: str | None = None
+    min_similarity: float | None = None
     matches: tuple[EvidenceReference, ...] = ()
 
 

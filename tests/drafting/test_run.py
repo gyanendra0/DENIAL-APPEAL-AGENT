@@ -1,3 +1,4 @@
+import json
 import logging
 from collections.abc import Iterator
 
@@ -47,6 +48,7 @@ from tests.drafting.helpers import (
     stored_drafts,
     two_problem_answer,
     uncited_answer,
+    weaken_second_chunk,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -153,6 +155,33 @@ def test_the_search_question_is_built_from_the_letters_reason_and_codes(
 
     question = build_search_question(DenialReasonCategory.NONCOVERED, ["99213"])
     assert [request.texts for request in embedder.requests] == [(question,), (question,)]
+
+
+def test_a_match_below_the_minimum_similarity_is_not_shown_to_the_model(
+    factory: sessionmaker[Session],
+) -> None:
+    weaken_second_chunk(factory)
+    primary = StubProvider(good_answer)
+
+    summary = _run(factory, primary)
+
+    assert summary.drafted_with_citation == 2
+    for request in primary.requests:
+        (shown,) = json.loads(request.user)["evidence"]
+        assert shown["text"].startswith(CHUNK_TEXT)
+
+
+def test_a_claim_with_no_match_at_the_minimum_is_drafted_with_no_evidence(
+    factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider(uncited_answer)
+    # Question vectors that point away from both stored chunks.
+    embedder = StubEmbedder(filler={1: -0.5, 2: -0.5})
+
+    summary = _run(factory, primary, embedder=embedder)
+
+    assert (summary.drafted, summary.drafted_with_citation) == (2, 0)
+    assert [json.loads(request.user)["evidence"] for request in primary.requests] == [[], []]
 
 
 def test_a_letter_without_a_reason_or_lines_is_searched_with_the_phrase_of_other(

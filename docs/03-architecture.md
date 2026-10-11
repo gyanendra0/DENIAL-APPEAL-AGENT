@@ -1875,7 +1875,8 @@ About the evidence a draft gets:
   score under 0.55.
 - A similarity of at least 0.55 does not prove a fit. In the second review all 6 sampled
   drafts with a citation quote a determination that is not about the denied service (3.17).
-  No code checks that a citation fits the service; the reviewer judges it.
+  That is the verdict of a model (Claude), not of a person. No code checks that a citation
+  fits the service; the reviewer judges it.
 - Most claims now get no evidence at all (41 of 56 in the measured run), so their letters
   make no policy statement.
 - 394 of the 759 denied test claims are not about coverage policy (their reason is not
@@ -1901,6 +1902,11 @@ About stored drafts:
 - A draft is not redone when its letter document changes. The claim is skipped as already
   drafted. The draft can be found as out of date, because its `text_sha256` no longer
   equals the stored letter's, but nothing marks it.
+- A draft is not redone when the search question version changes. The drafting command
+  skips a claim that has a draft for the drafting prompt version, so after the change to
+  `v2` it drafts 0 for those claims and their drafts keep the evidence of `v1`, found with
+  no minimum. The row's `search_question_version` shows which version a draft used. Only a
+  new drafting prompt version, or the agent loop taking the claim again, replaces it.
 - A draft is not marked when the evidence corpus is loaded again. A citation whose
   `text_sha256` no longer matches a stored chunk is out of date; nothing looks for it.
 - A claim whose draft is blocked or unusable is paid for again on every run until it gets
@@ -2226,8 +2232,9 @@ About stored drafts:
 - The draft and the trace are stored in two commits. A crash between them leaves a draft
   without a trace. The next run takes the claim again, pays for one more draft and replaces
   the first.
-- 17 of the 27 drafts make no policy statement. That is the weak search question of 3.15,
-  which the loop uses unchanged.
+- With agent `v1`, 17 of the 27 drafts of the first run make no policy statement. That is
+  the weak search question of 3.15. With agent `v2` the question text is the same and the
+  minimum drops the weak results, so 41 of the 56 drafts get no evidence at all.
 - The run of agent `v2` wrote over the drafts of agent `v1`. The drafting prompt is still
   `v1` and `appeal_drafts` has one row per claim and prompt version, so the 55 drafts of
   the first review are no longer in the table. The `v1` traces stay in `agent_runs`, but a
@@ -2440,6 +2447,10 @@ Both runs exited with 0. Run 2 found all 120 claims finished and made no call.
 The rows on citations and results were checked with one-off read-only queries, not a
 command.
 
+The month-to-date spend rose by $0.019071 between the two measurements: $0.019025 for the
+two runs and $0.000046 for 40 query embeddings made while the minimum of 0.55 was chosen
+(3.15).
+
 After the runs `agent_runs` holds 120 traces of `v1` and 120 of `v2`. `appeal_drafts` holds
 the 56 drafts of search question `v2` and the 23 older drafts of 3.16.
 
@@ -2576,8 +2587,8 @@ About the sample:
 - 30 drafts is a small sample. A measured 0 of 30 still fits a true share of up to about
   12% for the same reviewer. A measured 60% would stand for a true share of about 42% to
   75%.
-- The 55 drafts come from the first 120 test claims in claim id order, not from a draw over
-  all 749 test claims that can be taken.
+- The drafts (55 in the first measurement, 56 in the second) come from the first 120 test
+  claims in claim id order, not from a draw over all 749 test claims that can be taken.
 - `score` checks the number of rows and that each row belongs to a draft that can be
   reviewed. It does not prove the rows are the seed-42 sample.
 

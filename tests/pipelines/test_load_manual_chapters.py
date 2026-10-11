@@ -13,7 +13,13 @@ from pipelines.load_evidence_corpus import main as load_determinations
 from pipelines.load_manual_chapters import main
 from src.config.settings import get_settings
 from src.db.models import EvidenceChunk, EvidenceDocument, EvidenceSource
-from tests.ingest.helpers import MANUAL_FIXTURE, manual_pdf, ncd_zip, write_text_pdf
+from tests.ingest.helpers import (
+    MANUAL_FIXTURE,
+    MANUAL_PAGES,
+    manual_pdf,
+    ncd_zip,
+    write_text_pdf,
+)
 
 FILE_DATE = ["--file-date", "2026-10-11"]
 MANUAL_LINE = "    Medicare Benefit Policy Manual"
@@ -150,12 +156,23 @@ def _no_numbered_section(tmp_path: Path) -> Path:
     )
 
 
+def _page_footer(tmp_path: Path) -> Path:
+    return write_text_pdf(
+        tmp_path / "footer.pdf", [[*page, "MADE-UP-FOOTER Example Manual"] for page in MANUAL_PAGES]
+    )
+
+
 @pytest.mark.parametrize(
     ("bad_file", "problem"),
     [
         (_not_a_pdf, "notes.pdf: not a readable PDF file"),
         (_no_text, "scan.pdf: the PDF holds no text that can be extracted"),
         (_no_numbered_section, "plain.pdf: no numbered section"),
+        (
+            _page_footer,
+            "footer.pdf: the same line is at the bottom of 2 of 2 pages: "
+            "a page header, footer or page number",
+        ),
     ],
 )
 def test_each_gate_exits_1_and_writes_nothing(

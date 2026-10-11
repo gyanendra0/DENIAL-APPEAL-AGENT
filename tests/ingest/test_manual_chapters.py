@@ -31,7 +31,13 @@ from src.ingest.manual_chapters import (
 from src.ingest.marketplace_denials import BatchRejectedError
 from src.ingest.pdf_text import read_pdf_pages
 from src.rag.chunking import CHUNKER_VERSION, MAX_CHUNK_CHARS
-from tests.ingest.helpers import MANUAL_FIXTURE, manual_pdf, ncd_zip, write_text_pdf
+from tests.ingest.helpers import (
+    MANUAL_FIXTURE,
+    MANUAL_PAGES,
+    manual_pdf,
+    ncd_zip,
+    write_text_pdf,
+)
 from tests.rag.helpers import store_vector
 
 FILE_DATE = date(2026, 10, 11)
@@ -62,6 +68,21 @@ def _rejected(*paths: Path) -> list[str]:
     with pytest.raises(BatchRejectedError) as excinfo:
         _read(*paths)
     return excinfo.value.problems
+
+
+def _with_page_edges(tmp_path: Path, *, top: str | None = None, bottom: str | None = None) -> Path:
+    """The fixture with a line added at the top or the bottom of every page.
+
+    `{page}` and `{pages}` in a line stand for the page number and the number of pages.
+    """
+    pages = []
+    for number, page in enumerate(MANUAL_PAGES, start=1):
+        added = [
+            None if line is None else line.format(page=number, pages=len(MANUAL_PAGES))
+            for line in (top, bottom)
+        ]
+        pages.append([*([added[0]] if added[0] else []), *page, *([added[1]] if added[1] else [])])
+    return write_text_pdf(tmp_path / "edges.pdf", pages)
 
 
 def _by_number(batch: ManualChapterBatch) -> dict[str, ManualSectionEntry]:
@@ -224,6 +245,26 @@ def test_an_old_revision_line_inside_a_heading_is_not_in_the_title(tmp_path: Pat
     assert document.version_number == 12
 
 
+def test_a_revision_line_only_inside_a_heading_gives_the_version_and_the_date(
+    tmp_path: Path,
+) -> None:
+    path = manual_pdf(tmp_path, {NO_REVISION_HEADING: "30 - Old Style Heading (Rev. 5, 10-01-03)"})
+    batch = _read(path)
+    document = _by_number(batch)["100-02-99-30"].document
+    assert document.title == "Old Style Heading"
+    assert (document.version_number, document.effective_date) == (5, date(2003, 10, 1))
+    assert batch.without_revision_line == 0
+    assert batch.effective_date_from_issued == 2
+
+
+def test_a_heading_that_ends_in_a_bracket_with_no_revision_gets_version_1(tmp_path: Path) -> None:
+    path = manual_pdf(tmp_path, {NO_REVISION_HEADING: "30 - Old Style Heading (Rev. pending)"})
+    batch = _read(path)
+    document = _by_number(batch)["100-02-99-30"].document
+    assert (document.version_number, document.effective_date) == (1, FILE_DATE)
+    assert batch.without_revision_line == 1
+
+
 def test_a_heading_with_no_dash_is_found(tmp_path: Path) -> None:
     path = manual_pdf(tmp_path, {SHORT_REVISION_HEADING: "20.1 Example With No Dash"})
     assert _by_number(_read(path))["100-02-99-20.1"].document.title == "Example With No Dash"
@@ -294,6 +335,75 @@ def test_rejects_a_file_that_is_not_a_pdf(tmp_path: Path) -> None:
 def test_rejects_a_pdf_with_no_text(tmp_path: Path) -> None:
     path = write_text_pdf(tmp_path / "scan.pdf", [[], []])
     assert _rejected(path) == ["scan.pdf: the PDF holds no text that can be extracted"]
+
+
+@pytest.mark.parametrize(
+    ("top", "bottom", "problems"),
+    [
+        (
+            "MADE-UP-HEADER Example Manual",
+            None,
+            ["the same line is at the top of 2 of 2 pages: a page header, footer or page number"],
+        ),
+        (
+            None,
+            "MADE-UP-FOOTER Example Manual",
+            [
+                "the same line is at the bottom of 2 of 2 pages: "
+                "a page header, footer or page number"
+            ],
+        ),
+        (
+            None,
+            "{page}",
+            [
+                "the same line is at the bottom of 2 of 2 pages: "
+                "a page header, footer or page number"
+            ],
+        ),
+        (
+            None,
+            "MADE-UP-FOOTER 99-{page}",
+            [
+                "the same line is at the bottom of 2 of 2 pages: "
+                "a page header, footer or page number"
+            ],
+        ),
+        (
+            None,
+            "Page {page} of {pages}",
+            [
+                "a page starts or ends with a page number line",
+                "the same line is at the bottom of 2 of 2 pages: "
+                "a page header, footer or page number",
+            ],
+        ),
+    ],
+)
+def test_rejects_a_file_with_text_that_repeats_on_every_page(
+    tmp_path: Path, top: str | None, bottom: str | None, problems: list[str]
+) -> None:
+    path = _with_page_edges(tmp_path, top=top, bottom=bottom)
+    assert _rejected(path) == [f"edges.pdf: {problem}" for problem in problems]
+
+
+def test_rejects_a_page_number_line_on_one_page_only(tmp_path: Path) -> None:
+    pages = [[*MANUAL_PAGES[0], "page 1"], MANUAL_PAGES[1]]
+    path = write_text_pdf(tmp_path / "numbered.pdf", pages)
+    assert _rejected(path) == ["numbered.pdf: a page starts or ends with a page number line"]
+
+
+def test_a_number_alone_at_the_end_of_one_page_is_text(tmp_path: Path) -> None:
+    pages = [[*MANUAL_PAGES[0], "12"], MANUAL_PAGES[1]]
+    batch = _read(write_text_pdf(tmp_path / "number.pdf", pages))
+    assert "stops in the 12 middle of a sentence." in _text(_by_number(batch)["100-02-99-10"])
+
+
+def test_a_page_with_no_text_is_not_counted_as_a_page_with_a_repeated_line(
+    tmp_path: Path,
+) -> None:
+    path = write_text_pdf(tmp_path / "gap.pdf", [MANUAL_PAGES[0], [], MANUAL_PAGES[1], [""]])
+    assert _read(path).chunk_count == 4
 
 
 def test_one_bad_file_rejects_the_good_one_too(tmp_path: Path) -> None:

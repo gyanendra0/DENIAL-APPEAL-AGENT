@@ -1163,8 +1163,10 @@ A manual chapter is one PDF file. `read_pdf_pages` returns the text of each page
 4. The line under a heading is the section's revision line, such as
    `(Rev. 12, Issued: 01-02-24, Effective: 03-04-24, Implementation: 03-05-24)`. The
    revision number becomes the version number. The effective date is taken from the line;
-   when the line gives none, or a value that is not a date, the issued date is used. A
-   section with no revision line at all gets version 1 and the file date.
+   when the line gives none, or a value that is not a date, the issued date is used. An
+   older heading can end with its revision line (`20.1 - Title (Rev. 1, 10-01-03)`); that
+   one is read only when no line under the heading is a revision line. A section with no
+   revision line at all gets version 1 and the file date.
 5. The table "Transmittals Issued for this Chapter" at the end is left out.
 6. Inside a section, a line that holds only whitespace ends a paragraph. A line that ends
    in a hyphen is joined to the next one without a space when that one starts with a small
@@ -1177,7 +1179,19 @@ characters.
 
 The four files have no page header, page footer or page number in their text, so no
 repeated text has to be removed. The two things that are cut are the table of contents and
-the transmittals table.
+the transmittals table. The reader does not try to remove repeated page text. It rejects a
+file that has any, before anything else is read: the same line (with every number read as
+the same, so `15-3` and `15-4` are one line) at the top or at the bottom of more than half
+of the pages that hold text, or a page that starts or ends with a line like `Page 3 of 12`.
+In the four files the most repeated line is at the top of 18 of the 311 pages of chapter
+15, far below half.
+
+`read_pdf_pages` turns every way a file can fail to open into a rejected file. The PDF
+library raises its own errors for most damaged files and plain Python errors for some (a
+damaged cross-reference table, for example), so both kinds are caught. A file that cannot
+be opened (no read permission, for example) is rejected too. Only a missing file is left as
+`FileNotFoundError`; the command checks that every path is a file before it reads, and
+exits 2.
 
 ### How a text is cut into chunks
 
@@ -1369,6 +1383,9 @@ About the text of the manual chapters (what the PDF reader loses):
 - 137 sections have a revision line with no usable effective date (such as
   `(Rev. 1, 10-01-03)`); their effective date is the issued date. A section with no
   revision line would get version 1 and the file date; none of the loaded sections is one.
+- The repeated-page-text gate looks only at the first and the last line of each page. A
+  page header or footer on half of the pages or fewer, one of two lines, or one whose words
+  change from page to page, is not seen and would be loaded as text.
 - 22 chunks are shorter than 100 characters, the shortest 7.
 
 About the load:

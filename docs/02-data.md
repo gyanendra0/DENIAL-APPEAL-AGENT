@@ -588,7 +588,9 @@ as the determinations. How a PDF becomes paragraphs is in
 - **A section with no text.** A parent heading that is followed directly by its own
   subsections is counted and left out (24 sections).
 - **Text repeated on every page.** The four files have no page header, page footer or page
-  number in their text, so there is nothing of that kind to remove.
+  number in their text, so there is nothing of that kind to remove. The reader does not
+  remove such text; a file that has any is rejected (see the gates), because the text would
+  end up inside the paragraphs.
 - **Images** (14 in the four files) and the marks that show which words a revision changed.
 
 **Quality gates.** The files are rejected as a whole, and nothing is written, if any of
@@ -596,8 +598,9 @@ these fail for any file.
 
 | Gate | Action |
 |---|---|
-| A file is not a readable PDF, or is encrypted | Reject |
+| A file is not a readable PDF (damaged, for example), is encrypted, or cannot be opened (no read permission, for example) | Reject |
 | A file holds no text that can be extracted (a scan, for example) | Reject |
+| The same line, with every number read as the same, is at the top or at the bottom of more than half of the pages that hold text (a page header, a page footer, a page number); or a page starts or ends with a line like `Page 3` or `Page 3 of 12` | Reject |
 | The first lines do not name one of the two known manuals and a chapter | Reject |
 | There is no table of contents, or it lists no numbered section | Reject |
 | A section number appears twice in the table of contents | Reject |

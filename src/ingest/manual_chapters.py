@@ -17,9 +17,15 @@ How a chapter is read:
 4. The line under a heading is its revision line, for example
    `(Rev. 12, Issued: 01-02-24, Effective: 03-04-24, Implementation: 03-05-24)`. It gives the
    version number (the revision number) and the effective date. With no effective date in it,
-   the issued date is used. A section with no revision line gets version 1 and the file date.
+   the issued date is used. An older heading can end with its revision line,
+   `20.1 - Title (Rev. 1, 10-01-03)`; it is read only when no line under the heading is one.
+   A section with no revision line at all gets version 1 and the file date.
 5. The table "Transmittals Issued for this Chapter" at the end is left out.
 6. Inside a section, a line of only whitespace ends a paragraph.
+
+Text that repeats from page to page (a page header, a page footer, a page number) would end up
+inside the paragraphs, so a file that has any is rejected: the same line at the top or at the
+bottom of most pages, or a page that starts or ends with a line like `Page 3 of 12`.
 
 A section with no text (a parent heading, followed by its own subsections) is counted and left
 out. Tables are kept as the PDF library returns them, with their columns run together.
@@ -29,6 +35,7 @@ The files have no release date that can be trusted, so the caller passes it in.
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -79,6 +86,11 @@ VERSION_WITHOUT_REVISION_LINE = 1
 MAX_TITLE_CHARS = 300
 # A word cut at a line end keeps its hyphen: `opt-` + `out` is `opt-out`.
 HYPHEN_AT_LINE_END_PATTERN = re.compile(r"[A-Za-z]-$")
+# A line that only numbers a page: `Page 3`, `Page 3 of 12`.
+PAGE_NUMBER_LINE_PATTERN = re.compile(r"Page\s+[0-9]+(?:\s+of\s+[0-9]+)?", re.IGNORECASE)
+DIGITS_PATTERN = re.compile(r"[0-9]+")
+# A line at the same end of more than this share of the pages is a page header or footer.
+MAX_REPEATED_EDGE_SHARE = 0.5
 
 
 class ManualSectionRow(BaseModel):
@@ -220,6 +232,9 @@ def _chapter_entries(
     file_name: str, pages: Sequence[str], *, source_file_date: date, counts: _Counts
 ) -> tuple[list[ManualSectionEntry], list[str]]:
     """The sections of one chapter, or the reasons the file fails. No manual text in a reason."""
+    repeated = _repeated_page_text_problems(pages)
+    if repeated:
+        return [], [f"{file_name}: {problem}" for problem in repeated]
     # A page can end in the middle of a sentence, so pages are joined like lines.
     lines = "\n".join(pages).split("\n")
     prefix = _id_prefix(lines)
@@ -289,6 +304,38 @@ def _chapter_entries(
     if not entries and not problems:
         problems.append(f"{file_name}: no section holds any text")
     return entries, problems
+
+
+def _repeated_page_text_problems(pages: Sequence[str]) -> list[str]:
+    """Why the pages hold text that repeats from page to page; empty when they hold none.
+
+    Only the first and the last line of each page are looked at, with every number in them
+    read as the same, so `Chapter 15 - 3` and `Chapter 15 - 4` are one line.
+    """
+    first_lines: Counter[str] = Counter()
+    last_lines: Counter[str] = Counter()
+    page_number_line = False
+    pages_with_text = 0
+    for page in pages:
+        lines = [" ".join(line.split()) for line in page.split("\n") if line.strip()]
+        if not lines:
+            continue
+        pages_with_text += 1
+        if any(PAGE_NUMBER_LINE_PATTERN.fullmatch(line) for line in (lines[0], lines[-1])):
+            page_number_line = True
+        first_lines[DIGITS_PATTERN.sub("0", lines[0])] += 1
+        last_lines[DIGITS_PATTERN.sub("0", lines[-1])] += 1
+    problems: list[str] = []
+    if page_number_line:
+        problems.append("a page starts or ends with a page number line")
+    for edge, counted in (("top", first_lines), ("bottom", last_lines)):
+        most = max(counted.values(), default=0)
+        if most > 1 and most > pages_with_text * MAX_REPEATED_EDGE_SHARE:
+            problems.append(
+                f"the same line is at the {edge} of {most} of {pages_with_text} pages: "
+                "a page header, footer or page number"
+            )
+    return problems
 
 
 def _id_prefix(lines: Sequence[str]) -> str | None:
@@ -375,6 +422,10 @@ def _section_entry(
             (index for index in range(1, len(lines)) if not lines[index].strip()), len(lines)
         )
         text_start = title_end
+        # An older heading can end with its own revision line.
+        in_title = REVISION_IN_TITLE_PATTERN.search(" ".join(lines[:title_end]))
+        if in_title is not None:
+            revision = _parse_revision(in_title.group())
     else:
         title_end = revision_start
         revision_end = _revision_end(lines, revision_start)
@@ -419,9 +470,9 @@ def _section_entry(
             f"{'.'.join(str(part) for part in error['loc']) or 'row'}: {error['msg']}"
             for error in exc.errors(include_input=False)
         ]
-    if revision_start is None:
+    if revision is None:
         counts.without_revision_line += 1
-    elif revision is not None and revision.effective is None:
+    elif revision.effective is None:
         counts.effective_date_from_issued += 1
     chunks = chunk_document([SectionText(title=None, paragraphs=tuple(paragraphs))])
     return ManualSectionEntry(document=document, chunks=tuple(chunks)), []

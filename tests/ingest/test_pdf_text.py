@@ -58,6 +58,21 @@ def test_rejects_a_pdf_cut_off_in_the_middle(tmp_path: Path) -> None:
     assert _rejected(path) == ["cut.pdf: not a readable PDF file"]
 
 
+def test_rejects_a_damaged_pdf_the_library_fails_on_with_a_plain_error(tmp_path: Path) -> None:
+    # Without its line end, the library reads `startxref` and the number as one bad number.
+    whole = write_text_pdf(tmp_path / "whole.pdf", [["some text"]]).read_bytes()
+    assert whole.count(b"startxref\n") == 1
+    path = tmp_path / "damaged.pdf"
+    path.write_bytes(whole.replace(b"startxref\n", b"startxrefA"))
+    assert _rejected(path) == ["damaged.pdf: not a readable PDF file"]
+
+
+def test_rejects_a_path_that_cannot_be_opened_as_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "folder.pdf"
+    path.mkdir()
+    assert _rejected(path) == ["folder.pdf: the file cannot be opened"]
+
+
 @pytest.mark.parametrize("pages", [[[]], [[], []], [[""], ["", ""]]])
 def test_rejects_a_pdf_with_no_text(tmp_path: Path, pages: list[list[str]]) -> None:
     path = write_text_pdf(tmp_path / "scan.pdf", pages)

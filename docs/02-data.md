@@ -1612,3 +1612,97 @@ Nothing is sent anywhere.
 
 When a stored label no longer fits, run `pipelines.run_data_pipeline` again and then the
 commands after it. The known limits are in 03-architecture.md 3.16.
+
+### Reviewing the drafts
+
+One more command measures the Stage 4 done condition: the share of drafts a reviewer
+accepts with only light edits, against a target of 60%
+([03-architecture.md 3.17](03-architecture.md#317-draft-acceptance-review)). It has two
+steps, with the reviewer's work between them:
+
+```text
+python3 -m pipelines.review_drafts export --out-dir data/review
+python3 -m pipelines.review_drafts score data/review/review_scores.csv
+```
+
+It needs the agent loop to have run (`pipelines.run_agent`), because only its drafts can be
+reviewed. Both steps only read the database. **They make no model call and spend no
+money.**
+
+**Step 1, `export`.** It draws a sample of the drafts that can be reviewed and writes two
+files into `--out-dir`:
+
+| File | Holds |
+|---|---|
+| `review_drafts.md` | The file to read: the rubric, then per draft the draft, the denial letter document and every cited chunk in full |
+| `review_scores.csv` | The file to fill in: one row per draft, with the columns `claim_id`, `draft_sha256`, `verdict`, `reject_reason`, `note` |
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--out-dir` | none, required | The folder the two files are written into. It is created when it does not exist |
+| `--size` | 30 | How many drafts are sampled |
+| `--seed` | 42 | The seed of the draw. The same seed and the same stored drafts always give the same sample |
+
+**The file to read holds document text and letter text, so `--out-dir` must be a folder
+that is never committed.** `data/` is git-ignored, so `data/review/` is safe. An existing
+`review_scores.csv` is never overwritten: give another folder, or move the file away first.
+
+A draft can be reviewed when its claim ended as `needs_review`, the draft is stored, and
+the denial letter document stored now is the one the draft was built from.
+
+The output of the export on 2026-10-11:
+
+```text
+exported 30 of 55 drafts that can be reviewed (seed 42, agent v1, drafting prompt v1)
+  with at least one citation: 15
+  left out, the denial letter changed after the draft: 0
+  file to read: data/review/review_drafts.md
+  file to fill in: data/review/review_scores.csv
+```
+
+**Between the steps, the reviewer fills in the score file.** Every row gets a `verdict`:
+`accept`, `accept_light_edits` or `reject`. A `reject` also gets a `reject_reason`:
+`wrong_fact`, `no_policy_argument`, `citation_does_not_fit`, `poor_wording` or `other`. The
+`note` is free text, at most 1,000 characters. The `claim_id` and `draft_sha256` columns
+must stay as they are. What each verdict means is in the file to read and in
+03-architecture.md 3.17.
+
+Do not run the agent loop between the two steps. A claim that is drafted again gets a new
+fingerprint, and `score` then refuses its row.
+
+**Step 2, `score`.** It checks every row and prints the counts and the share.
+
+| Argument or option | Default | Meaning |
+|---|---|---|
+| the path | none, required | The filled-in score file |
+| `--size` | 30 | How many drafts were sampled. A file with another number of rows is refused |
+
+The output on 2026-10-11:
+
+```text
+scored 30 drafts (acceptance target 60.00%)
+  accept: 0
+  accept_light_edits: 0
+  reject: 30
+    wrong_fact: 2
+    no_policy_argument: 13
+    citation_does_not_fit: 14
+    poor_wording: 0
+    other: 1
+  acceptance share: 0 of 30 (0.00%), below the target
+  drafts with a citation: 0 of 15 (0.00%)
+  drafts without a citation: 0 of 15 (0.00%)
+```
+
+**A model gave these 30 verdicts, not a person.** They were read from a second score file
+with the same columns; the file `export` wrote is still empty. Who scored, what the
+rejected drafts show and the known limits are in 03-architecture.md 3.17.
+
+Both steps print counts and shares only: no letter text, no document text and no extracted
+value. Nothing is sent anywhere.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | `export`: the two files are written. `score`: the share is 60% or more |
+| 1 | `score`: the share is below 60%, a draft has no verdict yet (no share is printed), or the file cannot be used (a bad row, a wrong number of rows, a draft that was written again). `export`: the score file already exists, fewer drafts can be reviewed than `--size`, or a cited chunk is missing or changed |
+| 2 | A bad argument: `--out-dir` names a file, the score file does not exist, a size below 1 |

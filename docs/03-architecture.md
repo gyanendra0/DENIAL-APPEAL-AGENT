@@ -45,7 +45,7 @@
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
-| `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12) | Read-only, no LLM, nothing stored |
+| `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
 
 ## 3.3 Request flow
 
@@ -104,7 +104,8 @@ a verdict is needed (see 3.11). The agent's trace is the one place a verdict is 
 down: the outcome and its reasons, in the public reference table `agent_runs` (see 3.16).
 
 An evaluation result is not stored either. The evaluation harness prints its report and
-writes nothing (see 3.12).
+writes nothing (see 3.12). The verdicts of a draft review are a local file, not a table
+(see 3.17). The business table `reviews` does not exist yet.
 
 `evidence_documents` and `evidence_chunks` exist and are public reference tables: the policy
 text is public and shared by every account (see 3.13). The vectors of the chunks are in a
@@ -1823,7 +1824,7 @@ asks for when no passage fits, and it is the expected result of the weak search 
 (see the limits below).
 
 The share of drafts a reviewer accepts (the 60% target of Stage 4) is **not** measured
-here. It needs a person and a written rubric.
+here. It is measured by the draft acceptance review (see 3.17).
 
 ### Known limits
 
@@ -2125,7 +2126,7 @@ The numbers match what was measured before the code was written (18 stopped, 5 t
 saved model and the claim selection stay as they were on 2026-10-11.
 
 The share of drafts a reviewer accepts (the 60% target of Stage 4) is **not** measured
-here. It needs a person and a written rubric.
+here. It is measured by the draft acceptance review (see 3.17).
 
 ### Known limits
 
@@ -2177,3 +2178,233 @@ About the run that was measured:
 About the budget:
 
 - Two processes that call a model at the same moment can both pass the budget check (3.8).
+
+## 3.17 Draft acceptance review
+
+The draft acceptance review measures the Stage 4 done condition in
+[05-build-plan.md](05-build-plan.md): a reviewer accepts at least 60% of drafts with only
+light edits. A seeded sample of the drafts the agent loop stored (3.16) is written to a file,
+a reviewer gives every draft one verdict from a written rubric, and one command works out
+the share.
+
+Three things hold for the command:
+
+- **It only reads the database.** It makes no model call, spends no money and stores
+  nothing in a table. Tests prove it.
+- **Nothing in the code scores a draft.** The verdicts come from a file the reviewer fills
+  in.
+- **The terminal shows counts and shares only.** Letter text and document text go into one
+  local file and are never printed.
+
+The first measurement, on 2026-10-11, gave **0 of 30 drafts accepted**, and its verdicts
+were given **by a model, not by a person** (see "Who scored" below). The done condition is
+not met.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/evaluation/review_rubric.py` | The rubric: `Verdict`, `RejectReason`, their meanings, `ACCEPTED_VERDICTS`, `ACCEPTANCE_TARGET` (0.60) and `LIGHT_EDIT_SENTENCES` (3) |
+| `src/evaluation/review_sample.py` | `select_review_sample(claim_ids, *, size, seed)`, the seeded draw, and the defaults `REVIEW_SAMPLE_SIZE` (30) and `REVIEW_SAMPLE_SEED` (42) |
+| `src/evaluation/review_store.py` | `select_reviewable_claims` (the claims whose draft can be reviewed), `read_review_drafts`, `read_review_items` (what the reviewer sees), `draft_fingerprint` and `ReviewDataError` |
+| `src/evaluation/review_export.py` | `build_review_text` (the file to read) and `build_scores_csv` (the score file to fill in) |
+| `src/evaluation/review_score.py` | `read_review_scores`, `check_review_scores`, `count_without_verdict`, `build_review_report`, the printed `ReviewReport` and `ScoreFileError` |
+| `pipelines/review_drafts.py` | The command with its two steps, `export` and `score` ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
+
+The sampling function and the functions that build the two files and the report are pure.
+Only `review_store.py` reads the database and only the command writes files. There is no
+table and no migration.
+
+### The rubric
+
+The reviewer answers one question per draft: would you send this letter? The wording below
+is the wording of `review_rubric.py`, which is also printed at the top of the file the
+reviewer reads.
+
+| Verdict | Means |
+|---|---|
+| `accept` | you would send the draft as it is. |
+| `accept_light_edits` | you would send it after changing the wording of at most 3 sentences. No fact is corrected and no policy argument is added or removed. |
+| `reject` | anything else. A fact that differs from the denial letter (name, claim number, date, amount, service), a cited quote that does not support the sentence it sits under, no real argument for overturning the denial, or a rewrite of more than 3 sentences. |
+
+A `reject` needs one reason. The other two verdicts must not have one.
+
+| Reject reason | Means |
+|---|---|
+| `wrong_fact` | a fact differs from the denial letter. |
+| `no_policy_argument` | the draft gives no real argument for overturning the denial. |
+| `citation_does_not_fit` | a cited quote does not support the sentence it sits under. |
+| `poor_wording` | more than 3 sentences need rewording. |
+| `other` | none of the above; say why in the note. |
+
+**The acceptance share** is the drafts with `accept` or `accept_light_edits`, divided by
+all scored drafts. A draft with no citation is judged by the same rubric.
+
+### The method
+
+**Which drafts can be sampled.** A claim whose trace in `agent_runs` ended as
+`needs_review` (agent `v1`), that has a draft in `appeal_drafts` (drafting prompt `v1`), and
+whose denial letter document stored now is the one the draft was built from. A claim with
+another end state or with no trace is never sampled, so the 23 older drafts on claims the
+rules now stop (3.16) are left out. A draft whose letter document changed is left out too
+and counted.
+
+**The draw.** `select_review_sample` sorts the claim ids and draws with
+`random.Random(seed)`. The same ids and the same seed always give the same sample, whatever
+order the ids arrive in. A size above the number of ids, a size below 1 and a repeated id
+are refused. The measured review used 30 drafts and seed 42.
+
+**What the reviewer sees.** Per draft: every paragraph of the draft with its quotes, the
+text of the denial letter document, and every cited chunk in full with its determination
+title and section number.
+
+**What the reviewer does not see.** The win score, the rules verdict and the
+appeal-success proxy. The code that builds the file never reads them, and a test guards
+it.
+
+**Where the scores live.** `export` writes two files into the folder given as an argument:
+`review_drafts.md` to read and `review_scores.csv` to fill in. The folder must be one that
+is never committed, such as `data/review/`, because the file to read holds document text.
+An existing score file is never overwritten.
+
+**The fingerprint.** Every score row carries the SHA-256 of the stored letter, written as
+JSON with sorted keys. When a claim is drafted again, its fingerprint changes and `score`
+refuses the row. So do not run the agent loop between `export` and `score`.
+
+**What `score` checks before it gives a share.** The verdict is one of the three; a
+`reject` has a reason and the other two have none; the reason is one of the five; no claim
+is scored twice; the number of rows equals `--size`; every row belongs to a draft that can
+be reviewed. Every problem names a line of the file and quotes no value from it. A file
+with an empty verdict gives no share at all, only the number of drafts still open.
+
+**The 60% is a gate.** `score` exits with 0 at 60% or more and with 1 below it. A share of
+exactly 60% passes. A printed share is never rounded up to a target it misses.
+
+### Measured
+
+Measured on 2026-10-11 on the local database, at migration 0013.
+
+**Step 1, more drafts.** The agent loop ran once more, on the test split with
+`--limit 120` and `--rules-today 2010-01-01` (amount floor 25, threshold 0.30, agent `v1`,
+drafting prompt `v1`, model `gpt-4o-mini`). 50 of the 120 claims were finished before
+(3.16).
+
+| Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 70 | 26 | 10 | 30 | 1 | 3 (not parseable) | $0.014247 | 141 seconds |
+| 2 | 3 | 2 | 0 | 0 | 0 | 1 (blocked) | $0.001546 | 14 seconds |
+
+Both runs exited with 0. The blocked claim was not tried a third time.
+
+| Number | Value |
+|---|---|
+| Rows in `agent_runs` after the two runs | 120: 55 `needs_review`, 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold`, 1 `draft_failed` |
+| `needs_review` drafts with at least one citation | 27 of 55 |
+| Cost of the two runs | $0.015793 (the limit set for the run was $0.05) |
+| Month-to-date spend after the runs | $0.761551 of the $3.00 cap |
+
+**Step 2, the sample.** `export` drew 30 of the 55 drafts that can be reviewed, with seed
+42. 15 of the 30 carry at least one citation. No draft was left out for a changed letter.
+
+**Step 3, the verdicts.**
+
+| Number | Value |
+|---|---|
+| Drafts scored | 30 |
+| `accept` | 0 |
+| `accept_light_edits` | 0 |
+| `reject` | 30 |
+| **Acceptance share** | **0 of 30 (0.00%), below the 60% target** |
+| Drafts with a citation | 0 of 15 accepted |
+| Drafts without a citation | 0 of 15 accepted |
+
+| Reject reason | Drafts |
+|---|---|
+| `citation_does_not_fit` | 14 |
+| `no_policy_argument` | 13 |
+| `wrong_fact` | 2 |
+| `poor_wording` | 0 |
+| `other` | 1 |
+
+The command exited with 1.
+
+### Who scored
+
+**A model gave the 30 verdicts, not a person.** The model was Claude, the coding assistant
+used to build this project. It read the same file a person would read and applied the
+rubric above. The project owner decided on 2026-10-11 to record this as the measurement
+for now. **No person has scored the sample yet.**
+
+So the number answers a narrower question than the done condition asks. It says what a
+model found when it compared each draft with its denial letter and its cited text. It does
+not say what a person who files appeals would accept.
+
+The model read the rubric strictly: every draft that gives no argument for overturning the
+denial was rejected, also when its facts were right. The model's own estimate is that a
+lenient reader could accept about 6 of the 15 drafts without a citation, which would give
+at most about 20%. That figure is an estimate, not a measurement, and it is also below the
+target.
+
+The model's verdicts are in a local file of their own. The score file `export` wrote is
+still empty, ready for a person.
+
+### What the rejected drafts show
+
+- **The cited text does not fit the service.** 14 of the 15 drafts with a citation quote a
+  coverage determination that has nothing to do with the denied service: laser procedures
+  (7 drafts), a determination about another body part (3), colorectal cancer screening (2),
+  endoscopy (1) and clinical trials (1). The quote is word for word in the cited chunk, so
+  the citation validator (3.15) passes it. The validator checks that a quote exists, not
+  that it is about the claim.
+- **A draft without a citation argues nothing.** 13 of the 15 only state the facts of the
+  claim and ask for a review.
+- **Smaller faults that repeat:** scan errors of the denial letter copied into a claim
+  number or a name; placeholders such as `[Your Name]`; an invented payer address (2
+  drafts); the internal category word `other` shown to the insurer; a line amount mixed up
+  with the claim total.
+
+Both main faults come from the search question (3.15), which holds one fixed phrase per
+denial reason and the procedure codes, and no words about the service.
+
+### When the share is below 60%
+
+The done condition stays as it is: the target is not lowered and not reworded. Stage 4 is
+not released as `v0.5.0`. The most common reject reason picks the next piece of work, here
+a better search question, and the share is then measured again with the same command.
+
+A new measurement needs a new export into another folder, because a draft that was written
+again has a new fingerprint.
+
+### Known limits
+
+About who scored:
+
+- A model judged letters a model wrote. It can share the blind spots of the model that
+  drafted them, and it is not the reviewer the done condition names.
+- One reviewer gave every verdict, and no second reviewer checked any of them.
+- Nothing ties the score file to a reviewer. It is a local file that can be changed later,
+  and nothing records who filled it in or when.
+
+About the sample:
+
+- 30 drafts is a small sample. A measured 0 of 30 still fits a true share of up to about
+  12% for the same reviewer. A measured 60% would stand for a true share of about 42% to
+  75%.
+- The 55 drafts come from the first 120 test claims in claim id order, not from a draw over
+  all 749 test claims that can be taken.
+- `score` checks the number of rows and that each row belongs to a draft that can be
+  reviewed. It does not prove the rows are the seed-42 sample.
+
+About the data:
+
+- The claims, the people and the documents are made up. The share says nothing about real
+  appeals.
+- The policy text is from 2026 and the claims are from 2008 to 2010 (3.13).
+- The payers are made up, and the policy text is Medicare policy.
+
+About the rubric:
+
+- "At most 3 sentences" is the reviewer's judgement. No edit is made, so nothing measures
+  it.
+- A draft gets one reject reason. A draft with two faults shows only the one the reviewer
+  picked.

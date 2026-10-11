@@ -53,6 +53,7 @@ PROMPT = DraftingPrompt(version=PROMPT_VERSION, system=SYSTEM_TEXT)
 OPENING_TEXT = "I am writing to appeal the denial of this made-up claim."
 POLICY_TEXT = "The determination covers the widget that was ordered."
 ABSENT_QUOTE = "This sentence is in no evidence text at all."
+CLOSING_WITH_PLACEHOLDER = "Sincerely, [Your Name]"
 # What one drafted claim costs with the stubs: the question's embedding and the letter.
 CLAIM_COST = CALL_COST + EMBEDDING_COST
 EVIDENCE_DOCUMENT_ID = "1"
@@ -99,6 +100,11 @@ def two_problem_answer(request: LlmRequest) -> str:
         {"kind": "policy", "text": POLICY_TEXT, "citations": [absent, absent]},
         {"kind": "policy", "text": POLICY_TEXT, "citations": []},
     )
+
+
+def placeholder_answer(request: LlmRequest) -> str:
+    """A letter with a blank to fill in: the placeholder check refuses it."""
+    return _answer({"kind": "other", "text": CLOSING_WITH_PLACEHOLDER, "citations": []})
 
 
 def is_for(claim_id: str) -> Callable[[LlmRequest], bool]:

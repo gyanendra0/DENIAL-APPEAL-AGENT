@@ -62,6 +62,7 @@ from tests.drafting.helpers import (
     drafting_data,
     drafting_gateway,
     good_answer,
+    placeholder_answer,
     stored_drafts,
     two_problem_answer,
     uncited_answer,
@@ -406,6 +407,21 @@ def test_an_answer_that_cannot_be_parsed_fails_the_draft_and_stores_nothing(
     assert (trace.drafting.status, trace.drafting.failure) == (
         StepStatus.FAILED,
         DraftFailure.NOT_PARSEABLE,
+    )
+    assert stored_drafts(factory) == {}
+
+
+def test_a_draft_with_placeholder_text_fails_with_its_own_value_and_stores_nothing(
+    factory: sessionmaker[Session],
+) -> None:
+    trace = _run(factory, StubProvider(placeholder_answer))
+
+    assert trace.end_state is EndState.DRAFT_FAILED
+    assert trace.retrieval.status is StepStatus.DONE
+    assert trace.drafting == DraftingStep(
+        status=StepStatus.FAILED,
+        prompt_version=PROMPT_VERSION,
+        failure=DraftFailure.PLACEHOLDER_TEXT,
     )
     assert stored_drafts(factory) == {}
 

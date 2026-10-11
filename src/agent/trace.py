@@ -37,6 +37,7 @@ class DraftFailure(StrEnum):
     BLOCKED = "blocked"  # the citation validator found a problem
     CUT_OFF = "cut_off"  # the answer reached the output limit
     NOT_PARSEABLE = "not_parseable"  # the answer is not JSON or does not fit a draft
+    PLACEHOLDER_TEXT = "placeholder_text"  # a paragraph holds text in square brackets
 
 
 class ExtractionStep(BaseModel):

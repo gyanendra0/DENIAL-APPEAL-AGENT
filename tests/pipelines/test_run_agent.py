@@ -159,6 +159,7 @@ def test_runs_one_split_stores_the_traces_and_prints_the_counts(
         "    blocked: 0",
         "    cut_off: 0",
         "    not_parseable: 0",
+        "    placeholder_text: 0",
         "    no rules verdict: 0",
         "  answered by the fallback: 0",
         "  denied claims of the split left out (no current letter extraction): 0",
@@ -265,11 +266,12 @@ def test_failed_drafts_are_counted_the_run_exits_0_and_the_next_run_takes_them_a
     assert stored_drafts(factory) == {}
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out.splitlines()[8:13] == [
+    assert captured.out.splitlines()[8:14] == [
         "  draft_failed: 2",
         "    blocked: 1",
         "    cut_off: 0",
         "    not_parseable: 1",
+        "    placeholder_text: 0",
         "    no rules verdict: 0",
     ]
 
@@ -300,7 +302,7 @@ def test_a_claim_without_a_current_letter_extraction_is_left_out_and_counted(
     assert set(stored_runs(factory)) == {CLAIM_2}
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"ran the agent loop for 1 of 1 {HEADLINE}"
-    assert lines[14] == "  denied claims of the split left out (no current letter extraction): 1"
+    assert lines[15] == "  denied claims of the split left out (no current letter extraction): 1"
 
 
 def test_stops_cleanly_when_a_provider_refuses_the_request_and_exits_1(

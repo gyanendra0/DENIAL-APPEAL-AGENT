@@ -33,6 +33,7 @@ from tests.drafting.helpers import (
     drafting_gateway,
     good_answer,
     is_for,
+    placeholder_answer,
     stored_drafts,
     two_problem_answer,
     uncited_answer,
@@ -244,6 +245,29 @@ def test_a_claim_whose_draft_failed_is_taken_again_and_its_trace_replaced(
         CLAIM_1: EndState.NEEDS_REVIEW,
         CLAIM_2: EndState.NEEDS_REVIEW,
     }
+    assert set(stored_drafts(factory)) == {CLAIM_1, CLAIM_2}
+
+
+def test_a_claim_refused_for_placeholder_text_is_counted_and_taken_again_by_the_next_run(
+    factory: sessionmaker[Session],
+) -> None:
+    first = _run(
+        factory,
+        StubProvider(
+            lambda request: (
+                placeholder_answer(request) if is_for(CLAIM_1)(request) else good_answer(request)
+            )
+        ),
+    )
+    assert first.end_states == _counts(draft_failed=1, needs_review=1)
+    assert first.draft_failures == {DraftFailure.PLACEHOLDER_TEXT.value: 1}
+    assert set(stored_drafts(factory)) == {CLAIM_2}
+
+    primary = StubProvider(good_answer)
+    second = _run(factory, primary)
+
+    assert (second.already_finished, second.end_states) == (1, _counts(needs_review=1))
+    assert [is_for(CLAIM_1)(request) for request in primary.requests] == [True]
     assert set(stored_drafts(factory)) == {CLAIM_1, CLAIM_2}
 
 

@@ -18,6 +18,7 @@ from src.db.session import session_scope
 from src.drafting.drafter import (
     DraftBlockedError,
     DraftingError,
+    DraftPlaceholderError,
     DraftTruncatedError,
     draft_appeal,
 )
@@ -54,7 +55,8 @@ class DraftingRunSummary(BaseModel):
 
     `blocked` counts the drafts the citation validator blocked; `blocked_by_kind` says, per
     kind of problem, how many of those drafts had it (a draft with two kinds counts under
-    both). `stop_reason` is None when every claim was looked at; otherwise it says why the
+    both). `refused_for_placeholder` counts the drafts with text in square brackets.
+    `stop_reason` is None when every claim was looked at; otherwise it says why the
     run ended early, and `not_tried` claims are left for the next run.
     """
 
@@ -68,6 +70,7 @@ class DraftingRunSummary(BaseModel):
     blocked_by_kind: dict[str, int]
     failed_to_parse: int = Field(ge=0)
     stopped_for_length: int = Field(ge=0)
+    refused_for_placeholder: int = Field(ge=0)
     answered_by_fallback: int = Field(ge=0)
     stop_reason: str | None
 
@@ -80,6 +83,7 @@ class DraftingRunSummary(BaseModel):
             - self.blocked
             - self.failed_to_parse
             - self.stopped_for_length
+            - self.refused_for_placeholder
         )
 
 
@@ -98,7 +102,8 @@ def run_drafting(
     chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown to
     the model; a claim with no chunk left is drafted with no evidence. Each letter is
     committed on its own, so a run that stops keeps what it finished. A draft that
-    is blocked, cut off or not parseable is counted and nothing is stored for it. The run
+    is blocked, cut off, not parseable or holds placeholder text is counted and nothing is
+    stored for it. The run
     ends early, without an error, when the budget is reached, no provider can answer, a
     provider refuses a request, the evidence has no stored vector, or the answer to a search
     question's embedding call cannot be used.
@@ -107,7 +112,8 @@ def run_drafting(
         drafted_before = read_drafted_claim_ids(session, prompt.version)
 
     already_drafted = drafted = drafted_with_citation = 0
-    blocked = failed_to_parse = stopped_for_length = answered_by_fallback = 0
+    blocked = failed_to_parse = stopped_for_length = refused_for_placeholder = 0
+    answered_by_fallback = 0
     blocked_by_kind: Counter[str] = Counter()
     stop_reason: str | None = None
     for position, candidate in enumerate(candidates, start=1):
@@ -131,6 +137,8 @@ def run_drafting(
             except DraftBlockedError as error:
                 blocked += 1
                 blocked_by_kind.update({problem.kind.value for problem in error.problems})
+            except DraftPlaceholderError:
+                refused_for_placeholder += 1
             except DraftingError:
                 failed_to_parse += 1
             except LlmBudgetExceededError:
@@ -167,7 +175,7 @@ def run_drafting(
                 len(candidates),
                 drafted,
                 blocked,
-                failed_to_parse + stopped_for_length,
+                failed_to_parse + stopped_for_length + refused_for_placeholder,
             )
     return DraftingRunSummary(
         selected=len(candidates),
@@ -178,6 +186,7 @@ def run_drafting(
         blocked_by_kind=dict(blocked_by_kind),
         failed_to_parse=failed_to_parse,
         stopped_for_length=stopped_for_length,
+        refused_for_placeholder=refused_for_placeholder,
         answered_by_fallback=answered_by_fallback,
         stop_reason=stop_reason,
     )

@@ -102,8 +102,63 @@ def test_there_are_five_end_states_and_none_means_approved_or_sent() -> None:
     ]
 
 
-def test_a_draft_fails_in_one_of_three_ways() -> None:
-    assert [failure.value for failure in DraftFailure] == ["blocked", "cut_off", "not_parseable"]
+def test_a_draft_fails_in_one_of_four_ways() -> None:
+    assert [failure.value for failure in DraftFailure] == [
+        "blocked",
+        "cut_off",
+        "not_parseable",
+        "placeholder_text",
+    ]
+
+
+@pytest.mark.parametrize("agent_version", ["v1", "v2"])
+@pytest.mark.parametrize("failure", ["blocked", "cut_off", "not_parseable"])
+def test_a_stored_trace_with_a_failure_value_from_before_still_reads_back(
+    agent_version: str, failure: str
+) -> None:
+    stored = {
+        "end_state": "draft_failed",
+        "agent_version": agent_version,
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+        },
+        "scoring": {"status": "done", "score": 0.75, "threshold": 0.3},
+        "retrieval": {"status": "done", "matches": []},
+        "drafting": {
+            "status": "failed",
+            "prompt_version": "v1",
+            "failure": failure,
+            "problem_kinds": ["unknown_label"] if failure == "blocked" else [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.drafting.failure is DraftFailure(failure)
+    assert trace.model_dump(mode="json")["drafting"]["failure"] == failure
+
+
+def test_a_trace_with_the_placeholder_failure_reads_back_from_its_json_values() -> None:
+    trace = AgentTrace(
+        end_state=EndState.DRAFT_FAILED,
+        extraction=EXTRACTION,
+        rules=RULES,
+        drafting=DraftingStep(
+            status=StepStatus.FAILED,
+            prompt_version="v2",
+            failure=DraftFailure.PLACEHOLDER_TEXT,
+        ),
+    )
+
+    stored = trace.model_dump(mode="json")
+
+    assert stored["drafting"]["failure"] == "placeholder_text"
+    assert AgentTrace.model_validate(stored) == trace
 
 
 def test_the_steps_a_trace_is_not_given_are_recorded_as_not_run() -> None:

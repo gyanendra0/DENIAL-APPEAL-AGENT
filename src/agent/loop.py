@@ -31,6 +31,7 @@ from src.drafting.citation_validator import CitationProblemKind
 from src.drafting.drafter import (
     DraftBlockedError,
     DraftingError,
+    DraftPlaceholderError,
     DraftTruncatedError,
     draft_appeal,
 )
@@ -91,7 +92,8 @@ def run_agent_for_claim(
 
     A checked letter is stored in `appeal_drafts`, in its own commit, replacing the draft the
     claim had for the prompt version. The trace is returned, not stored. A draft that is
-    blocked, cut off or not parseable ends as `draft_failed` and stores nothing.
+    blocked, cut off, not parseable or holds placeholder text ends as `draft_failed` and
+    stores nothing.
 
     Errors that say nothing about the claim pass through, with no trace: the gateway's
     (`LlmBudgetExceededError`, `LlmUnavailableError`, `ProviderRejectedError`,
@@ -221,6 +223,8 @@ def _failed_drafting_step(prompt: DraftingPrompt, error: DraftingError) -> Draft
         problem_kinds = tuple(kind for kind in CitationProblemKind if kind in found)
     elif isinstance(error, DraftTruncatedError):
         failure = DraftFailure.CUT_OFF
+    elif isinstance(error, DraftPlaceholderError):
+        failure = DraftFailure.PLACEHOLDER_TEXT
     else:
         failure = DraftFailure.NOT_PARSEABLE
     return DraftingStep(

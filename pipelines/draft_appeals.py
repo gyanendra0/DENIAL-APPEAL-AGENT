@@ -12,11 +12,12 @@ settings keys.
 Only a denied claim whose letter has a current extraction is selected; `--limit` takes the
 first of them in claim id order, so the same limit always means the same claims. A claim that
 already has a draft of the prompt version is skipped, so a run that stopped can be started
-again. A draft the citation validator blocks, and an answer that is not usable (not JSON, not
-the schema, or cut off at the output limit), is counted and nothing is stored for it; the run
-goes on. When the monthly budget is reached, no provider can answer, a provider refuses a
-request (a bad request, a wrong key), the evidence has no stored vector or a search question's
-vector cannot be used, the run stops and keeps what it finished.
+again. A draft the citation validator blocks, a draft with text in square brackets, and an
+answer that is not usable (not JSON, not the schema, or cut off at the output limit), is
+counted and nothing is stored for it; the run goes on. When the monthly budget is reached, no
+provider can answer, a provider refuses a request (a bad request, a wrong key), the evidence
+has no stored vector or a search question's vector cannot be used, the run stops and keeps
+what it finished.
 
 A stored draft is for a person to review. Nothing is sent anywhere.
 
@@ -149,6 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"    {kind.value}: {summary.blocked_by_kind.get(kind.value, 0)}")
     print(f"  failed to parse: {summary.failed_to_parse}")
     print(f"  stopped for length: {summary.stopped_for_length}")
+    print(f"  refused for placeholder text: {summary.refused_for_placeholder}")
     print(f"  answered by the fallback: {summary.answered_by_fallback}")
     print(f"  denied claims of the split left out (no current letter extraction): {left_out}")
     print(f"  time: {seconds:.0f} s")

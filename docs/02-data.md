@@ -1454,7 +1454,7 @@ file.
 
 ### Drafting the appeal letters
 
-The last command drafts an appeal letter for the denied claims of one split and stores the
+This command drafts an appeal letter for the denied claims of one split and stores the
 letters that pass the citation check
 ([03-architecture.md 3.15](03-architecture.md#315-cited-appeal-drafting)):
 
@@ -1522,3 +1522,93 @@ a person to review. Nothing is sent anywhere.
 Run it again after a new drafting prompt version. A claim keeps its old draft when its
 letter document or the evidence corpus changes; what that means is in the known limits of
 03-architecture.md 3.15.
+
+### Running the agent loop
+
+The last command walks each denied claim of one split through the whole path (the stored
+letter extraction, the rules, the win score, the evidence search, the draft) and stores a
+trace of what happened
+([03-architecture.md 3.16](03-architecture.md#316-agent-loop)):
+
+```text
+python3 -m pipelines.run_agent --split test --rules-today 2010-01-01 --limit 50
+```
+
+It needs the database at the newest migration, the documents of the split extracted
+(`pipelines.extract_documents`), the win model trained (`pipelines.train_win_model`), the
+evidence corpus loaded and embedded (`pipelines.embed_evidence_corpus`), and the `LLM_`
+keys set. The amount floor comes from `RULES_AMOUNT_FLOOR_USD`, the model folder from
+`MODEL_DIR` and the score threshold from `AGENT_WIN_THRESHOLD` (default 0.30).
+
+**It spends money**, but only for a claim that passes the rules and the threshold: one
+small embedding call for the search question and one model call for the letter, both
+through the gateway and its budget check. Such a claim cost about $0.0005 and took about 5
+seconds. A claim the rules or the threshold stop costs nothing.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--split` | none, required | `train`, `validation` or `test`: the split whose denied claims are taken |
+| `--rules-today` | none, required | The date the rules take as "today", as `YYYY-MM-DD`. There is no default because the rules never read the clock, and with the real date every made-up deadline has passed |
+| `--limit` | all of them | Only the first this many claims, in claim id order, so the same limit always means the same claims |
+| `--prompt-version` | `v1` | The version of the drafting prompt |
+
+Only a denied claim whose denial letter has a current extraction is selected, and `--limit`
+counts only those. The command prints how many denied claims of the split were left out.
+
+Every claim ends in one of five end states, and every one of them is a stop for a person:
+
+| End state | Means |
+|---|---|
+| `needs_review` | A checked draft is stored in `appeal_drafts` and waits for a person |
+| `needs_review_no_draft` | The rules sent the claim to a person; no draft |
+| `stopped_by_rules` | The rules closed the claim; no draft |
+| `below_threshold` | The score is under the threshold; no draft |
+| `draft_failed` | A step could not give an answer for this claim (the draft was blocked, cut off or could not be parsed, or the rules gave no verdict); no draft |
+
+Each trace is saved in `agent_runs` as soon as its claim is done. A claim whose trace ended
+in one of the first four end states is skipped by a later run and costs nothing, so after
+exit code 1 the same command continues where the run stopped. A `draft_failed` claim is
+taken again by the next run and its trace is replaced. So a run takes 0 claims and spends
+$0 once no selected claim is left as `draft_failed`.
+
+A skipped claim is **not** looked at again when `--rules-today`, the floor, the threshold
+or `--prompt-version` changes.
+
+The output of the first run, on 2026-10-11:
+
+```text
+ran the agent loop for 50 of 50 selected claims (test split, agent v1, drafting prompt v1)
+  rules today 2010-01-01, amount floor $25, score threshold 0.30
+  finished before this run: 0
+  needs_review: 26
+    drafted with at least one citation: 10
+  needs_review_no_draft: 5
+  stopped_by_rules: 18
+  below_threshold: 0
+  draft_failed: 1
+    blocked: 0
+    cut_off: 0
+    not_parseable: 1
+    no rules verdict: 0
+  answered by the fallback: 0
+  denied claims of the split left out (no current letter extraction): 10
+  time: 127 s
+  spent $0.013362 in this run; $0.745291 of the $3.00 monthly budget is used
+```
+
+A second run took the one failed claim again for $0.000467; it ended as `needs_review`. A
+third run printed `ran the agent loop for 0 of 50 selected claims`,
+`finished before this run: 50` and `spent $0.000000 in this run`. The other figures of the runs
+are in 03-architecture.md 3.16.
+
+The report prints counts only: no letter text, no document text and no extracted value.
+Nothing is sent anywhere.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Every selected claim was looked at. Some may have no draft: see the end states |
+| 1 | The run stopped early (the monthly budget is reached, no provider could answer, a provider refused the request, the evidence has no embedding, or the answer to a search cannot be used), or it could not start: no saved model, a stored label that no longer fits its claim's lines, or no denied claim with a current letter extraction in the split |
+| 2 | A bad argument, a prompt version with no prompt file included |
+
+When a stored label no longer fits, run `pipelines.run_data_pipeline` again and then the
+commands after it. The known limits are in 03-architecture.md 3.16.

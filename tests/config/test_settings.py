@@ -121,6 +121,34 @@ def test_rejects_an_amount_floor_that_is_negative_or_not_a_number(
         load_settings(env_file=None)
 
 
+def test_win_threshold_defaults_to_0_30(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.delenv("AGENT_WIN_THRESHOLD", raising=False)
+
+    assert load_settings(env_file=None).agent_win_threshold == 0.30
+
+
+@pytest.mark.parametrize(("value", "threshold"), [("0", 0.0), ("0.45", 0.45), ("1", 1.0)])
+def test_win_threshold_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, value: str, threshold: float
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("AGENT_WIN_THRESHOLD", value)
+
+    assert load_settings(env_file=None).agent_win_threshold == threshold
+
+
+@pytest.mark.parametrize("value", ["-0.01", "1.01", "nan", "inf", "abc", ""])
+def test_rejects_a_win_threshold_outside_0_to_1_and_names_the_key(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("AGENT_WIN_THRESHOLD", value)
+
+    with pytest.raises(ValidationError, match="agent_win_threshold"):
+        load_settings(env_file=None)
+
+
 # A made-up value. No real key ever appears in a test.
 API_KEY = "test-key-not-real"
 FALLBACK_KEY = "test-fallback-key-not-real"

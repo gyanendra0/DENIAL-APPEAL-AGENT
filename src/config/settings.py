@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # The smallest total allowed charge the rules let through, in US dollars. Assumed: no
     # source gives this value.
     rules_amount_floor_usd: UsdAmount = Decimal("25")
+    # The lowest win-model score the agent loop still drafts for, from 0 to 1. The score is
+    # the model's estimate of a made-up label, so the value is a choice, not a measurement.
+    agent_win_threshold: float = Field(default=0.30, ge=0, le=1, allow_inf_nan=False)
 
     @field_validator("database_url")
     @classmethod

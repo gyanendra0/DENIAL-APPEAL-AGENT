@@ -40,7 +40,7 @@
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
 | `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13; embedding and search: see 3.14) | pgvector, chunked policy corpus |
 | `drafting` | Write an appeal letter from the letter's fields and the evidence found; block a draft with a bad citation (see 3.15) | The model writes labels and quotes; a pure function checks them |
-| `agent` | Run the loop, call tools, stop and ask a human | Bounded steps, full trace logged |
+| `agent` | Walk one claim through extraction, rules, scoring, retrieval and drafting, then stop for a person (see 3.16) | Fixed order in code, each step once, a stored trace |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
@@ -59,6 +59,12 @@
 
 Everything after step 1 is asynchronous. The UI polls job status.
 
+This is the flow of the finished product. What exists today is steps 2 to 6 for the made-up
+claims of the synthetic sample, run by a command and not by an upload: the agent loop reads
+a stored extraction, runs the rules, scores the claim, retrieves evidence, drafts a letter
+and stores a trace that ends in a stop for a person (see 3.16). The upload, the background
+job, the dashboard, the review actions and the audit log are not built yet.
+
 ## 3.4 Data model (core tables)
 
 | Table | Holds |
@@ -73,6 +79,7 @@ Everything after step 1 is asynchronous. The UI polls job status.
 | `evidence_chunks` | Policy text cut into chunks |
 | `evidence_chunk_embeddings` | The vector an embedding model gave for one chunk, used by the search |
 | `appeal_drafts` | A drafted appeal letter that passed the citation validator, for one claim of the synthetic sample |
+| `agent_runs` | What the agent loop did with one claim of the synthetic sample: the end state and the trace of the five steps |
 | `drafts` | Generated letter, citations, status |
 | `reviews` | Who approved or rejected, when, why |
 | `audit_log` | Every automated decision, immutable |
@@ -89,10 +96,12 @@ exist. Until then, what a model reads from the generated documents is stored in 
 reference table `document_extractions` (see 3.9).
 
 The business table `predictions` does not exist yet either. The win-probability model is
-trained and saved as files, and no score is stored (see 3.10).
+trained and saved as files (see 3.10). The only place a score is stored is the agent's
+trace, for a claim of the synthetic sample (see 3.16).
 
-A rule verdict is not stored either. The rules are a function that is called when a verdict
-is needed (see 3.11); the first place a verdict will be written down is the agent's trace.
+A rule verdict has no table of its own either. The rules are a function that is called when
+a verdict is needed (see 3.11). The agent's trace is the one place a verdict is written
+down: the outcome and its reasons, in the public reference table `agent_runs` (see 3.16).
 
 An evaluation result is not stored either. The evaluation harness prints its report and
 writes nothing (see 3.12).
@@ -663,8 +672,9 @@ claims and not a better model.
 - The features come from the structured claim rows, not from the fields extracted from
   documents (3.9). Only the test split has been extracted, and a denial letter has no
   "fully denied" field.
-- A customer's denial cannot be scored yet: nothing calls `load_win_model` outside the
-  tests, and no score is stored.
+- A customer's denial cannot be scored yet. The agent loop (3.16) loads the model and
+  stores a score in its trace, but only for a claim of the synthetic sample, because the
+  features need the claim rows.
 
 ## 3.11 Deterministic rules
 
@@ -846,8 +856,9 @@ since then; the current agreement count is printed by the evaluation harness and
 - The floor is on the total allowed charge, the only printed number that says how big a
   claim is. It is not the money an appeal could win: the generated letters print no billed
   amount.
-- Only the evaluation harness (3.12) calls `evaluate_rules` outside the tests. The agent
-  loop will.
+- Two places call `evaluate_rules` outside the tests: the evaluation harness (3.12) and the
+  agent loop (3.16). Each passes its own `today`, so both must be given the same date for
+  their verdicts to be compared.
 
 ## 3.12 Evaluation harness
 
@@ -1550,8 +1561,10 @@ Every model call goes through the gateway and passes the budget check first (3.8
 claims are the made-up claims of the synthetic sample, so no real patient data is involved.
 A stored draft is never sent anywhere.
 
-The agent loop is not built yet. Drafting does not look at the rules verdict (3.11) or the
-win score (3.10): the command drafts for every selected denied claim.
+Drafting itself does not look at the rules verdict (3.11) or the win score (3.10): the
+command of this section drafts for every selected denied claim. The agent loop (3.16) is
+the path that runs the rules and the score first and calls `draft_appeal` only for a claim
+they let through.
 
 ### Where the code is
 
@@ -1857,6 +1870,309 @@ About the run that was measured:
 - Every answer came from the primary model. Whether the fallback model can fill this output
   shape was not tried.
 - The output limit of 1,500 tokens is an estimate. No answer of the run reached it.
+
+About the budget:
+
+- Two processes that call a model at the same moment can both pass the budget check (3.8).
+
+## 3.16 Agent loop
+
+The agent loop joins the parts of 3.9 to 3.15 into one path for one denied claim. It reads
+the stored extraction of the claim's denial letter, runs the rules, scores the claim,
+searches the evidence and drafts a cited appeal letter. It stores a trace of every step, so
+a person can see why a claim got a draft or why it did not.
+
+Three things hold for every run:
+
+- **The order is fixed in code.** The five steps always run in the same order, each at most
+  once, with no retry. No model picks the next step and no model calls a tool.
+- **Every run ends in a stop for a person.** No end state means "approved" or "sent", and
+  no code path sends anything outside the database. This is the hard rule "nothing sent to
+  an insurer automatically" ([conventions 6.8](06-conventions.md#68-hard-rules)).
+- **Money is spent only after the rules and the score let a claim through.** One claim
+  makes at most one embedding call and one model call, both through the gateway and its
+  budget check (3.8). A claim that stops earlier costs nothing.
+
+The claims are the made-up claims of the synthetic sample, so no real patient data is
+involved.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/agent/trace.py` | The trace types: `AgentTrace`, the five step models, `StepStatus`, `DraftFailure`, `EvidenceReference` and `AGENT_VERSION` |
+| `src/agent/loop.py` | `run_agent_for_claim(...)`, the loop for one claim, and `AgentCandidate`, the claim it takes |
+| `src/agent/store.py` | `select_agent_candidates` (the claims that can be taken), `read_finished_claim_ids`, `save_agent_run` and `ClaimRowsError` |
+| `src/agent/run.py` | `run_agent(...)`: many claims, one at a time, each trace saved as it arrives; its answer `AgentRunSummary` |
+| `src/db/models.py` | `AgentRun`, the table `agent_runs`, and `EndState`, the five end states |
+| `src/db/migrations/versions/rev_0013_agent_runs.py` | Migration 0013: the table and the type `agent_end_state`; the downgrade drops both |
+| `pipelines/run_agent.py` | The command ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
+
+`src/agent/` calls only the public functions of the other packages: `evaluate_rules`
+(3.11), `predict_win_probability` (3.10), `build_search_question`, `draft_appeal` and
+`save_appeal_draft` (3.15) and `search_evidence` (3.14). It changes none of them.
+
+`EndState` is in the models file and not beside the trace types, because the table stores
+it as a column.
+
+### One claim, step by step
+
+| Step | What it does | Costs money |
+|---|---|---|
+| 1. Extraction | Reads the claim's stored letter extraction (the `document_extractions` row of extraction prompt `v2`, 3.9). It makes **no** extraction call | no |
+| 2. Rules | Calls `evaluate_rules` with the letter date, the appeal deadline and the total allowed charge from the extraction, and with "today" and the amount floor passed in | no |
+| 3. Scoring | Scores the claim with the saved win model. The three features come from the claim's stored rows through `build_claim_features` (`FEATURE_VERSION` `v1`), not from the letter | no |
+| 4. Retrieval | Builds the search question with `build_search_question` and calls `search_evidence`, top 5 | one small embedding call |
+| 5. Drafting | Calls `draft_appeal` with the letter's values and the 5 results. A checked letter is stored in `appeal_drafts` | one model call |
+
+`run_agent_for_claim` takes a ready `AgentCandidate`: the claim id, the extracted letter,
+the hash of the letter document, the extraction prompt version and the features. It returns
+the trace and does not store it. The caller stores it.
+
+"Today", the amount floor and the threshold are arguments. Nothing in `src/agent/` reads
+the clock or the settings.
+
+The loop **always drafts fresh**. A letter that passes the citation validator replaces the
+draft the claim already had for the same drafting prompt version, so a `needs_review` trace
+always describes the draft that is stored.
+
+### What stops the loop
+
+| After step | When | End state | What is stored |
+|---|---|---|---|
+| Rules | The verdict is `hard_fail` | `stopped_by_rules` | The trace |
+| Rules | The verdict is `must_review` | `needs_review_no_draft` | The trace |
+| Rules | The rules give no verdict (the extracted amount is below zero) | `draft_failed` | The trace |
+| Scoring | The score is below the threshold | `below_threshold` | The trace |
+| Drafting | The draft is blocked by the validator, cut off at the output limit, or cannot be parsed | `draft_failed` | The trace; no draft |
+| Drafting | The letter passed the validator | `needs_review` | The trace and the draft |
+
+Only a `pass` verdict goes on to scoring. A score **equal** to the threshold goes on. For
+the first four rows no model call is made and no draft is stored; tests prove both with a
+gateway that fails when it is called.
+
+The five end states, in the order of the type `agent_end_state`:
+
+| End state | Means |
+|---|---|
+| `needs_review` | A checked draft is stored and waits for a person |
+| `needs_review_no_draft` | The rules sent the claim to a person; there is no draft |
+| `stopped_by_rules` | The rules closed the claim: the deadline has passed or the amount is below the floor |
+| `below_threshold` | The model gives the appeal too small a chance to draft for |
+| `draft_failed` | A step could not give an answer for this claim; there is no draft |
+
+The first four are final for an agent version. `draft_failed` is not: the next run takes
+the claim again.
+
+### The trace
+
+`AgentTrace` is a Pydantic model with the end state, the agent version and one entry per
+step. Every step has a status:
+
+| Status | Means |
+|---|---|
+| `done` | The step ran and the loop went on |
+| `stopped` | The step ran and its answer ended the loop |
+| `failed` | The step could not give an answer for this claim |
+| `not_run` | The loop ended before this step |
+
+A step that did not run holds its status and nothing else. The facts each step records:
+
+| Step | Facts |
+|---|---|
+| `extraction` | The extraction prompt version and the `text_sha256` of the letter document |
+| `rules` | The rules version, "today", the amount floor, the outcome and every reason that fired |
+| `scoring` | The feature version, the model version, the score and the threshold |
+| `retrieval` | The search question version, the embedding model, and per result the four citation fields (`source`, `source_document_id`, `chunk_index`, `text_sha256`, see 3.13) and its `similarity` |
+| `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`) and, when blocked, the kinds of problem the validator found |
+
+**A trace never holds document text, an extracted value, the search question or letter
+text.** It holds versions, outcomes, numbers and the values that name a chunk. A test
+guards this. The letter itself is in `appeal_drafts`; the trace names it by the claim and
+the drafting prompt version.
+
+Any change to a step, to what stops the loop or to an end state needs a new `AGENT_VERSION`
+(today `v1`).
+
+### The table
+
+`agent_runs` has one row per claim and agent version. It is a public reference table with
+no `account_id`: it holds only runs on the made-up claims of the synthetic sample, like
+`appeal_drafts` (3.15). A customer's run will get its own business table with `account_id`.
+
+| Column | Holds |
+|---|---|
+| `source_claim_id` | The claim, a link to `claim_samples`; removing a claim removes its runs |
+| `agent_version` | The agent version; never empty |
+| `end_state` | One of the five end states, as the constrained type `agent_end_state` |
+| `text_sha256` | The hash of the denial letter document the loop read |
+| `trace` | The `AgentTrace` as JSON |
+| `created_at`, `updated_at` | As on every table |
+
+`source_claim_id` and `agent_version` are unique together, so a new agent version keeps the
+old runs.
+
+Two checks keep the columns and the trace in step: the end state inside `trace` must equal
+the `end_state` column, and the agent version inside `trace` must equal the `agent_version`
+column. A trace without one of those keys is refused too. The table does not check the rest
+of the trace. The only code that writes it is `save_agent_run`, which is given what the
+loop returned and is read back with `AgentTrace.model_validate`.
+
+**No foreign key points at `appeal_drafts` or at the evidence tables.** A new load of the
+corpus gives every chunk a new row id (3.13), and it must not remove a run.
+
+### A run over many claims
+
+`run_agent` takes the claims the command selected and works through them one at a time.
+Each trace is committed on its own, so a run that stopped keeps what it finished.
+
+**Which claims are selected.** The same claims the drafting command selects (3.15): a
+denied claim of the chosen split whose denial letter has a current extraction, in claim id
+order, so the same `--limit` always means the same claims. A claim without a current
+extraction is never given to the loop; the command counts it as left out.
+
+**The claim rows must still fit the label.** The features are built from the claim's stored
+label and lines. When a selected claim has no lines, or the label rule applied to its lines
+no longer gives its stored label, the whole run is refused before any call
+(`ClaimRowsError`, exit code 1). The message gives a count and names no claim.
+
+**Which are skipped.** A claim whose stored trace of this agent version ended as
+`needs_review`, `needs_review_no_draft`, `stopped_by_rules` or `below_threshold` is skipped
+and costs nothing.
+
+**A `draft_failed` claim is taken again** by the next run and its row is replaced. So a run
+takes 0 claims and spends $0 only once no selected claim is left as `draft_failed`.
+
+**An error that says nothing about the claim stops the run.** These pass through
+`run_agent_for_claim` with no trace. `run_agent` stores no row for that claim, ends without
+a traceback and gives a plain stop reason; the next run takes the claim. They are the same
+five cases as in 3.15:
+
+| Case | Why the run stops |
+|---|---|
+| The monthly budget is reached | Every further call would be refused |
+| No provider can answer | The next claim would most likely fail the same way |
+| A provider refuses a request (a bad request, a wrong key) | The same |
+| The evidence has no stored vector | Nothing can be searched until the embedding run (3.14) |
+| The answer to a search question's embedding call cannot be used | A wrong model or vector size would repeat on every claim, each time paid for |
+
+The command's report gives the count per end state, the claims finished before, the claims
+left out, the time and the money. It prints no letter text, no document text and no
+extracted value.
+
+### Settings
+
+| Key | Required | Meaning |
+|---|---|---|
+| `AGENT_WIN_THRESHOLD` | no (default 0.30) | The lowest win-model score the loop still drafts for, from 0 to 1 |
+
+A value outside 0 to 1, "not a number" or text fails when the settings are loaded, with a
+message that names the key. The command passes `settings.agent_win_threshold` to the loop,
+and the loop refuses a value outside 0 to 1 once more with a `ValueError`.
+
+The value 0.30 is a **choice**, not a measurement. The score estimates a made-up label
+(3.10). On the train split 0.30 drops the 13% of denied claims with the lowest score and
+keeps 96.7% of the claims whose proxy label is true (measured read-only on 2026-10-11).
+
+The loop also uses `RULES_AMOUNT_FLOOR_USD` (3.11), `MODEL_DIR` (3.10) and the `LLM_` keys
+(3.8).
+
+### Measured
+
+Measured on 2026-10-11 on the local database, after migration 0013: the test split,
+`--limit 50`, `--rules-today 2010-01-01`, amount floor 25, threshold 0.30, agent `v1`,
+drafting prompt `v1`, model `gpt-4o-mini`. The split has 759 denied claims; 749 have a
+current letter extraction and 10 were left out.
+
+| Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 50 | 26 | 5 | 18 | 0 | 1 (not parseable) | $0.013362 | 127 seconds |
+| 2 | 1 | 1 | 0 | 0 | 0 | 0 | $0.000467 | 5 seconds |
+| 3 | 0 | 0 | 0 | 0 | 0 | 0 | $0 | not recorded |
+
+All three runs exited with 0. Run 2 took the one failed claim again and skipped the 49
+others.
+
+| Number | Value |
+|---|---|
+| Rows in `agent_runs` after the three runs | 50: 27 `needs_review`, 5 `needs_review_no_draft`, 18 `stopped_by_rules` |
+| `needs_review` claims with a draft in `appeal_drafts` | 27 of 27 |
+| `needs_review` drafts with at least one citation | 10 of 27 |
+| Evidence results named in the traces | 135 (27 claims, 5 each) |
+| Of them, results whose four values name a chunk in `evidence_chunks` | 135 of 135 |
+| Scores of the 27 claims that passed the rules | 0.3749 to 0.8298, all at or above 0.30 |
+| Answered by the fallback | 0 |
+| Cost of the three runs | $0.013829 (the limit set for the run was $0.05) |
+| Cost of one claim that reaches drafting | about $0.0005; a claim stopped earlier costs $0 |
+| Month-to-date spend after the runs | $0.745758 of the $3.00 cap |
+
+The rows on drafts and chunks were checked with one-off read-only queries, not a command.
+
+The reasons the rules gave for the 23 claims they did not let through:
+
+| Reason | Claims |
+|---|---|
+| `deadline_passed` | 18 |
+| `amount_zero` | 4 |
+| `deadline_not_after_letter_date` | 2 |
+| `deadline_missing` | 1 |
+| `amount_below_floor` | 1 |
+
+A claim can have two reasons, so the reasons add up to more than 23.
+
+The numbers match what was measured before the code was written (18 stopped, 5 to a person,
+0 below the threshold, 27 reach drafting). They hold only while `document_extractions`, the
+saved model and the claim selection stay as they were on 2026-10-11.
+
+The share of drafts a reviewer accepts (the 60% target of Stage 4) is **not** measured
+here. It needs a person and a written rubric.
+
+### Known limits
+
+About scoring:
+
+- An uploaded letter has no claim rows. The features come from the stored rows of the
+  synthetic sample, so scoring a real letter needs a feature definition that reads the
+  letter. That is Stage 5 work.
+- The score estimates a made-up label (the proxy of
+  [02-data.md 2.2.3](02-data.md#223-labels-rule-v2)). It says nothing about real appeals,
+  and so neither does the threshold.
+- `below_threshold` is proven by the tests and not by the real run: none of the 50 claims
+  scored below 0.30.
+
+About what a later run looks at:
+
+- A skipped claim is not looked at again when "today", the amount floor, the threshold or
+  the drafting prompt version changes. Its stored trace keeps the values of the run that
+  wrote it. Looking at every claim again needs a new agent version.
+- A trace is not redone when the claim's letter document changes. It can be found as out of
+  date, because its `text_sha256` no longer equals the stored letter's, but nothing marks
+  it.
+- A `draft_failed` claim is tried again on every run, and nothing limits the number of
+  tries. A claim whose extracted amount is below zero fails at the rules each time; that
+  costs nothing, and it never ends.
+
+About stored drafts:
+
+- 23 drafts in `appeal_drafts` belong to claims the rules do not let through: 18 that end
+  as `stopped_by_rules` and 5 as `needs_review_no_draft`. The drafting command of 3.15
+  wrote them before the loop existed, and the loop does not remove them. So a row in
+  `appeal_drafts` does not mean the loop let the claim through; only a `needs_review` row
+  in `agent_runs` does.
+- The draft and the trace are stored in two commits. A crash between them leaves a draft
+  without a trace. The next run takes the claim again, pays for one more draft and replaces
+  the first.
+- 17 of the 27 drafts make no policy statement. That is the weak search question of 3.15,
+  which the loop uses unchanged.
+
+About the run that was measured:
+
+- Why the one answer of run 1 could not be parsed was not looked into. The claim got a
+  draft on the next try.
+- Every answer came from the primary model. Whether the fallback model can fill the draft
+  shape was not tried.
+- When the month has no recorded call at all, the report prints the spend as `$0`, without
+  the six decimal places it has otherwise.
 
 About the budget:
 

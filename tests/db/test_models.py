@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
+from src.agent.trace import AGENT_VERSION, AgentTrace, ExtractionStep, RulesStep, StepStatus
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     EMBEDDING_DIMENSIONS,
@@ -14,6 +15,7 @@ from src.db.models import (
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
     Account,
+    AgentRun,
     Claim,
     ClaimSample,
     ClaimSampleLabel,
@@ -24,6 +26,7 @@ from src.db.models import (
     DenialStatus,
     DocumentExtraction,
     DocumentType,
+    EndState,
     EvidenceChunk,
     EvidenceChunkEmbedding,
     EvidenceDocument,
@@ -40,6 +43,7 @@ from src.db.models import (
     User,
     UserRole,
 )
+from src.rules.verdict import RULES_VERSION, RuleOutcome, RuleReason
 
 
 def _account(session: Session, name: str) -> Account:
@@ -1395,3 +1399,171 @@ def test_appeal_draft_stays_when_the_evidence_it_cites_is_replaced(session: Sess
     stored = session.get(StoredAppealDraft, draft.id)
     assert stored is not None
     assert stored.letter == DRAFT_LETTER
+
+
+def _agent_trace(text_sha256: str) -> dict[str, Any]:
+    """A trace of a claim the rules stopped, as the loop would write it."""
+    trace = AgentTrace(
+        end_state=EndState.STOPPED_BY_RULES,
+        extraction=ExtractionStep(
+            status=StepStatus.DONE, prompt_version="v2", text_sha256=text_sha256
+        ),
+        rules=RulesStep(
+            status=StepStatus.STOPPED,
+            rules_version=RULES_VERSION,
+            today=date(2010, 1, 1),
+            amount_floor=Decimal("25"),
+            outcome=RuleOutcome.HARD_FAIL,
+            reasons=(RuleReason.DEADLINE_PASSED,),
+        ),
+    )
+    return trace.model_dump(mode="json")
+
+
+def _agent_run(session: Session, **overrides: Any) -> AgentRun:
+    """Store a run for the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "agent_version": AGENT_VERSION,
+        "end_state": EndState.STOPPED_BY_RULES,
+        "text_sha256": TEXT_SHA256,
+        "trace": _agent_trace(TEXT_SHA256),
+    }
+    run = AgentRun(**(fields | overrides))
+    session.add(run)
+    session.flush()
+    return run
+
+
+def test_stores_agent_run_with_its_end_state_and_a_trace_that_reads_back(session: Session) -> None:
+    _claim_sample(session)
+    run = _agent_run(session)
+    session.expire_all()
+
+    stored = session.get(AgentRun, run.id)
+    assert stored is not None
+    assert stored.source_claim_id == SAMPLE_CLAIM_ID
+    assert stored.agent_version == AGENT_VERSION
+    assert stored.end_state is EndState.STOPPED_BY_RULES
+    assert stored.text_sha256 == TEXT_SHA256
+    assert stored.created_at is not None
+    trace = AgentTrace.model_validate(stored.trace)
+    assert trace.end_state is EndState.STOPPED_BY_RULES
+    assert trace.rules.amount_floor == Decimal("25")
+    assert trace.drafting.status is StepStatus.NOT_RUN
+
+
+def test_rejects_second_agent_run_for_one_claim_and_agent_version(session: Session) -> None:
+    _claim_sample(session)
+    _agent_run(session)
+
+    with pytest.raises(IntegrityError, match="uq_agent_runs_claim_agent_version"):
+        _agent_run(session)
+
+
+def test_allows_another_agent_version_for_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _agent_run(session)
+    _agent_run(
+        session, agent_version="v2", trace=_agent_trace(TEXT_SHA256) | {"agent_version": "v2"}
+    )
+
+    assert len(session.scalars(select(AgentRun)).all()) == 2
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("agent_version", "", "ck_agent_runs_agent_version_not_empty"),
+        ("text_sha256", "abc123", "ck_agent_runs_text_sha256_format"),
+        ("text_sha256", TEXT_SHA256.upper(), "ck_agent_runs_text_sha256_format"),
+        ("text_sha256", "g" * 64, "ck_agent_runs_text_sha256_format"),
+    ],
+)
+def test_rejects_agent_run_with_an_empty_version_or_a_malformed_text_hash(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    _claim_sample(session)
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _agent_run(session, **bad)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "constraint"),
+    [
+        ({"end_state": EndState.NEEDS_REVIEW}, "ck_agent_runs_trace_end_state_matches"),
+        ({"agent_version": "v2"}, "ck_agent_runs_trace_agent_version_matches"),
+        ({"trace": {"agent_version": AGENT_VERSION}}, "ck_agent_runs_trace_end_state_matches"),
+        (
+            {"trace": {"end_state": "stopped_by_rules"}},
+            "ck_agent_runs_trace_agent_version_matches",
+        ),
+        ({"trace": []}, "ck_agent_runs_trace_"),
+        ({"trace": None}, "ck_agent_runs_trace_"),  # stored as the JSON value null
+    ],
+)
+def test_rejects_agent_run_whose_trace_disagrees_with_its_columns(
+    session: Session, overrides: dict[str, Any], constraint: str
+) -> None:
+    _claim_sample(session)
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _agent_run(session, **overrides)
+
+
+def test_rejects_agent_run_with_an_unknown_end_state(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO agent_runs (source_claim_id, agent_version, end_state, text_sha256, trace)"
+        " VALUES (:source_claim_id, 'v1', 'approved', :text_sha256,"
+        ' \'{"end_state": "approved", "agent_version": "v1"}\')'
+    )
+
+    with pytest.raises(DataError, match="agent_end_state"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID, "text_sha256": TEXT_SHA256})
+
+
+def test_rejects_agent_run_without_a_trace(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO agent_runs (source_claim_id, agent_version, end_state, text_sha256)"
+        " VALUES (:source_claim_id, 'v1', 'stopped_by_rules', :text_sha256)"
+    )
+
+    with pytest.raises(IntegrityError, match="trace"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID, "text_sha256": TEXT_SHA256})
+
+
+def test_rejects_agent_run_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_agent_runs_claim"):
+        _agent_run(session)
+
+
+def test_deleting_a_claim_sample_removes_its_agent_runs(session: Session) -> None:
+    sample = _claim_sample(session)
+    _agent_run(session)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(AgentRun)).all() == []
+
+
+def test_agent_run_stays_when_the_evidence_and_the_draft_are_removed(session: Session) -> None:
+    # No link to the evidence tables or to `appeal_drafts`: the trace names both by value.
+    _claim_sample(session)
+    document = _evidence_document(session)
+    _evidence_chunk(session, document)
+    draft = _appeal_draft(session)
+    run = _agent_run(session)
+
+    session.delete(document)
+    session.delete(draft)
+    session.flush()
+    session.expire_all()
+
+    assert session.get(AgentRun, run.id) is not None

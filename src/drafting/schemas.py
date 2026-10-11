@@ -9,13 +9,17 @@ The model writes labels and quotes only. It never writes the fields that name a 
 the label.
 
 A draft that fits this shape is not yet a checked draft: `validate_citations` in
-`src/drafting/citation_validator.py` decides whether its citations are real.
+`src/drafting/citation_validator.py` decides whether its citations are real. A draft that
+passed becomes an `AppealLetter`, whose citations name their chunk by the four citation
+fields and never by a row id.
 """
 
 from enum import StrEnum
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from src.db.models import EvidenceSource
 
 # A label is this letter and the match's position counted from 1: `E1`, `E2`, ...
 EVIDENCE_LABEL_PREFIX = "E"
@@ -70,3 +74,35 @@ class AppealDraft(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     paragraphs: tuple[DraftParagraph, ...] = Field(min_length=1)
+
+
+class Citation(BaseModel):
+    """A checked citation: the four fields that name the chunk, and the quote found in it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: EvidenceSource
+    source_document_id: str
+    chunk_index: int = Field(ge=0)
+    text_sha256: str
+    # Left out of the repr: a quote is policy text and can be long.
+    quote: str = Field(pattern=NOT_BLANK_PATTERN, repr=False)
+
+
+class LetterParagraph(BaseModel):
+    """One paragraph of a checked letter, with the chunks its citations name."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: ParagraphKind
+    # Left out of the repr: letter text is never printed.
+    text: str = Field(pattern=NOT_BLANK_PATTERN, repr=False)
+    citations: tuple[Citation, ...] = ()
+
+
+class AppealLetter(BaseModel):
+    """A draft that passed the citation validator. For a person to review, never sent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    paragraphs: tuple[LetterParagraph, ...] = Field(min_length=1)

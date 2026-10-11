@@ -5,8 +5,12 @@ So the question is one fixed phrase for the category, followed by the codes. It 
 question: almost no code appears in the evidence text, so the passages found may not be
 about the claim's service. A pure function: no model call, no database.
 
-Any change to a phrase or to the way the codes are added changes what a search finds, so
-it needs a new `SEARCH_QUESTION_VERSION`. The version is stored with every draft.
+A search result that is too unlike the question is not evidence for the claim, so the
+caller passes `MIN_EVIDENCE_SIMILARITY` to the search and a weaker match is left out.
+
+Any change to a phrase, to the way the codes are added or to the minimum similarity changes
+what a search finds, so it needs a new `SEARCH_QUESTION_VERSION`. The version is stored with
+every draft.
 """
 
 from collections.abc import Mapping, Sequence
@@ -31,6 +35,10 @@ SEARCH_PHRASES: Mapping[DenialReasonCategory, str] = {
 }
 # Put between the phrase and the codes.
 PROCEDURE_CODES_LEAD = "Procedure codes:"
+# The lowest similarity a match may have to be shown to the drafting model. A judgement from
+# 19 hand-made questions and 55 claims, not a tuned value: it keeps 17 of the 19 correct hits
+# and drops most passages that do not fit the claim. A correct passage below it is lost.
+MIN_EVIDENCE_SIMILARITY = 0.55
 
 
 def build_search_question(

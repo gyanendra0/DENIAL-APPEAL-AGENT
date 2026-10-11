@@ -16,12 +16,17 @@ from src.agent.trace import (
     AgentTrace,
     DraftFailure,
     DraftingStep,
-    EndState,
     RetrievalStep,
     ScoringStep,
     StepStatus,
 )
-from src.db.models import DatasetSplit, DenialReasonCategory, EvidenceSource, LlmProvider
+from src.db.models import (
+    DatasetSplit,
+    DenialReasonCategory,
+    EndState,
+    EvidenceSource,
+    LlmProvider,
+)
 from src.db.session import session_scope
 from src.drafting.citation_validator import CitationProblemKind
 from src.drafting.schemas import AppealLetter

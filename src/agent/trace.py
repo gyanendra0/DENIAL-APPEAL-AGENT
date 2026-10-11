@@ -4,7 +4,8 @@ The steps are extraction, rules, scoring, retrieval and drafting, always in that
 has a status and a few facts: versions, outcomes, a score, the fields that name a chunk. A
 trace never holds document text, an extracted value, a search question or letter text.
 
-Every end state is a stop for a person. None of them means "approved" or "sent".
+Every end state is a stop for a person. None of them means "approved" or "sent". `EndState`
+is defined in `src/db/models.py`, because the table `agent_runs` stores it as a column.
 
 Any change to a step, to what stops the loop or to an end state needs a new `AGENT_VERSION`.
 """
@@ -15,7 +16,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.db.models import EvidenceSource, LlmProvider
+from src.db.models import EndState, EvidenceSource, LlmProvider
 from src.drafting.citation_validator import CitationProblemKind
 from src.rules.verdict import RuleOutcome, RuleReason
 
@@ -27,14 +28,6 @@ class StepStatus(StrEnum):
     STOPPED = "stopped"  # the step ran and its answer ended the loop
     FAILED = "failed"  # the step could not give an answer for this claim
     NOT_RUN = "not_run"  # the loop ended before this step
-
-
-class EndState(StrEnum):
-    NEEDS_REVIEW = "needs_review"  # a checked draft is stored and waits for a person
-    NEEDS_REVIEW_NO_DRAFT = "needs_review_no_draft"  # the rules said `must_review`
-    STOPPED_BY_RULES = "stopped_by_rules"  # the rules said `hard_fail`
-    BELOW_THRESHOLD = "below_threshold"  # the score is under the threshold
-    DRAFT_FAILED = "draft_failed"  # a step failed for this claim; no draft
 
 
 class DraftFailure(StrEnum):

@@ -92,6 +92,16 @@ class EvidenceSource(StrEnum):
     CMS_NCD = "cms_ncd"
 
 
+class EndState(StrEnum):
+    """Where the agent loop stopped for one claim. Every value is a stop for a person."""
+
+    NEEDS_REVIEW = "needs_review"  # a checked draft is stored and waits for a person
+    NEEDS_REVIEW_NO_DRAFT = "needs_review_no_draft"  # the rules said `must_review`
+    STOPPED_BY_RULES = "stopped_by_rules"  # the rules said `hard_fail`
+    BELOW_THRESHOLD = "below_threshold"  # the score is under the threshold
+    DRAFT_FAILED = "draft_failed"  # a step failed for this claim; no draft
+
+
 def _values(enum_cls: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_cls]
 
@@ -736,3 +746,50 @@ class StoredAppealDraft(TimestampMixin, Base):
     )
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     letter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class AgentRun(TimestampMixin, Base):
+    """What the agent loop did with one claim: its end state and the trace of its five steps.
+
+    Public reference table, no `account_id`: it only ever holds runs on the fabricated claims
+    of the synthetic claims sample. One row per claim and agent version, so a new agent
+    version keeps the old runs and a second run can skip what is already finished.
+    `text_sha256` is the SHA-256 of the denial letter document the loop read (UTF-8, lowercase
+    hex). `trace` holds the `AgentTrace` of `src/agent/trace.py`: statuses, versions, outcomes
+    and a score, never document text or an extracted value. The table checks only that the
+    end state and the agent version inside `trace` equal the two columns. No foreign key
+    points at `appeal_drafts` or at the evidence tables: the trace names the draft by its
+    prompt version and a chunk by `source`, `source_document_id`, `chunk_index` and
+    `text_sha256`. Every end state is a stop for a person; nothing here is ever sent.
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_claim_id", "agent_version", name="uq_agent_runs_claim_agent_version"
+        ),
+        CheckConstraint("agent_version <> ''", name="ck_agent_runs_agent_version_not_empty"),
+        CheckConstraint("text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_agent_runs_text_sha256_format"),
+        # IS NOT DISTINCT FROM, so a trace without the key is refused too (`=` would give NULL).
+        CheckConstraint(
+            "(trace ->> 'end_state') IS NOT DISTINCT FROM end_state::text",
+            name="ck_agent_runs_trace_end_state_matches",
+        ),
+        CheckConstraint(
+            "(trace ->> 'agent_version') IS NOT DISTINCT FROM agent_version",
+            name="ck_agent_runs_trace_agent_version_matches",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(15),
+        ForeignKey("claim_samples.source_claim_id", name="fk_agent_runs_claim", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    end_state: Mapped[EndState] = mapped_column(
+        Enum(EndState, name="agent_end_state", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    trace: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

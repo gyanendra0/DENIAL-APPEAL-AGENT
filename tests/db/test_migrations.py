@@ -16,6 +16,7 @@ from src.db.migrations.versions import rev_0009_document_extractions as migratio
 from src.db.migrations.versions import rev_0010_evidence_corpus as migration_0010
 from src.db.migrations.versions import rev_0011_evidence_chunk_embeddings as migration_0011
 from src.db.migrations.versions import rev_0012_appeal_drafts as migration_0012
+from src.db.migrations.versions import rev_0013_agent_runs as migration_0013
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -26,6 +27,7 @@ from src.db.models import (
     DatasetSplit,
     DenialReasonCategory,
     DocumentType,
+    EndState,
     EvidenceSource,
     ExchangeType,
     LlmProvider,
@@ -46,6 +48,7 @@ REFERENCE_TABLES = {
     "evidence_chunks",
     "evidence_chunk_embeddings",
     "appeal_drafts",
+    "agent_runs",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls.
 OPERATIONAL_TABLES = {"llm_calls"}
@@ -62,6 +65,7 @@ EVIDENCE_DOCUMENT_TABLE = "evidence_documents"
 EVIDENCE_CHUNK_TABLE = "evidence_chunks"
 EMBEDDING_TABLE = "evidence_chunk_embeddings"
 DRAFT_TABLE = "appeal_drafts"
+AGENT_RUN_TABLE = "agent_runs"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -537,6 +541,47 @@ def test_migration_0012_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_agent_runs_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {
+        u["name"]: u["column_names"] for u in inspector.get_unique_constraints(AGENT_RUN_TABLE)
+    }
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(AGENT_RUN_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(AGENT_RUN_TABLE)}
+
+    assert unique == {"uq_agent_runs_claim_agent_version": ["source_claim_id", "agent_version"]}
+    # Linked to the claim only: not to the stored draft and not to the evidence tables.
+    assert foreign == {"fk_agent_runs_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")}
+    assert checks == {
+        "ck_agent_runs_agent_version_not_empty",
+        "ck_agent_runs_text_sha256_format",
+        "ck_agent_runs_trace_end_state_matches",
+        "ck_agent_runs_trace_agent_version_matches",
+    }
+
+
+def test_migration_0013_lists_the_same_values_as_the_model() -> None:
+    assert tuple(member.value for member in EndState) == migration_0013.AGENT_END_STATE
+
+
+def test_migration_0013_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[AGENT_RUN_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_agent_runs_agent_version_not_empty": migration_0013.AGENT_VERSION_NOT_EMPTY,
+        "ck_agent_runs_text_sha256_format": migration_0013.TEXT_SHA256_FORMAT,
+        "ck_agent_runs_trace_end_state_matches": migration_0013.TRACE_END_STATE_MATCHES,
+        "ck_agent_runs_trace_agent_version_matches": migration_0013.TRACE_AGENT_VERSION_MATCHES,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -547,6 +592,25 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0012_removes_agent_runs_and_its_enum_and_keeps_appeal_drafts(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0012")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert AGENT_RUN_TABLE not in tables
+        assert DRAFT_TABLE in tables
+        with engine.connect() as conn:
+            leftover = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'agent_end_state'")
+            )
+        assert leftover == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert AGENT_RUN_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0011_removes_appeal_drafts_and_keeps_the_provider_enum(

@@ -18,7 +18,6 @@ from src.agent.trace import (
     AgentTrace,
     DraftFailure,
     DraftingStep,
-    EndState,
     EvidenceReference,
     ExtractionStep,
     RetrievalStep,
@@ -26,6 +25,7 @@ from src.agent.trace import (
     ScoringStep,
     StepStatus,
 )
+from src.db.models import EndState
 from src.db.session import session_scope
 from src.drafting.citation_validator import CitationProblemKind
 from src.drafting.drafter import (

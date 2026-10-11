@@ -9,7 +9,6 @@ from src.agent.trace import (
     AgentTrace,
     DraftFailure,
     DraftingStep,
-    EndState,
     EvidenceReference,
     ExtractionStep,
     RetrievalStep,
@@ -17,7 +16,7 @@ from src.agent.trace import (
     ScoringStep,
     StepStatus,
 )
-from src.db.models import EvidenceSource
+from src.db.models import EndState, EvidenceSource
 from src.rules.verdict import RULES_VERSION, RuleOutcome, RuleReason
 
 MADE_UP_HASH = "ab" * 32

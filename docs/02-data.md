@@ -1563,7 +1563,7 @@ Every claim ends in one of five end states, and every one of them is a stop for 
 | `needs_review_no_draft` | The rules sent the claim to a person; no draft |
 | `stopped_by_rules` | The rules closed the claim; no draft |
 | `below_threshold` | The score is under the threshold; no draft |
-| `draft_failed` | The draft was blocked, cut off or could not be parsed; no draft |
+| `draft_failed` | A step could not give an answer for this claim (the draft was blocked, cut off or could not be parsed, or the rules gave no verdict); no draft |
 
 Each trace is saved in `agent_runs` as soon as its claim is done. A claim whose trace ended
 in one of the first four end states is skipped by a later run and costs nothing, so after

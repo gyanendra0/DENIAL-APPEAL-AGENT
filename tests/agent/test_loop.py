@@ -49,6 +49,7 @@ from src.ml.features import FEATURE_VERSION, ClaimFeatures
 from src.ml.training import MODEL_VERSION, WinModel
 from src.rag.retrieval import EvidenceNotEmbeddedError, QueryEmbeddingError
 from src.rules.verdict import RULES_VERSION, RuleOutcome, RuleReason
+from tests.agent.helpers import fixed_model as _model
 from tests.drafting.helpers import (
     ABSENT_QUOTE,
     EVIDENCE_DOCUMENT_ID,
@@ -86,20 +87,6 @@ FEATURES = ClaimFeatures(
 )
 # What `src/agent` must never do: read the clock. "Today" is always passed in.
 CLOCK_READ = re.compile(r"\.today\(|\.now\(|\butcnow\b|\bimport time\b|\bfrom time\b")
-
-
-class _FixedClassifier:
-    """A stand-in for a fitted model: every claim gets the same chance."""
-
-    def __init__(self, chance: float) -> None:
-        self._chance = chance
-
-    def predict_proba(self, matrix: Any) -> list[list[float]]:
-        return [[1 - self._chance, self._chance] for _ in matrix]
-
-
-def _model(chance: float = 0.75) -> WinModel:
-    return WinModel(classifier=_FixedClassifier(chance), training_seed=7)
 
 
 def _not_expected(request: object) -> Exception:
@@ -523,6 +510,12 @@ def test_a_search_answer_without_its_vector_passes_through_with_no_draft(
 def test_nothing_in_the_agent_package_reads_the_clock() -> None:
     sources = sorted(Path(src.agent.__file__).parent.glob("*.py"))
 
-    assert [path.name for path in sources] == ["__init__.py", "loop.py", "trace.py"]
+    assert [path.name for path in sources] == [
+        "__init__.py",
+        "loop.py",
+        "run.py",
+        "store.py",
+        "trace.py",
+    ]
     for path in sources:
         assert not CLOCK_READ.search(path.read_text(encoding="utf-8")), path.name

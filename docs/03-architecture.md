@@ -1064,12 +1064,18 @@ The evidence corpus is the policy text a draft may cite. Stage 4 builds it in tw
 This section covers the first: reading one public source, cutting its text into chunks and
 storing them. The second step, embedding the chunks and searching them, is in 3.14.
 
-The one source loaded so far is the CMS national coverage determinations. What the file
-is, what is loaded from it, the quality gates, the command and the measured numbers are in
-[02-data.md 2.3.1](02-data.md#231-loaded-source-cms-national-coverage-determinations).
+Two sources are loaded:
 
-Nothing here calls a model, spends money or needs a new library. The HTML is read with
-Python's own `html.parser`.
+| Source | What it is | Published as | Details |
+|---|---|---|---|
+| `cms_ncd` | The CMS national coverage determinations: one decision per service | HTML inside a csv file | [02-data.md 2.3.1](02-data.md#231-loaded-source-cms-national-coverage-determinations) |
+| `cms_manual` | Four chapters of the CMS Internet-Only Manuals: the general rules on coverage, exclusions, appeals and liability | PDF | [02-data.md 2.3.2](02-data.md#232-loaded-source-cms-manual-chapters) |
+
+What each file is, what is loaded from it, the quality gates, the command and the measured
+numbers are behind the two links.
+
+Nothing here calls a model or spends money. The HTML is read with Python's own
+`html.parser`. The PDF files are read with the library `pypdf`.
 
 ### Where the code is
 
@@ -1077,15 +1083,19 @@ Python's own `html.parser`.
 |---|---|
 | `src/db/models.py` | `EvidenceDocument`, `EvidenceChunk` and the enum `EvidenceSource` |
 | `src/db/migrations/versions/rev_0010_evidence_corpus.py` | Migration 0010: the type `evidence_source` and the two tables; the downgrade drops all three |
+| `src/db/migrations/versions/rev_0014_evidence_source_cms_manual.py` | Migration 0014: the value `cms_manual` in the type `evidence_source` (see "The load" for its downgrade) |
 | `src/rag/chunking.py` | `chunk_document(sections)`, the chunk rules, `CHUNKER_VERSION` and `MAX_CHUNK_CHARS` |
 | `src/ingest/html_paragraphs.py` | `html_to_paragraphs(html)`: one HTML field to plain paragraphs |
-| `src/ingest/evidence_corpus.py` | `read_evidence_corpus(path)` with the quality gates, and `replace_evidence_corpus(session, batch)` |
-| `pipelines/load_evidence_corpus.py` | The command: reads the file, stores it in one transaction, prints the counts, sets the exit code |
+| `src/ingest/evidence_corpus.py` | `read_evidence_corpus(path)` with the quality gates, `replace_evidence_corpus(session, batch)`, and `replace_source_documents(session, source, entries)`, the store step both sources share |
+| `pipelines/load_evidence_corpus.py` | The command for the determinations: reads the file, stores it in one transaction, prints the counts, sets the exit code |
+| `src/ingest/pdf_text.py` | `read_pdf_pages(path)`: the text of a PDF, page by page. The only module that imports `pypdf` |
+| `src/ingest/manual_chapters.py` | `read_manual_chapters(paths, *, source_file_date)` with the quality gates, and `replace_manual_chapters(session, batch)` |
+| `pipelines/load_manual_chapters.py` | The command for the manual chapters: the same steps, for one or more PDF files and a `--file-date` |
 
-The work is split so that each part knows one thing. The reader knows the file: its
-columns, its HTML and its gates. The chunker knows nothing about the file: it takes plain
-paragraphs and returns chunks, and it reads no file, no setting and no database. A second
-source needs a new reader and can use the same chunker.
+The work is split so that each part knows one thing. A reader knows its file: its layout
+and its gates. The chunker knows nothing about a file: it takes plain paragraphs and
+returns chunks, and it reads no file, no setting and no database. The manual chapters were
+added as a second reader; the chunker, its version and its limit did not change.
 
 ### The two tables
 
@@ -1096,9 +1106,9 @@ Both are public reference tables: loaded from a public source, shared by every a
 
 | Column | Holds |
 |---|---|
-| `source` | Where the document comes from, a constrained type; the only value today is `cms_ncd` |
-| `source_document_id` | The source's own id (`NCD_id`); unique within a source |
-| `section_number` | The number a reader would cite, such as `220.6.17`; unique within a source |
+| `source` | Where the document comes from, a constrained type with two values: `cms_ncd` and `cms_manual` |
+| `source_document_id` | The document's id within its source; unique within a source. A determination: the database's own `NCD_id`. A manual section: publication, chapter and section number, such as `100-04-29-310.2` |
+| `section_number` | The number a reader would cite; unique within a source. A determination: such as `220.6.17`. A manual section: the same value as its id |
 | `title` | The document's title |
 | `version_number` | The version that was loaded, at least 1 |
 | `effective_date` | The date that version took effect |
@@ -1138,6 +1148,51 @@ Each of the two policy columns becomes one section with a fixed title. The title
 shortened from the file's data dictionary; they are not text of the file. A column with no
 text gives no section.
 
+### From a PDF chapter to paragraphs
+
+A manual chapter is one PDF file. `read_pdf_pages` returns the text of each page;
+`read_manual_chapters` joins the pages and finds the sections in six steps:
+
+1. The first two lines name the manual and the chapter. The manual's name gives the
+   publication number (`100-02` or `100-04`). An unknown manual is refused.
+2. The table of contents is read as the list of numbered sections to find, and then left
+   out of the text.
+3. Each section's heading is looked for in the body, in the order of that list. A line that
+   starts with a number is not a heading on its own: the text holds many numbered lines
+   that are not headings, so only a number of the list counts.
+4. The line under a heading is the section's revision line, such as
+   `(Rev. 12, Issued: 01-02-24, Effective: 03-04-24, Implementation: 03-05-24)`. The
+   revision number becomes the version number. The effective date is taken from the line;
+   when the line gives none, or a value that is not a date, the issued date is used. An
+   older heading can end with its revision line (`20.1 - Title (Rev. 1, 10-01-03)`); that
+   one is read only when no line under the heading is a revision line. A section with no
+   revision line at all gets version 1 and the file date.
+5. The table "Transmittals Issued for this Chapter" at the end is left out.
+6. Inside a section, a line that holds only whitespace ends a paragraph. A line that ends
+   in a hyphen is joined to the next one without a space when that one starts with a small
+   letter, so a word cut at a line end is whole again.
+
+Each section becomes one document with one unnamed part, so the `section_title` of a manual
+chunk is NULL. A section whose heading is followed directly by its subsections has no text
+of its own; it is counted and left out. The title is the heading's text, cut to 300
+characters.
+
+The four files have no page header, page footer or page number in their text, so no
+repeated text has to be removed. The two things that are cut are the table of contents and
+the transmittals table. The reader does not try to remove repeated page text. It rejects a
+file that has any, before anything else is read: the same line (with every number read as
+the same, so `15-3` and `15-4` are one line) at the top or at the bottom of more than half
+of the pages that hold text, or a page that starts or ends with a line like `Page 3 of 12`.
+In the four files the most repeated line is at the top of 18 of the 311 pages of chapter
+15, far below half.
+
+`read_pdf_pages` turns every way a file can fail to open into a rejected file. The PDF
+library raises its own errors for most damaged files and plain Python errors for some (a
+damaged cross-reference table, for example), so both kinds are caught. A file that cannot
+be opened (no read permission, for example) is rejected too. Only a missing file is left as
+`FileNotFoundError`; the command checks that every path is a file before it reads, and
+exits 2.
+
 ### How a text is cut into chunks
 
 `chunk_document(sections)` applies the rules of chunker `v1`:
@@ -1154,7 +1209,9 @@ text gives no section.
 
 The limit of 1,200 was set from the real text: the inspection of the file counted 4,539
 paragraphs in the two policy columns, 12 of them longer than 1,200 characters, and each of
-the 12 could be cut at a sentence end. The limit is a constant, not an option.
+the 12 could be cut at a sentence end. The limit is a constant, not an option. The manual
+chapters use the same limit; the inspection of the four files counted 65 of 5,512
+paragraphs over it.
 
 The same text always gives the same chunks. Any change to a rule or to a constant needs a
 new `CHUNKER_VERSION`, and every stored chunk carries the version that made it.
@@ -1167,6 +1224,11 @@ uses a row id: the load replaces the rows, so every document and chunk gets a ne
 time. For the same reason no later table may point a foreign key at `evidence_chunks.id`
 and expect it to survive a load.
 
+For a manual section the four values look like this: `cms_manual`, `100-04-29-310.2`, the
+chunk's index and its hash. The id holds the publication, the chapter and the section
+number, so a reader can find the passage in the published manual from the citation alone.
+The source is part of the citation because an id is unique only within its source.
+
 The hash is what makes a citation checkable later. The load replaces the rows, so a new
 file can change the text behind a document and index. The stored hash then differs from the
 one in an older citation, and the citation is known to be out of date instead of silently
@@ -1177,21 +1239,33 @@ Citations are written and checked by the drafting step (3.15).
 
 ### The load
 
-`replace_evidence_corpus` removes every stored document of the source `cms_ncd`, which
-removes its chunks too, and then stores the batch. It does not commit: the command runs it
-in one transaction, so a failure brings the old rows back. An update in place would not do,
-because a determination that left the file would keep its old chunks.
+`replace_source_documents(session, source, entries)` removes every stored document of one
+source, which removes its chunks too, and then stores the entries. It does not commit: the
+command runs it in one transaction, so a failure brings the old rows back. An update in
+place would not do, because a document that left the file would keep its old chunks.
 
-Only rows of the one source are removed, so loading a second source later will not remove
-the first.
+Both sources use it: `replace_evidence_corpus` calls it with `cms_ncd`,
+`replace_manual_chapters` with `cms_manual`. Only rows of the named source are removed, so
+a load of one source leaves the documents, chunks and vectors of the other as they are. An
+entry of another source than the named one raises `ValueError` before anything is removed.
+
+A manual load makes the stored manual sections exactly the sections of the files named in
+that one run. A chapter that is not named is removed, so all four chapters are named each
+time.
+
+**Migration 0014 and its downgrade.** The upgrade adds the value `cms_manual` to the type
+`evidence_source` and writes no row. Postgres cannot take a value out of such a type, so
+the downgrade deletes every `cms_manual` document (its chunks and vectors go with it),
+builds the type again with `cms_ncd` only and switches the column to it. A citation of a
+manual section that is already stored inside a draft or a trace is plain JSON and stays.
 
 ### Where the vectors are
 
 `evidence_chunks` has no vector column. The vectors are stored in a table of their own,
 `evidence_chunk_embeddings`, linked to the chunk (3.14). Removing a chunk removes its
-vectors, so **a load leaves the corpus without vectors**: run
-`python3 -m pipelines.embed_evidence_corpus` after every load, or the search has nothing to
-search.
+vectors, so **a load leaves its source without vectors**: run
+`python3 -m pipelines.embed_evidence_corpus` after every load of either source. Until then
+the search cannot return a chunk of the source that was loaded.
 
 ### Measured
 
@@ -1212,6 +1286,34 @@ took about a second and exited with 0.
 No stored chunk holds a leftover tag, entity, tab or non-breaking space. A second run on
 the same file gave the same 1,120 hashes.
 
+**The manual chapters**, loaded on 2026-10-12 on the local database, after migration 0014,
+from the four files downloaded on 2026-10-11 (the file date). The command took about 19
+seconds and exited with 0.
+
+| Chapter | Sections in the contents | Sections loaded | Chunks |
+|---|---|---|---|
+| 100-02 chapter 15 | 223 | 220 | 849 |
+| 100-02 chapter 16 | 38 | 38 | 98 |
+| 100-04 chapter 29 | 105 | 101 | 293 |
+| 100-04 chapter 30 | 294 | 277 | 513 |
+| All four | 660 | 636 | 1,753 |
+
+| Number | Value |
+|---|---|
+| Sections with no text left out | 24 |
+| Sections without a revision line (version 1, the file date) | 0 loaded; the one such section has no text |
+| Sections with the issued date as effective date | 137 |
+| Chunks per section | median 1, most 47 (100-02 chapter 15, section 220.3) |
+| Chunk length in characters | longest 1,200, median 939, shortest 7 |
+| Chunks under 100 characters | 22 |
+| Characters stored | 1,476,499 |
+| Longest id | 19 characters, of 20 allowed |
+| Version numbers | 1 to 13889 |
+| Effective dates | 2003-01-01 to 2026-08-28 |
+
+The determinations were checked before and after the load: 316 documents, 1,120 chunks and
+1,120 vectors both times, with the same chunk hashes and the same vector rows.
+
 ### Known limits
 
 About what the corpus can support:
@@ -1225,8 +1327,15 @@ About what the corpus can support:
   ([02-data.md 2.3.1](02-data.md#231-loaded-source-cms-national-coverage-determinations)).
 - No description of a CPT code is stored. Retrieval can match a denied service only when
   the policy text itself names it.
-- Appeal rights and the general coverage rules are in the CMS manuals, which are not
-  loaded. Only the national coverage determinations are.
+- The manual text is the version current in 2026 too, with sections revised between 2003
+  and 2026. The same gap to the 2008 to 2010 claims holds.
+- Nothing loaded is about `coordination_of_benefits`. That is the Medicare Secondary Payer
+  manual (publication 100-05), which is not loaded.
+- **Whether a manual passage is found for a real claim is not measured.** The question the
+  drafting step builds from a claim (3.15) was not changed, and it asks about coverage of a
+  service, not about appeal rights or liability. A passage is shown to the model only at a
+  similarity of 0.55 or more, and no run on real claims has been made since the chapters
+  were loaded. The search check in 3.14 uses hand-made questions, not claims.
 
 About the text:
 
@@ -1253,8 +1362,48 @@ About the text:
 - 22 chunks are shorter than 100 characters, the shortest 13. A chunk that short carries
   little to retrieve on.
 
+About the text of the manual chapters (what the PDF reader loses):
+
+- A table loses its columns: the cells of a row come out as running text, and sometimes in
+  another order. The largest is the benefit category table in 100-02 chapter 15, section
+  110.8 (29 chunks), which lists HCPCS Level II codes with their descriptions.
+- Exhibits and model letters that sit inside a section (chapters 29 and 30) are loaded as
+  ordinary text of that section.
+- Older reference lines such as `B3-2005` under a heading are kept as text. For one section
+  (100-02 chapter 16, section 50.1) such a line is the whole text.
+- A paragraph break is taken from a line of only whitespace. The inspection estimated that
+  this is wrong for about 1 to 8% of the paragraphs: two paragraphs joined, or one split.
+- The 14 images and the marks that show which words a revision changed are lost. What the
+  images show was not looked at.
+- The text was not compared with the visible page.
+- Lettered sub-headings inside a section (`A. General`) are not marked as headings, so a
+  chunk can end on one.
+- Chapter 15 mentions CPT code numbers in its text. They are loaded as published; no
+  passage was checked one by one for third-party descriptions.
+- 137 sections have a revision line with no usable effective date (such as
+  `(Rev. 1, 10-01-03)`); their effective date is the issued date. A section with no
+  revision line would get version 1 and the file date; none of the loaded sections is one.
+- The repeated-page-text gate looks only at the first and the last line of each page. A
+  page header or footer on half of the pages or fewer, one of two lines, or one whose words
+  change from page to page, is not seen and would be loaded as text. A file of very few
+  pages can be rejected wrongly: three pages that end in `100`, `250` and a word have "the
+  same line" at the bottom of 2 of 3 pages, because every number is read as the same. The
+  shortest of the four chapters has 39 pages.
+- A revision line inside a heading that cannot be read (`(Rev. 5, 13-45-03)`, a date that
+  does not exist) does not reject the file, as the same line under the heading would. The
+  section gets version 1 and the file date and is counted in the report line "sections
+  without a revision line".
+- 22 chunks are shorter than 100 characters, the shortest 7.
+
 About the load:
 
+- The date of the manual files is typed by the person who runs the command. Only a date in
+  the future is refused; a wrong past date is stored as given.
+- A manual load removes every chapter that is not named in it.
+- A load is not locked out while an embedding run is in progress (3.14, "The embedding
+  run"). This holds for both load commands.
+- A load of either source needs a new embedding run, and that run pays for every chunk of
+  the loaded source again.
 - There is no gate on the number of rows. A cut-off download that still parses is loaded.
 - The file states no release date. The stored date is the one the zip records for the csv
   file. It is not a date CMS states for the data.
@@ -1287,7 +1436,7 @@ builds a question from a claim; that is the drafting step (3.15).
 | `src/evaluation/search_quality.py` | `read_search_questions`, `unknown_section_numbers`, `run_search_quality_check`: the search quality check |
 | `pipelines/embed_evidence_corpus.py` | The command that embeds the stored chunks |
 | `pipelines/check_evidence_search.py` | The command that runs the search quality check |
-| `config/evaluation/evidence_search_questions.json` | The project's 20 hand-made questions |
+| `config/evaluation/evidence_search_questions.json` | The project's 40 hand-made questions, 20 per source |
 
 The two commands, their exit codes and their output are in
 [02-data.md 2.9](02-data.md#29-running-the-whole-pipeline). The Python library `pgvector`
@@ -1414,10 +1563,10 @@ run that is killed does not leave it behind.
 and ignores their length. The score of a result is the cosine similarity, 1 minus the
 distance: 1 means the same direction, 0 unrelated. The closest chunk comes first. Chunks
 with the same score come back by `source`, then `source_document_id`, then `chunk_index`,
-so the order is repeatable. A fixed tie order is needed because 33 of the 1,120 chunks
-repeat the text of a chunk in another document.
+so the order is repeatable. A fixed tie order is needed because 33 of the 1,120 chunks of
+the determinations repeat the text of a chunk in another document.
 
-**No index.** The database compares the question with every stored vector. With 1,120 rows
+**No index.** The database compares the question with every stored vector. With 2,873 rows
 that is fast and the answer is exact; a vector index would make the answer approximate.
 
 **Filters.**
@@ -1426,7 +1575,7 @@ that is fast and the answer is exact; a vector index would make the answer appro
 |---|---|---|
 | `model_name` | none, required | Only vectors of this model and of `EMBEDDING_INPUT_VERSION` are compared |
 | `top_k` | 5 (`DEFAULT_TOP_K`) | The most chunks returned; at least 1 |
-| `source` | none | Keeps the chunks of one source |
+| `source` | none | Keeps the chunks of one source (`cms_ncd` or `cms_manual`). Without it both sources are searched together, which is what the agent loop does |
 | `min_similarity` | none (off) | Drops the chunks below this score; between -1 and 1 |
 
 **What comes back when there is nothing.** An empty list means that no chunk passed the
@@ -1449,7 +1598,7 @@ A result is an `EvidenceMatch`, a Pydantic model:
 | Field | Holds |
 |---|---|
 | `source`, `source_document_id`, `chunk_index`, `text_sha256` | The four values a citation names a chunk by (3.13) |
-| `section_number` | The number a reader would cite, such as `220.6.17` |
+| `section_number` | The number a reader would cite, such as `220.6.17` or, for a manual section, `100-04-29-310.2` |
 | `document_title`, `section_title` | The titles; the section title may be missing |
 | `text` | The chunk's text; left out when a result is printed |
 | `similarity` | The score |
@@ -1458,21 +1607,29 @@ A result never carries a row id, because a new load of the corpus gives every ro
 
 ### The search quality check
 
-No file says which determination answers which claim (3.13), so the search is checked with
-20 hand-made questions. Each names the one determination a good search brings back, by its
+No file says which document answers which claim (3.13), so the search is checked with 40
+hand-made questions: 20 about coverage determinations and 20 about manual sections, five
+per chapter. Each names the one document a good search brings back, by its source and its
 section number. `python3 -m pipelines.check_evidence_search` asks each question through
-`search_evidence` with the top 5 and counts a hit when a chunk of the expected
-determination is among the results.
+`search_evidence` with the top 5 and counts a hit when a chunk of the expected document is
+among the results.
 
+- **Both sources are searched at once**, with no `source` filter, because that is how the
+  agent loop searches. A manual chunk can therefore take the place of a determination in
+  the top 5, and the check would show it.
+- A question names its source because a section number is unique only within a source. The
+  same number in the other source is a miss.
+- The command prints the share of all questions and the share per source. A line per
+  source counts the questions that expect a document of that source.
 - The share of hits is **recorded, not a gate**: the command exits with 0 whatever the
   share is, and the build plan has no target for it.
 - The functions in `src/evaluation/search_quality.py` call no model. The command passes the
   search in as a function, so the paid call stays in the command and a test passes a stub.
-- A question file that expects a section number no stored determination has is refused
-  before anything is spent. Otherwise a typing mistake would be counted as a failure of the
-  search.
+- A question file that expects a section number no stored document of the named source has
+  is refused before anything is spent. Otherwise a typing mistake would be counted as a
+  failure of the search.
 - Run the command again after a new embedding run with another model or another input
-  version, and after a load of a new corpus file.
+  version, and after a load of either source.
 
 ### Measured
 
@@ -1506,15 +1663,68 @@ The one miss is question 19: it expects section 160.18 and the search returned c
 
 After both runs the month-to-date spend was $0.705857 of the $3.00 cap.
 
+**The embedding run for the manual chapters**, on 2026-10-12, after the load in 3.13:
+
+| Number | Value |
+|---|---|
+| Chunks embedded | 1,753 of 2,873 (the 1,120 determination chunks were skipped) |
+| Gateway calls | 18 (17 batches of 100 and one of 53) |
+| Input tokens the provider reported | 311,176 |
+| Cost | $0.006232 |
+| Time | 53 seconds |
+| Rows in `evidence_chunk_embeddings` | 2,873, one per chunk |
+| Manual chunks without a vector | 0 |
+| A second run | embedded 0, spent $0.000000, exit 0 |
+
+The issue allowed at most $0.10 for this run.
+
+**The search quality check with both sources**, on 2026-10-12, the project's 40 questions,
+top 5, no source filter:
+
+| Questions that expect | Found their document |
+|---|---|
+| A coverage determination (`cms_ncd`) | 19 of 20 (95.00%) |
+| A manual section (`cms_manual`) | 16 of 20 (80.00%) |
+| All | 35 of 40 (87.50%) |
+
+| Number | Value |
+|---|---|
+| Gateway calls | 40 |
+| Cost | $0.000040 |
+| Time | 37 seconds |
+
+The determination questions gave the same result as before the chapters were loaded: 19 of
+20, and the same miss with the same three documents returned. So for these 20 questions the
+1,753 manual chunks did not push a determination out of the top 5.
+
+The four manual misses:
+
+| Question | Expected | Returned instead |
+|---|---|---|
+| 29 | `100-02-16-130` | `100-02-16-40.3`, `100-02-15-230`, `100-02-15-230.6`, `100-02-15-30`, `100-02-15-150` |
+| 32 | `100-04-29-310.2` | `100-04-30-150.8`, `100-04-29-220`, `100-04-30-260.4.3`, `100-04-29-320.2`, `100-04-30-200.4.3` |
+| 35 | `100-04-29-270.1` | `100-04-30-120.4`, `100-04-29-270.1.1`, `100-04-29-270.1.2`, `100-04-29-270.1.3` |
+| 36 | `100-04-30-50` | `100-04-30-40.2.2`, `100-04-30-40.2.1`, `100-04-30-40.1` |
+
+In all five misses every returned chunk came from the source the question expects. The
+questions were kept as they were written; none was reworded after the run.
+
+After these runs the month-to-date spend was $0.786894 of the $3.00 cap.
+
 ### Known limits
 
 About what the number shows:
 
-- The quality number comes from 20 hand-made questions. It shows that the search works at
-  all; it does not prove the search is good.
-- The questions were written from the titles of the determinations, and the title is part
-  of the embedded text. A hit means the right document came back, not that the returned
-  chunk answers the question.
+- The quality number comes from 40 hand-made questions, 20 per source. It shows that the
+  search works at all; it does not prove the search is good.
+- The questions were written from the titles of the documents (for the manual sections also
+  from their opening text), and the title is part of the embedded text. A hit means the
+  right document came back, not that the returned chunk answers the question.
+- A hit needs the one named section. The manuals spread a topic over a section and its
+  subsections, so a miss can still have found text on the topic: question 35 expects
+  section 270.1 and got its subsections 270.1.1 to 270.1.3. The check does not count that.
+- The questions are plain questions about a rule. They are not the question the drafting
+  step builds from a claim, so the manual share says nothing about what a draft gets.
 - The search shows that retrieval works. It does not show that the evidence fits real
   claims: the limits of the corpus in 3.13 all still hold.
 
@@ -1541,9 +1751,7 @@ About the search:
 
 - Ties are ordered by `source_document_id` as text, so `10` comes before `9`. The order is
   repeatable, which is all it is for.
-- The `source` filter has one source to filter today. That it leaves out the chunks of
-  another source is checked in the query that is sent, not on stored rows.
-- With no index every search reads every vector. That is right for 1,120 rows and would
+- With no index every search reads every vector. That is right for 2,873 rows and would
   need a second look for a much larger corpus.
 
 ## 3.15 Cited appeal drafting

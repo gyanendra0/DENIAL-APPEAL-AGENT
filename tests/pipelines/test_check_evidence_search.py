@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from pipelines import check_evidence_search
 from pipelines.check_evidence_search import main
 from src.config.settings import LlmGatewaySettings, get_settings, load_llm_gateway_settings
+from src.db.models import EvidenceSource
 from src.db.session import session_scope
 from src.llm.gateway import LlmGateway, ProviderRejectedError, ProviderUnavailableError
 from src.rag.retrieval import QUERY_EMBEDDING_PURPOSE
@@ -97,8 +98,9 @@ def test_prints_the_share_and_exits_0_when_every_question_finds_its_document(
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out.splitlines() == [
-        "top-5 share: 2 of 2 questions (100.00%) found their determination"
+        "top-5 share: 2 of 2 questions (100.00%) found their document"
         f" (model {MODEL}, input version v1)",
+        "  cms_ncd: 2 of 2 questions (100.00%)",
         "  spent $0.000008 in this run; $0.000008 of the $3.00 monthly budget is used",
     ]
 
@@ -114,10 +116,58 @@ def test_a_miss_is_listed_with_what_came_back_and_the_run_still_exits_0(
     assert exit_code == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out.splitlines()[:2] == [
-        "top-5 share: 1 of 2 questions (50.00%) found their determination"
+    assert captured.out.splitlines()[:3] == [
+        "top-5 share: 1 of 2 questions (50.00%) found their document"
         f" (model {MODEL}, input version v1)",
-        "  missed question 2: expected 999.9002, found 999.9001",
+        "  cms_ncd: 1 of 2 questions (50.00%)",
+        "  missed question 2: expected cms_ncd 999.9002, found cms_ncd 999.9001",
+    ]
+
+
+def test_every_source_is_searched_at_once_and_the_share_is_split_by_source(
+    factory: sessionmaker[Session],
+    stubs: Stubs,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A determination and a manual section share one section number and are equally close to
+    # any question. The five chunks of manual section 9002 fill the rest of the top 5, so the
+    # determination 9003, which points the other way, is never returned.
+    with session_scope(factory) as session:
+        for chunk_id in add_document(session, "9001", 1):
+            store_vector(session, chunk_id, [0.0], filler=0.5)
+        for chunk_id in add_document(session, "9001", 1, source=EvidenceSource.CMS_MANUAL):
+            store_vector(session, chunk_id, [0.0], filler=0.5)
+        for chunk_id in add_document(session, "9002", 5, source=EvidenceSource.CMS_MANUAL):
+            store_vector(session, chunk_id, [1.0])
+        for chunk_id in add_document(session, "9003", 1):
+            store_vector(session, chunk_id, [-1.0])
+    path = tmp_path / "questions.json"
+    entries = [
+        ("first?", "cms_ncd", "999.9001"),
+        ("second?", "cms_manual", "999.9001"),
+        ("third?", "cms_ncd", "999.9003"),
+    ]
+    path.write_text(
+        json.dumps(
+            [
+                {"question": text, "expected_source": source, "expected_section_number": number}
+                for text, source, number in entries
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main([str(path)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines()[:4] == [
+        "top-5 share: 2 of 3 questions (66.67%) found their document"
+        f" (model {MODEL}, input version v1)",
+        "  cms_ncd: 1 of 2 questions (50.00%)",
+        "  cms_manual: 1 of 1 questions (100.00%)",
+        "  missed question 3: expected cms_ncd 999.9003,"
+        " found cms_ncd 999.9001, cms_manual 999.9001, cms_manual 999.9002",
     ]
 
 
@@ -213,7 +263,7 @@ def test_an_expected_section_number_that_is_not_stored_exits_2_before_any_call(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (
-        "the question file expects section numbers no stored determination has: 999.9002\n"
+        "the question file expects section numbers no stored document has: cms_ncd 999.9002\n"
     )
 
 

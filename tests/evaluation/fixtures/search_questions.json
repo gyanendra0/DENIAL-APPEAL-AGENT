@@ -1,4 +1,12 @@
 [
-  {"question": "Is the made-up service covered at home?", "expected_section_number": "999.9001"},
-  {"question": "Is the other made-up service covered?", "expected_section_number": "999.9002"}
+  {
+    "question": "Is the made-up service covered at home?",
+    "expected_source": "cms_ncd",
+    "expected_section_number": "999.9001"
+  },
+  {
+    "question": "Is the other made-up service covered?",
+    "expected_source": "cms_ncd",
+    "expected_section_number": "999.9002"
+  }
 ]

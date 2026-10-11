@@ -200,10 +200,28 @@ def test_the_similarity_floor_drops_the_chunks_below_it(factory: sessionmaker[Se
     assert len(_search(factory, min_similarity=-1.0)) == 4
 
 
+def test_a_source_filter_leaves_out_the_matches_of_the_other_source(
+    factory: sessionmaker[Session],
+) -> None:
+    with session_scope(factory) as session:
+        determination = add_document(session, "9001", 1)
+        # The manual section is the closer match, so only the filter can leave it out.
+        section = add_document(session, "9002", 1, source=EvidenceSource.CMS_MANUAL)
+        store_vector(session, determination[0], [1.0, 1.0])
+        store_vector(session, section[0], [1.0, 0.0])
+
+    assert _places(_search(factory)) == [("9002", 0), ("9001", 0)]
+    determinations = _search(factory, source=EvidenceSource.CMS_NCD)
+    sections = _search(factory, source=EvidenceSource.CMS_MANUAL)
+    assert _places(determinations) == [("9001", 0)]
+    assert _places(sections) == [("9002", 0)]
+    assert determinations[0].source is EvidenceSource.CMS_NCD
+    assert sections[0].source is EvidenceSource.CMS_MANUAL
+
+
 def test_the_source_filter_is_part_of_the_database_search(
     factory: sessionmaker[Session], engine: Engine
 ) -> None:
-    # Only one source exists so far, so no chunk can be filtered out: the query itself is read.
     _four_chunks(factory)
     statements: list[str] = []
 

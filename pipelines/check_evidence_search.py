@@ -3,18 +3,19 @@
 Usage:
     python3 -m pipelines.check_evidence_search <path-to-questions.json>
 
-The question file is a JSON list; each entry has a `question` and the
-`expected_section_number` of the one determination a good search brings back. The project's
-own set is `config/evaluation/evidence_search_questions.json`. Run
+The question file is a JSON list; each entry has a `question`, and the `expected_source` and
+`expected_section_number` of the one document a good search brings back. The project's own
+set is `config/evaluation/evidence_search_questions.json`. Run
 `pipelines.embed_evidence_corpus` first: the search reads the vectors it stored.
 
-Each question is embedded through the LLM gateway and searched. THIS SPENDS MONEY: one small
-embedding call per question (20 questions cost far below one cent). The gateway needs its
-`LLM_` settings keys. Nothing is written except the gateway's own record of each call.
+Each question is embedded through the LLM gateway and searched in every source at once, as
+the agent loop does. THIS SPENDS MONEY: one small embedding call per question (40 questions
+cost far below one cent). The gateway needs its `LLM_` settings keys. Nothing is written
+except the gateway's own record of each call.
 
-The command prints the share of questions whose expected determination is among the top
-results, and every miss with what came back instead. The share is recorded, it is not a
-gate: a low share still exits 0.
+The command prints the share of questions whose expected document is among the top results,
+the same share per source, and every miss with what came back instead. The share is
+recorded, it is not a gate: a low share still exits 0.
 
 Exit codes: 0 the share was measured, 1 it could not be measured (no vector is stored, the
 monthly budget is reached, the provider cannot answer or refuses), 2 bad arguments or a
@@ -29,9 +30,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.config.settings import get_settings, load_llm_gateway_settings
-from src.db.models import EvidenceSource
 from src.db.session import create_db_engine, create_session_factory, session_scope
 from src.evaluation.search_quality import (
+    DocumentRef,
     SearchQualityReport,
     SearchQuestionFileError,
     read_search_questions,
@@ -57,15 +58,17 @@ from src.rag.retrieval import (
 EXIT_OK = 0
 EXIT_NOT_MEASURED = 1
 EXIT_BAD_INPUT = 2
-# The questions name determinations of this source.
-QUESTION_SOURCE = EvidenceSource.CMS_NCD
+
+
+def _name(document: DocumentRef) -> str:
+    return f"{document.source.value} {document.section_number}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Search for every question of one file and print the share that found its document.
 
     Spends money: one embedding call per question, through the gateway and its budget check.
-    The project's 20 questions took 21 seconds and cost $0.000020 (measured 2026-10-11).
+    The project's 40 questions took 37 seconds and cost $0.000040 (measured 2026-10-12).
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("path", type=Path, help="the question file (JSON)")
@@ -90,26 +93,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         session_factory = create_session_factory(engine)
         gateway = build_openai_gateway(gateway_settings, session_factory)
         with session_scope(session_factory) as session:
-            unknown = unknown_section_numbers(session, questions, QUESTION_SOURCE)
+            unknown = unknown_section_numbers(session, questions)
             if unknown:
                 print(
-                    "the question file expects section numbers no stored determination has: "
-                    + ", ".join(unknown),
+                    "the question file expects section numbers no stored document has: "
+                    + ", ".join(_name(document) for document in unknown),
                     file=sys.stderr,
                 )
                 return EXIT_BAD_INPUT
             spent_before = month_to_date_spend(session, datetime.now(UTC))
 
-            def search(question: str) -> list[str]:
+            def search(question: str) -> list[DocumentRef]:
                 matches = search_evidence(
-                    session,
-                    gateway,
-                    question,
-                    model_name=model_name,
-                    top_k=DEFAULT_TOP_K,
-                    source=QUESTION_SOURCE,
+                    session, gateway, question, model_name=model_name, top_k=DEFAULT_TOP_K
                 )
-                return [match.section_number for match in matches]
+                return [
+                    DocumentRef(source=match.source, section_number=match.section_number)
+                    for match in matches
+                ]
 
             try:
                 report = run_search_quality_check(questions, search)
@@ -132,14 +133,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if report is not None:
         print(
             f"top-{DEFAULT_TOP_K} share: {report.hits} of {report.questions} questions"
-            f" ({report.hit_share:.2%}) found their determination"
+            f" ({report.hit_share:.2%}) found their document"
             f" (model {model_name}, input version {EMBEDDING_INPUT_VERSION})"
         )
+        for share in report.by_source:
+            print(
+                f"  {share.source.value}: {share.hits} of {share.questions} questions"
+                f" ({share.hit_share:.2%})"
+            )
         for miss in report.misses:
-            found = ", ".join(miss.found_section_numbers) or "nothing"
+            found = ", ".join(_name(document) for document in miss.found) or "nothing"
             print(
                 f"  missed question {miss.question_number}:"
-                f" expected {miss.expected_section_number}, found {found}"
+                f" expected {_name(miss.expected)}, found {found}"
             )
     print(
         f"  spent ${spent_after - spent_before} in this run; ${spent_after} of the"

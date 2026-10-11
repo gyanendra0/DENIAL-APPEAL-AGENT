@@ -17,6 +17,7 @@ from src.db.migrations.versions import rev_0010_evidence_corpus as migration_001
 from src.db.migrations.versions import rev_0011_evidence_chunk_embeddings as migration_0011
 from src.db.migrations.versions import rev_0012_appeal_drafts as migration_0012
 from src.db.migrations.versions import rev_0013_agent_runs as migration_0013
+from src.db.migrations.versions import rev_0014_evidence_source_cms_manual as migration_0014
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -411,8 +412,27 @@ def test_evidence_chunks_has_its_key_link_and_check_constraints(engine: Engine) 
     assert "embedding" not in columns
 
 
-def test_migration_0010_lists_the_same_values_as_the_model() -> None:
-    assert tuple(member.value for member in EvidenceSource) == migration_0010.EVIDENCE_SOURCE
+def test_migrations_0010_and_0014_list_the_same_values_as_the_model() -> None:
+    migrated = (*migration_0010.EVIDENCE_SOURCE, migration_0014.NEW_EVIDENCE_SOURCE)
+
+    assert tuple(member.value for member in EvidenceSource) == migrated
+
+
+def test_migration_0014_downgrade_builds_the_values_of_migration_0010() -> None:
+    assert migration_0014.EVIDENCE_SOURCE_BEFORE == migration_0010.EVIDENCE_SOURCE
+
+
+def _evidence_source_values(engine: Engine) -> list[str]:
+    query = text(
+        "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid"
+        " WHERE t.typname = 'evidence_source' ORDER BY e.enumsortorder"
+    )
+    with engine.connect() as conn:
+        return list(conn.scalars(query))
+
+
+def test_upgrade_gives_the_evidence_source_type_both_values(engine: Engine) -> None:
+    assert _evidence_source_values(engine) == ["cms_ncd", "cms_manual"]
 
 
 def test_migration_0010_has_the_same_check_rules_as_the_model() -> None:
@@ -592,6 +612,46 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0013_removes_the_manual_source_and_its_rows_and_keeps_the_rest(
+    engine: Engine, alembic_config: Config
+) -> None:
+    insert_document = text(
+        "INSERT INTO evidence_documents (source, source_document_id, section_number, title,"
+        " version_number, effective_date, source_file_date) VALUES (:source, :document_id,"
+        " '999.1', 'Made-up Section', 1, '2020-01-01', '2026-10-05') RETURNING id"
+    )
+    insert_chunk = text(
+        "INSERT INTO evidence_chunks (evidence_document_id, chunk_index, text, text_sha256,"
+        " chunker_version) VALUES (:document_id, 0, 'Made-up policy text.', :sha, 'v1')"
+    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_document, {"source": "cms_ncd", "document_id": "9001"})
+            manual_id = conn.scalar(
+                insert_document, {"source": "cms_manual", "document_id": "made-up-9001"}
+            )
+            conn.execute(insert_chunk, {"document_id": manual_id, "sha": "a" * 64})
+
+        command.downgrade(alembic_config, "0013")
+
+        assert _evidence_source_values(engine) == ["cms_ncd"]
+        with engine.connect() as conn:
+            sources = list(conn.scalars(text("SELECT source::text FROM evidence_documents")))
+            chunks = conn.scalar(text("SELECT count(*) FROM evidence_chunks"))
+            old_types = conn.scalar(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'evidence_source_old'")
+            )
+        assert sources == ["cms_ncd"]
+        assert chunks == 0
+        assert old_types == 0
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM evidence_documents"))
+
+    assert _evidence_source_values(engine) == ["cms_ncd", "cms_manual"]
 
 
 def test_downgrade_to_0012_removes_agent_runs_and_its_enum_and_keeps_appeal_drafts(

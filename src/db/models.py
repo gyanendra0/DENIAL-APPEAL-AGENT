@@ -90,6 +90,7 @@ class LlmProvider(StrEnum):
 
 class EvidenceSource(StrEnum):
     CMS_NCD = "cms_ncd"
+    CMS_MANUAL = "cms_manual"
 
 
 class EndState(StrEnum):

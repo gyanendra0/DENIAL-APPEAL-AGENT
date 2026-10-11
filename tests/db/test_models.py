@@ -1066,6 +1066,22 @@ def test_rejects_evidence_document_with_an_empty_field_or_a_version_below_one(
         _evidence_document(session, **bad)
 
 
+def test_stores_evidence_document_of_the_manual_source(session: Session) -> None:
+    document = _evidence_document(session, source=EvidenceSource.CMS_MANUAL)
+    session.expire_all()
+
+    stored = session.get(EvidenceDocument, document.id)
+    assert stored is not None
+    assert stored.source is EvidenceSource.CMS_MANUAL
+
+
+def test_allows_the_same_document_id_and_section_number_once_per_source(session: Session) -> None:
+    _evidence_document(session)
+    _evidence_document(session, source=EvidenceSource.CMS_MANUAL)
+
+    assert len(session.scalars(select(EvidenceDocument)).all()) == 2
+
+
 def test_rejects_unknown_evidence_source(session: Session) -> None:
     insert = text(
         "INSERT INTO evidence_documents (source, source_document_id, section_number, title,"

@@ -127,14 +127,7 @@ def run_agent_for_claim(
             end_state=EndState.BELOW_THRESHOLD, extraction=extraction, rules=rules, scoring=scoring
         )
 
-    question = build_search_question(
-        letter.denial_reason_category.value,
-        [
-            line.hcpcs_code
-            for line in letter.denied_lines.value or ()
-            if line.hcpcs_code is not None
-        ],
-    )
+    question = build_search_question(letter.denial_reason_category.value)
     with session_scope(session_factory) as session:
         matches = search_evidence(
             session,

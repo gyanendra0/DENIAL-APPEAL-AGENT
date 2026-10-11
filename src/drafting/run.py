@@ -115,14 +115,7 @@ def run_drafting(
             already_drafted += 1
         else:
             letter = candidate.letter
-            question = build_search_question(
-                letter.denial_reason_category.value,
-                [
-                    line.hcpcs_code
-                    for line in letter.denied_lines.value or ()
-                    if line.hcpcs_code is not None
-                ],
-            )
+            question = build_search_question(letter.denial_reason_category.value)
             try:
                 with session_scope(session_factory) as session:
                     matches = search_evidence(

@@ -208,14 +208,14 @@ def test_the_trace_records_the_facts_of_every_step(factory: sessionmaker[Session
     )
 
 
-def test_the_search_question_is_built_from_the_letters_reason_and_codes(
+def test_the_search_question_is_the_phrase_of_the_letters_reason_without_its_codes(
     factory: sessionmaker[Session],
 ) -> None:
     embedder = StubEmbedder()
 
     _run(factory, StubProvider(good_answer), embedder=embedder)
 
-    question = build_search_question(DenialReasonCategory.NONCOVERED, ["99213"])
+    question = build_search_question(DenialReasonCategory.NONCOVERED)
     assert [request.texts for request in embedder.requests] == [(question,)]
 
 

@@ -146,14 +146,14 @@ def test_a_stored_citation_names_a_chunk_that_exists(factory: sessionmaker[Sessi
     assert chunk_text == citation.quote
 
 
-def test_the_search_question_is_built_from_the_letters_reason_and_codes(
+def test_the_search_question_is_the_phrase_of_the_letters_reason_without_its_codes(
     factory: sessionmaker[Session],
 ) -> None:
     embedder = StubEmbedder()
 
     _run(factory, StubProvider(good_answer), embedder=embedder)
 
-    question = build_search_question(DenialReasonCategory.NONCOVERED, ["99213"])
+    question = build_search_question(DenialReasonCategory.NONCOVERED)
     assert [request.texts for request in embedder.requests] == [(question,), (question,)]
 
 

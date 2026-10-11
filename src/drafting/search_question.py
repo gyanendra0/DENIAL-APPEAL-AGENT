@@ -5,13 +5,16 @@ So the question is one fixed phrase for the category, followed by the codes. It 
 question: almost no code appears in the evidence text, so the passages found may not be
 about the claim's service. A pure function: no model call, no database.
 
-Any change to a phrase or to the way the codes are added changes what a search finds.
+Any change to a phrase or to the way the codes are added changes what a search finds, so
+it needs a new `SEARCH_QUESTION_VERSION`. The version is stored with every draft.
 """
 
 from collections.abc import Mapping, Sequence
 
 from src.db.models import DenialReasonCategory
 
+# Names the phrases below and the way the codes are added. Stored with every draft.
+SEARCH_QUESTION_VERSION = "v1"
 SEARCH_PHRASES: Mapping[DenialReasonCategory, str] = {
     DenialReasonCategory.NONCOVERED: (
         "Medicare coverage of the item or service and the conditions under which it is covered"

@@ -15,6 +15,7 @@ from src.db.migrations.versions import rev_0008_llm_calls as migration_0008
 from src.db.migrations.versions import rev_0009_document_extractions as migration_0009
 from src.db.migrations.versions import rev_0010_evidence_corpus as migration_0010
 from src.db.migrations.versions import rev_0011_evidence_chunk_embeddings as migration_0011
+from src.db.migrations.versions import rev_0012_appeal_drafts as migration_0012
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -44,6 +45,7 @@ REFERENCE_TABLES = {
     "evidence_documents",
     "evidence_chunks",
     "evidence_chunk_embeddings",
+    "appeal_drafts",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls.
 OPERATIONAL_TABLES = {"llm_calls"}
@@ -59,6 +61,7 @@ EXTRACTION_TABLE = "document_extractions"
 EVIDENCE_DOCUMENT_TABLE = "evidence_documents"
 EVIDENCE_CHUNK_TABLE = "evidence_chunks"
 EMBEDDING_TABLE = "evidence_chunk_embeddings"
+DRAFT_TABLE = "appeal_drafts"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -497,6 +500,43 @@ def test_migration_0011_has_the_same_vector_size_and_check_rules_as_the_model() 
     }
 
 
+def test_appeal_drafts_has_its_key_link_and_check_constraints(engine: Engine) -> None:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(DRAFT_TABLE)}
+    foreign = {
+        f["name"]: (f["constrained_columns"], f["referred_table"], f["options"].get("ondelete"))
+        for f in inspector.get_foreign_keys(DRAFT_TABLE)
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(DRAFT_TABLE)}
+
+    assert unique == {"uq_appeal_drafts_claim_prompt": ["source_claim_id", "prompt_version"]}
+    # Linked to the claim only: a new load of the evidence corpus must not remove a draft.
+    assert foreign == {"fk_appeal_drafts_claim": (["source_claim_id"], CLAIM_TABLE, "CASCADE")}
+    assert checks == {
+        "ck_appeal_drafts_prompt_version_not_empty",
+        "ck_appeal_drafts_search_question_version_not_empty",
+        "ck_appeal_drafts_model_name_not_empty",
+        "ck_appeal_drafts_text_sha256_format",
+    }
+
+
+def test_migration_0012_has_the_same_check_rules_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[DRAFT_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_appeal_drafts_prompt_version_not_empty": migration_0012.PROMPT_VERSION_NOT_EMPTY,
+        "ck_appeal_drafts_search_question_version_not_empty": (
+            migration_0012.SEARCH_QUESTION_VERSION_NOT_EMPTY
+        ),
+        "ck_appeal_drafts_model_name_not_empty": migration_0012.MODEL_NAME_NOT_EMPTY,
+        "ck_appeal_drafts_text_sha256_format": migration_0012.TEXT_SHA256_FORMAT,
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -507,6 +547,23 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0011_removes_appeal_drafts_and_keeps_the_provider_enum(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0011")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert DRAFT_TABLE not in tables
+        assert {EXTRACTION_TABLE, LLM_CALL_TABLE, EMBEDDING_TABLE} <= tables
+        with engine.connect() as conn:
+            kept = conn.scalar(text("SELECT count(*) FROM pg_type WHERE typname = 'llm_provider'"))
+        assert kept == 1
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert DRAFT_TABLE in inspect(engine).get_table_names()
 
 
 def test_downgrade_to_0010_removes_the_embeddings_table_and_keeps_the_vector_extension(

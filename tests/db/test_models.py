@@ -36,6 +36,7 @@ from src.db.models import (
     MetalLevel,
     PlanDenialStats,
     PlanType,
+    StoredAppealDraft,
     User,
     UserRole,
 )
@@ -1256,3 +1257,141 @@ def test_deleting_an_evidence_document_removes_its_chunks_embeddings(session: Se
     session.flush()
 
     assert session.scalars(select(EvidenceChunkEmbedding)).all() == []
+
+
+# The shape of a checked `AppealLetter` (`src/drafting/schemas.py`), with made-up text.
+DRAFT_LETTER: dict[str, Any] = {
+    "paragraphs": [
+        {"kind": "other", "text": "I am writing to appeal the denial.", "citations": []},
+        {
+            "kind": "policy",
+            "text": "The made-up determination covers the service.",
+            "citations": [
+                {
+                    "source": "cms_ncd",
+                    "source_document_id": "9001",
+                    "chunk_index": 0,
+                    "text_sha256": TEXT_SHA256,
+                    "quote": "Made-up policy text.",
+                }
+            ],
+        },
+    ]
+}
+
+
+def _appeal_draft(session: Session, **overrides: Any) -> StoredAppealDraft:
+    """Store a draft for the claim `SAMPLE_CLAIM_ID`. The claim row must exist first."""
+    fields: dict[str, Any] = {
+        "source_claim_id": SAMPLE_CLAIM_ID,
+        "prompt_version": "v1",
+        "search_question_version": "v1",
+        "model_name": "example-small-model",
+        "provider": LlmProvider.PRIMARY,
+        "text_sha256": TEXT_SHA256,
+        "letter": DRAFT_LETTER,
+    }
+    draft = StoredAppealDraft(**(fields | overrides))
+    session.add(draft)
+    session.flush()
+    return draft
+
+
+def test_stores_appeal_draft_with_model_versions_and_its_letter(session: Session) -> None:
+    _claim_sample(session)
+    draft = _appeal_draft(session)
+    session.expire_all()
+
+    stored = session.get(StoredAppealDraft, draft.id)
+    assert stored is not None
+    assert stored.source_claim_id == SAMPLE_CLAIM_ID
+    assert stored.prompt_version == "v1"
+    assert stored.search_question_version == "v1"
+    assert stored.model_name == "example-small-model"
+    assert stored.provider is LlmProvider.PRIMARY
+    assert stored.text_sha256 == TEXT_SHA256
+    assert stored.letter == DRAFT_LETTER
+    assert stored.created_at is not None
+
+
+def test_rejects_second_appeal_draft_for_one_claim_and_prompt_version(session: Session) -> None:
+    _claim_sample(session)
+    _appeal_draft(session)
+
+    with pytest.raises(IntegrityError, match="uq_appeal_drafts_claim_prompt"):
+        _appeal_draft(session, provider=LlmProvider.FALLBACK, search_question_version="v2")
+
+
+def test_allows_another_prompt_version_for_one_claim(session: Session) -> None:
+    _claim_sample(session)
+    _appeal_draft(session)
+    _appeal_draft(session, prompt_version="v2")
+
+    assert len(session.scalars(select(StoredAppealDraft)).all()) == 2
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("prompt_version", "", "ck_appeal_drafts_prompt_version_not_empty"),
+        ("search_question_version", "", "ck_appeal_drafts_search_question_version_not_empty"),
+        ("model_name", "", "ck_appeal_drafts_model_name_not_empty"),
+        ("text_sha256", "abc123", "ck_appeal_drafts_text_sha256_format"),
+        ("text_sha256", TEXT_SHA256.upper(), "ck_appeal_drafts_text_sha256_format"),
+        ("text_sha256", "g" * 64, "ck_appeal_drafts_text_sha256_format"),
+    ],
+)
+def test_rejects_appeal_draft_with_an_empty_field_or_a_malformed_text_hash(
+    session: Session, column: str, value: Any, constraint: str
+) -> None:
+    _claim_sample(session)
+    bad: dict[str, Any] = {column: value}
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _appeal_draft(session, **bad)
+
+
+def test_rejects_appeal_draft_without_a_letter(session: Session) -> None:
+    _claim_sample(session)
+    insert = text(
+        "INSERT INTO appeal_drafts (source_claim_id, prompt_version, search_question_version,"
+        " model_name, provider, text_sha256) VALUES (:source_claim_id, 'v1', 'v1',"
+        " 'example-small-model', 'primary', :text_sha256)"
+    )
+
+    with pytest.raises(IntegrityError, match="letter"):
+        session.execute(insert, {"source_claim_id": SAMPLE_CLAIM_ID, "text_sha256": TEXT_SHA256})
+
+
+def test_rejects_appeal_draft_without_its_claim(session: Session) -> None:
+    _claim_sample(session, "800000000000002")  # another claim
+
+    with pytest.raises(IntegrityError, match="fk_appeal_drafts_claim"):
+        _appeal_draft(session)
+
+
+def test_deleting_a_claim_sample_removes_its_appeal_drafts(session: Session) -> None:
+    sample = _claim_sample(session)
+    _appeal_draft(session)
+
+    session.delete(sample)
+    session.flush()
+
+    assert session.scalars(select(StoredAppealDraft)).all() == []
+
+
+def test_appeal_draft_stays_when_the_evidence_it_cites_is_replaced(session: Session) -> None:
+    # What a new load of the corpus does: the cited chunk goes and comes back with a new row id.
+    _claim_sample(session)
+    document = _evidence_document(session)
+    _evidence_chunk(session, document)
+    draft = _appeal_draft(session)
+
+    session.delete(document)
+    session.flush()
+    _evidence_chunk(session, _evidence_document(session))
+    session.expire_all()
+
+    stored = session.get(StoredAppealDraft, draft.id)
+    assert stored is not None
+    assert stored.letter == DRAFT_LETTER

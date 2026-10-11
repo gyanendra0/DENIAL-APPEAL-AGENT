@@ -407,9 +407,11 @@ Text the appeal letter can cite. The kinds of text the corpus is meant to hold i
 - Public code descriptors — ICD-10, CPT/HCPCS, and claim adjustment reason codes.
 - Appeal-rights and timeline guidance published by regulators.
 
-One source is loaded so far: the CMS national coverage determinations (2.3.1). The text is
-stored cut into chunks, and every chunk has an embedding, so the chunks can be searched by
-meaning ([03-architecture.md 3.14](03-architecture.md#314-evidence-retrieval)). **A generated
+Two sources are loaded so far: the CMS national coverage determinations (2.3.1) and four
+chapters of the CMS manuals (2.3.2). Each has its own command, and loading one leaves the
+other as it is. The text is stored cut into chunks, and every chunk has an embedding, so
+the chunks can be searched by meaning
+([03-architecture.md 3.14](03-architecture.md#314-evidence-retrieval)). **A generated
 citation is only allowed if it points at a chunk that was actually retrieved.**
 
 ### 2.3.1 Loaded source: CMS national coverage determinations
@@ -538,6 +540,136 @@ their denied services **cannot be measured from the file**. What is known from t
 `medical_necessity` 195), and the most-denied procedure codes are routine services. This
 source alone is expected to leave many claims without evidence about their service; that is
 an expectation, not a measurement. The limits are listed in 03-architecture.md 3.13.
+
+### 2.3.2 Loaded source: CMS manual chapters
+
+A national coverage determination is about one single service. The CMS Internet-Only
+Manuals hold the general rules instead: what Medicare covers and excludes, how a denied
+claim is appealed, and who pays when a claim is denied. That text fits a denied claim
+whatever its service is. Four chapters are loaded:
+
+| File | Manual | Chapter | Pages |
+|---|---|---|---|
+| `bp102c15.pdf` | Medicare Benefit Policy Manual (publication 100-02) | 15, Covered Medical and Other Health Services | 311 |
+| `bp102c16.pdf` | Medicare Benefit Policy Manual (publication 100-02) | 16, General Exclusions From Coverage | 39 |
+| `clm104c29.pdf` | Medicare Claims Processing Manual (publication 100-04) | 29, Appeals of Claims Decisions | 103 |
+| `clm104c30.pdf` | Medicare Claims Processing Manual (publication 100-04) | 30, Financial Liability Protections | 195 |
+
+| Item | Value |
+|---|---|
+| Files | The four PDF files above, kept under `data/raw/evidence/` (never committed) |
+| Address | `https://www.cms.gov/regulations-and-guidance/guidance/manuals/downloads/<file>` |
+| Size | About 4.4 MB together; downloaded by hand on 2026-10-11 |
+| Grain in a file | One chapter, made of numbered sections such as `310.2` |
+| Grain we store | One row per numbered section that has text; one row per chunk of its text |
+| Lands in | `evidence_documents` and `evidence_chunks`, under the source `cms_manual` |
+
+**Terms of the download.** The manuals page carries no copyright, licence or AMA / CPT
+statement, and no terms have to be accepted. Nothing beyond that was verified. The files
+are fetched by hand, like every other source file.
+
+**What is loaded.** Per numbered section: an id made of the publication, the chapter and
+the section number (such as `100-04-29-310.2`), the title from the section's heading, the
+version number, the effective date and the date of the file. The id is also the section
+number a reader would cite. The version number is the revision number in the line under
+the heading, for example `(Rev. 12, Issued: 01-02-24, Effective: 03-04-24, ...)`, and the
+effective date is the one that line gives. The files state no release date, so the date of
+the file is typed by the person who runs the command (`--file-date`).
+
+The text of a section is cut into chunks of at most 1,200 characters by the same chunker
+as the determinations. How a PDF becomes paragraphs is in
+[03-architecture.md 3.13](03-architecture.md#313-evidence-corpus).
+
+**What is not loaded.**
+
+- **The table of contents** at the start of each chapter and **the table "Transmittals
+  Issued for this Chapter"** at its end. The first is only read as the list of sections to
+  find.
+- **A section with no text.** A parent heading that is followed directly by its own
+  subsections is counted and left out (24 sections).
+- **Text repeated on every page.** The four files have no page header, page footer or page
+  number in their text, so there is nothing of that kind to remove.
+- **Images** (14 in the four files) and the marks that show which words a revision changed.
+
+**Quality gates.** The files are rejected as a whole, and nothing is written, if any of
+these fail for any file.
+
+| Gate | Action |
+|---|---|
+| A file is not a readable PDF, or is encrypted | Reject |
+| A file holds no text that can be extracted (a scan, for example) | Reject |
+| The first lines do not name one of the two known manuals and a chapter | Reject |
+| There is no table of contents, or it lists no numbered section | Reject |
+| A section number appears twice in the table of contents | Reject |
+| A section of the table of contents has no heading in the text; or the text of the first section is not found | Reject |
+| There is no transmittals table at the end of the chapter | Reject |
+| A revision line has no revision number or no issued date, or does not end within 4 lines | Reject |
+| The text holds the character U+FFFD or a NUL character | Reject |
+| A row does not fit its model: an id longer than 20 characters or not of the form `100-04-29-310.2`, an empty title, a version under 1 | Reject |
+| The same section is in more than one file (the same file named twice, for example) | Reject |
+| No section of a file holds any text | Reject |
+
+There is no gate on the number of sections: a chapter that CMS has shortened is loaded as
+it is.
+
+**How to load.** With the database running and migrated:
+
+```text
+python3 -m pipelines.load_manual_chapters \
+    data/raw/evidence/bp102c15.pdf data/raw/evidence/bp102c16.pdf \
+    data/raw/evidence/clm104c29.pdf data/raw/evidence/clm104c30.pdf \
+    --file-date 2026-10-11
+```
+
+The command checks every file before it writes anything. It then removes every stored
+manual section and stores the ones it read, in one transaction. **Name every chapter each
+time**: afterwards the tables hold exactly the sections of the files named, so a chapter
+that is left out is removed. The coverage determinations and their embeddings are not
+touched. `--file-date` is required and a date in the future is refused. Exit code 0 means
+loaded, 1 means a file was rejected (the problems are listed, each with its file name), 2
+means a bad argument or a path that is not a file. The report prints counts and never any
+text of a manual. The command calls no model and spends no money. It takes about 19
+seconds for the four files.
+
+**After every load, embed again.** The new chunks have no embedding until
+`python3 -m pipelines.embed_evidence_corpus` has run (2.9). That run pays only for the
+chunks without an embedding: for these four files it was $0.006232.
+
+**Measured.** Loaded on 2026-10-12 from the files downloaded on 2026-10-11:
+
+```text
+loaded 636 documents and 1753 chunks (chunker v1)
+  chapter 100-02-15: 220 documents, 849 chunks
+  chapter 100-02-16: 38 documents, 98 chunks
+  chapter 100-04-29: 101 documents, 293 chunks
+  chapter 100-04-30: 277 documents, 513 chunks
+  sections with no text left out: 24
+  sections without a revision line (version 1, the file date): 0
+  sections with the issued date as effective date: 137
+  file date: 2026-10-11
+  chunk length: longest 1200, median 939
+```
+
+| Number | Value |
+|---|---|
+| Pages in the four files | 648 |
+| Numbered sections in the tables of contents | 660 |
+| Sections loaded | 636 |
+| Sections with no text left out | 24 |
+| Chunks | 1,753 |
+| Chunks per section | median 1, most 47 |
+| Chunk length in characters | longest 1,200, median 939, shortest 7 (22 chunks are under 100) |
+| Characters stored | 1,476,499 |
+| Effective dates | 2003-01-01 to 2026-08-28 |
+
+After the load the determinations were as before: 316 documents, 1,120 chunks and 1,120
+embeddings, with the same chunk hashes and the same embedding rows.
+
+**What the chapters cover.** Chapters 15 and 16 are about `noncovered` and
+`medical_necessity` denials, chapters 29 and 30 about the appeal itself and about who is
+liable. Nothing in them is about `coordination_of_benefits`; that is the Medicare Secondary
+Payer manual (publication 100-05), which is not loaded. Whether a passage of these chapters
+is found for a real claim is not measured here (03-architecture.md 3.13, "Known limits").
 
 ## 2.4 Layer C — generated documents
 
@@ -1076,9 +1208,9 @@ data/
 `data/` is never stored with the project. Everything in it must be
 reproducible by running a loader script.
 
-The policy corpus is not a set of files under `evidence/` either: the downloaded file is
-kept under `raw/evidence/`, and its chunks are stored in the `evidence_documents` and
-`evidence_chunks` tables (2.3.1). Their embeddings are stored in `evidence_chunk_embeddings`.
+The policy corpus is not a set of files under `evidence/` either: the downloaded files are
+kept under `raw/evidence/`, and their chunks are stored in the `evidence_documents` and
+`evidence_chunks` tables (2.3.1, 2.3.2). Their embeddings are stored in `evidence_chunk_embeddings`.
 
 The generated documents (denial letters, clinical notes and prior-authorisation records) are
 not files under `documents/`: they are stored as text in the `generated_documents` table
@@ -1368,6 +1500,17 @@ and writes only `evidence_documents` and `evidence_chunks`. The download page, t
 accept there, the gates, the exit codes and the measured numbers are in
 [2.3.1](#231-loaded-source-cms-national-coverage-determinations).
 
+The second source, four chapters of the CMS manuals, has a command of its own:
+
+```text
+python3 -m pipelines.load_manual_chapters <chapter.pdf> [<chapter.pdf> ...] --file-date YYYY-MM-DD
+```
+
+It replaces only the stored manual sections and leaves the determinations alone. Name every
+chapter each time: a chapter that is left out is removed. The files, the gates, the exit
+codes and the measured numbers are in [2.3.2](#232-loaded-source-cms-manual-chapters). The
+two load commands can be run in either order.
+
 ### Embedding the evidence corpus
 
 The next command gives every stored chunk an embedding, the list of numbers the search
@@ -1398,6 +1541,11 @@ embedded 1120 of 1120 chunks (model text-embedding-3-small, input version v1)
 A second run prints `embedded 0 of 1120 chunks`, `already embedded before this run: 1120`
 and `spent $0.000000 in this run`.
 
+The command covers every source at once. After the manual chapters were loaded on
+2026-10-12, a run embedded the 1,753 new chunks and skipped the 1,120 that already had an
+embedding: 18 calls, 311,176 tokens, $0.006232, 53 seconds. The run after it embedded 0
+chunks and spent $0.000000. The table then held 2,873 embeddings, one per chunk.
+
 Exit code 0 means every chunk has an embedding. Exit code 2 means a bad argument. Exit
 code 1 means one of these, each with a plain message and no traceback:
 
@@ -1411,46 +1559,58 @@ code 1 means one of these, each with a plain message and no traceback:
 - another embedding run is in progress. Only one works at a time; the second one calls
   nothing and spends nothing.
 
-Run it again after every load of the evidence corpus (2.3.1).
+Run it again after every load of either source (2.3.1, 2.3.2).
 
 ### Checking the evidence search
 
 One more command asks the search a small set of hand-made questions and counts how often
-the expected determination comes back:
+the expected document comes back:
 
 ```text
 python3 -m pipelines.check_evidence_search config/evaluation/evidence_search_questions.json
 ```
 
-The file is a JSON list. Each entry has a `question` and the `expected_section_number` of
-the one determination a good search brings back. The project's set has 20 questions. They
-were written by hand from the titles of the determinations; they hold no claim and no
-patient data.
+The file is a JSON list. Each entry has a `question`, and the `expected_source` (`cms_ncd`
+or `cms_manual`) and `expected_section_number` of the one document a good search brings
+back. The source is needed because a section number is unique only within a source. The
+project's set has 40 questions: 20 about coverage determinations and 20 about sections of
+the manual chapters, five per chapter. They were written by hand from the titles and the
+opening text of the documents; they hold no claim and no patient data.
 
-**It spends money**: one small embedding call per question. The 20 questions cost
-$0.000020 and took 21 seconds. It writes nothing except the gateway's own record of each
+Every question is searched in both sources at once, as the agent loop searches, so a
+manual section can push a determination out of the results and the other way round.
+
+**It spends money**: one small embedding call per question. The 40 questions cost
+$0.000040 and took 37 seconds. It writes nothing except the gateway's own record of each
 call, and it needs the chunks embedded first.
 
-The output of the run on 2026-10-11:
+The output of the run on 2026-10-12:
 
 ```text
-top-5 share: 19 of 20 questions (95.00%) found their determination (model text-embedding-3-small, input version v1)
-  missed question 19: expected 160.18, found 160.7, 160.7.1, 160.2
-  spent $0.000020 in this run; $0.705857 of the $3.00 monthly budget is used
+top-5 share: 35 of 40 questions (87.50%) found their document (model text-embedding-3-small, input version v1)
+  cms_ncd: 19 of 20 questions (95.00%)
+  cms_manual: 16 of 20 questions (80.00%)
+  missed question 19: expected cms_ncd 160.18, found cms_ncd 160.7, cms_ncd 160.7.1, cms_ncd 160.2
+  missed question 29: expected cms_manual 100-02-16-130, found cms_manual 100-02-16-40.3, cms_manual 100-02-15-230, cms_manual 100-02-15-230.6, cms_manual 100-02-15-30, cms_manual 100-02-15-150
+  missed question 32: expected cms_manual 100-04-29-310.2, found cms_manual 100-04-30-150.8, cms_manual 100-04-29-220, cms_manual 100-04-30-260.4.3, cms_manual 100-04-29-320.2, cms_manual 100-04-30-200.4.3
+  missed question 35: expected cms_manual 100-04-29-270.1, found cms_manual 100-04-30-120.4, cms_manual 100-04-29-270.1.1, cms_manual 100-04-29-270.1.2, cms_manual 100-04-29-270.1.3
+  missed question 36: expected cms_manual 100-04-30-50, found cms_manual 100-04-30-40.2.2, cms_manual 100-04-30-40.2.1, cms_manual 100-04-30-40.1
+  spent $0.000040 in this run; $0.786894 of the $3.00 monthly budget is used
 ```
 
-A question is a hit when a chunk of the expected determination is among the five closest
-chunks. The share is **recorded, not a gate**: a low share still exits with 0. What the
-number does and does not show is in 03-architecture.md 3.14.
+A question is a hit when a chunk of the expected document is among the five closest
+chunks. The line per source counts the questions that expect a document of that source.
+Before the manual chapters were loaded, the 20 determination questions alone gave 19 of 20
+(2026-10-11), with the same miss. The share is **recorded, not a gate**: a low share still
+exits with 0. What the number does and does not show is in 03-architecture.md 3.14.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | The share was measured, whatever it is |
 | 1 | It could not be measured: no embedding is stored, the monthly budget is reached, the provider cannot answer or refuses, or an answer cannot be used |
-| 2 | A bad argument, a question file that cannot be used, or an expected section number that no stored determination has |
+| 2 | A bad argument, a question file that cannot be used, or an expected section number that no stored document of the named source has |
 
-Run it again after an embedding run with another model, and after a load of a new corpus
-file.
+Run it again after an embedding run with another model, and after a load of either source.
 
 ### Drafting the appeal letters
 

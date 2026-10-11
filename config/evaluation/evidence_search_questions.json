@@ -1,82 +1,202 @@
 [
   {
     "question": "When does Medicare pay for oxygen equipment used at home by a patient with a long-term lung disease?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "240.2"
   },
   {
     "question": "Is a breathing machine worn at night covered for a patient whose airway closes during sleep?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "240.4"
   },
   {
     "question": "Is weight-loss surgery such as a gastric bypass covered for a severely obese patient with diabetes?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "100.1"
   },
   {
     "question": "Which patients qualify for an implanted device that shocks the heart out of a dangerous rhythm?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "20.4"
   },
   {
     "question": "Is replacing a narrowed aortic valve through a catheter instead of open-heart surgery covered?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "20.32"
   },
   {
     "question": "Is an implanted hearing device covered for an adult with severe hearing loss who gets little help from hearing aids?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "50.3"
   },
   {
     "question": "Is a scan that measures bone strength covered for a woman at risk of osteoporosis?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "150.3"
   },
   {
     "question": "Is a cholesterol blood test covered for a patient who takes a statin?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "190.23"
   },
   {
     "question": "When is a blood test of thyroid hormone levels reasonable and necessary?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "190.22"
   },
   {
     "question": "Is a PSA blood test covered to follow a man already treated for prostate cancer?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "190.31"
   },
   {
     "question": "Which tests are covered to check a person with no symptoms for colon cancer?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "210.3"
   },
   {
     "question": "Is a yearly low-dose chest scan covered for a long-time heavy smoker with no symptoms?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "210.14"
   },
   {
     "question": "Is an MRI scan covered for a patient who has an implanted pacemaker?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "220.2"
   },
   {
     "question": "Is a PET scan covered to see how far a cancer has spread before treatment starts?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "220.6.17"
   },
   {
     "question": "Is needle therapy covered for back pain that has lasted more than twelve weeks?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "30.3.3"
   },
   {
     "question": "Is treatment in a pressurised oxygen chamber covered for a diabetic foot wound that will not heal?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "20.29"
   },
   {
     "question": "When is a power wheelchair or scooter covered for a patient who cannot move around the home?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "280.3"
   },
   {
     "question": "Is testing a hair sample to find a mineral shortage covered?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "190.6"
   },
   {
     "question": "Is a nerve stimulator implanted in the neck covered for epilepsy that medicine does not control?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "160.18"
   },
   {
     "question": "Is treatment with a patient's own genetically modified immune cells covered for a blood cancer?",
+    "expected_source": "cms_ncd",
     "expected_section_number": "110.24"
+  },
+  {
+    "question": "What makes an item count as medical equipment that lasts and can be used in the patient's home?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-15-110.1"
+  },
+  {
+    "question": "Are special protective footwear and inserts covered for a patient with diabetes?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-15-140"
+  },
+  {
+    "question": "Is trimming toenails or removing corns and calluses paid for?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-15-290"
+  },
+  {
+    "question": "How is it decided whether a medicine is one that patients usually give themselves?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-15-50.2"
+  },
+  {
+    "question": "Is a yearly check-up visit that produces a personal prevention plan covered?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-15-280.5"
+  },
+  {
+    "question": "Is help with bathing, dressing and eating paid for when no skilled care is needed?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-16-110"
+  },
+  {
+    "question": "Is a television or a telephone in the patient's hospital room paid for?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-16-80"
+  },
+  {
+    "question": "Is hospital care a patient received while travelling abroad covered?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-16-60"
+  },
+  {
+    "question": "Can a doctor bill Medicare for treating a spouse or a child?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-16-130"
+  },
+  {
+    "question": "Does Medicare pay for the medical care of a person who is in prison?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-02-16-40.7"
+  },
+  {
+    "question": "Which people and organisations have the right to contest a decision on a claim?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-29-210"
+  },
+  {
+    "question": "How many days does a party have to ask for the first review of a denied claim?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-29-310.2"
+  },
+  {
+    "question": "Which reasons excuse a patient who asked for a review after the deadline?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-29-240.2"
+  },
+  {
+    "question": "Can several small claims be added together to reach the dollar amount needed for a hearing before a judge?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-29-250.3"
+  },
+  {
+    "question": "Can a patient name a lawyer or another person to act for them with the contractor?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-29-270.1"
+  },
+  {
+    "question": "What written warning must a supplier give a patient before a service that Medicare will probably not pay for?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-30-50"
+  },
+  {
+    "question": "When is a patient treated as having known beforehand that a service would not be paid for?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-30-30.1"
+  },
+  {
+    "question": "Should a patient who arrives in a life-threatening condition be asked to sign a notice about payment?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-30-40.3"
+  },
+  {
+    "question": "What happens to a doctor who does not pay back the money a patient paid for a denied service?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-30-140.10"
+  },
+  {
+    "question": "When must a nursing home warn a resident that Medicare will likely stop paying for the stay?",
+    "expected_source": "cms_manual",
+    "expected_section_number": "100-04-30-70.2"
   }
 ]

@@ -40,6 +40,7 @@ class DraftFailure(StrEnum):
     CUT_OFF = "cut_off"  # the answer reached the output limit
     NOT_PARSEABLE = "not_parseable"  # the answer is not JSON or does not fit a draft
     PLACEHOLDER_TEXT = "placeholder_text"  # a paragraph holds text in square brackets
+    FACT_CHECK = "fact_check"  # a wrong dollar amount, or "other" given as the reason
 
 
 class ExtractionStep(BaseModel):

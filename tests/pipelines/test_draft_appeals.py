@@ -34,6 +34,7 @@ from tests.drafting.helpers import (
     stored_drafts,
     two_problem_answer,
     uncited_answer,
+    wrong_amount_answer,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -139,6 +140,7 @@ def test_drafts_one_split_stores_the_letters_and_prints_the_counts(
         "  failed to parse: 0",
         "  stopped for length: 0",
         "  refused for placeholder text: 0",
+        "  refused by the fact check: 0",
         "  answered by the fallback: 0",
         "  denied claims of the split left out (no current letter extraction): 0",
         "  time: N s",
@@ -248,6 +250,28 @@ def test_a_draft_with_placeholder_text_is_counted_and_its_text_is_not_printed(
     assert "Your Name" not in captured.out + captured.err
 
 
+def test_a_draft_refused_by_the_fact_check_is_counted_and_its_text_is_not_printed(
+    factory: sessionmaker[Session], stubs: Stubs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stubs.primary = StubProvider(
+        lambda request: (
+            wrong_amount_answer(request) if is_for(CLAIM_1)(request) else good_answer(request)
+        )
+    )
+
+    assert main(VALIDATION) == 0
+
+    assert set(stored_drafts(factory)) == {CLAIM_2}
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert lines[0] == f"drafted 1 of 2 {HEADLINE}"
+    assert lines[10:12] == [
+        "  refused for placeholder text: 0",
+        "  refused by the fact check: 1",
+    ]
+    assert "999.99" not in captured.out + captured.err
+
+
 def test_a_claim_without_a_current_letter_extraction_is_left_out_and_counted(
     factory: sessionmaker[Session], stubs: Stubs, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -266,7 +290,7 @@ def test_a_claim_without_a_current_letter_extraction_is_left_out_and_counted(
     assert set(stored_drafts(factory)) == {CLAIM_2}
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"drafted 1 of 1 {HEADLINE}"
-    assert lines[12] == "  denied claims of the split left out (no current letter extraction): 1"
+    assert lines[13] == "  denied claims of the split left out (no current letter extraction): 1"
 
 
 def test_stops_cleanly_when_the_budget_is_reached_and_exits_1(

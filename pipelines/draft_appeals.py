@@ -151,6 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  failed to parse: {summary.failed_to_parse}")
     print(f"  stopped for length: {summary.stopped_for_length}")
     print(f"  refused for placeholder text: {summary.refused_for_placeholder}")
+    print(f"  refused by the fact check: {summary.refused_for_fact_check}")
     print(f"  answered by the fallback: {summary.answered_by_fallback}")
     print(f"  denied claims of the split left out (no current letter extraction): {left_out}")
     print(f"  time: {seconds:.0f} s")

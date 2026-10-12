@@ -17,6 +17,7 @@ from src.db.models import LlmProvider
 from src.db.session import session_scope
 from src.drafting.drafter import (
     DraftBlockedError,
+    DraftFactError,
     DraftingError,
     DraftPlaceholderError,
     DraftTruncatedError,
@@ -55,7 +56,8 @@ class DraftingRunSummary(BaseModel):
 
     `blocked` counts the drafts the citation validator blocked; `blocked_by_kind` says, per
     kind of problem, how many of those drafts had it (a draft with two kinds counts under
-    both). `refused_for_placeholder` counts the drafts with text in square brackets.
+    both). `refused_for_placeholder` counts the drafts with text in square brackets,
+    `refused_for_fact_check` the drafts with a wrong dollar amount or "other" as the reason.
     `stop_reason` is None when every claim was looked at; otherwise it says why the
     run ended early, and `not_tried` claims are left for the next run.
     """
@@ -71,6 +73,7 @@ class DraftingRunSummary(BaseModel):
     failed_to_parse: int = Field(ge=0)
     stopped_for_length: int = Field(ge=0)
     refused_for_placeholder: int = Field(ge=0)
+    refused_for_fact_check: int = Field(ge=0)
     answered_by_fallback: int = Field(ge=0)
     stop_reason: str | None
 
@@ -84,6 +87,7 @@ class DraftingRunSummary(BaseModel):
             - self.failed_to_parse
             - self.stopped_for_length
             - self.refused_for_placeholder
+            - self.refused_for_fact_check
         )
 
 
@@ -102,8 +106,8 @@ def run_drafting(
     chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown to
     the model; a claim with no chunk left is drafted with no evidence. Each letter is
     committed on its own, so a run that stops keeps what it finished. A draft that
-    is blocked, cut off, not parseable or holds placeholder text is counted and nothing is
-    stored for it. The run
+    is blocked, cut off, not parseable, holds placeholder text or states a wrong fact is
+    counted and nothing is stored for it. The run
     ends early, without an error, when the budget is reached, no provider can answer, a
     provider refuses a request, the evidence has no stored vector, or the answer to a search
     question's embedding call cannot be used.
@@ -113,6 +117,7 @@ def run_drafting(
 
     already_drafted = drafted = drafted_with_citation = 0
     blocked = failed_to_parse = stopped_for_length = refused_for_placeholder = 0
+    refused_for_fact_check = 0
     answered_by_fallback = 0
     blocked_by_kind: Counter[str] = Counter()
     stop_reason: str | None = None
@@ -139,6 +144,8 @@ def run_drafting(
                 blocked_by_kind.update({problem.kind.value for problem in error.problems})
             except DraftPlaceholderError:
                 refused_for_placeholder += 1
+            except DraftFactError:
+                refused_for_fact_check += 1
             except DraftingError:
                 failed_to_parse += 1
             except LlmBudgetExceededError:
@@ -175,7 +182,10 @@ def run_drafting(
                 len(candidates),
                 drafted,
                 blocked,
-                failed_to_parse + stopped_for_length + refused_for_placeholder,
+                failed_to_parse
+                + stopped_for_length
+                + refused_for_placeholder
+                + refused_for_fact_check,
             )
     return DraftingRunSummary(
         selected=len(candidates),
@@ -187,6 +197,7 @@ def run_drafting(
         failed_to_parse=failed_to_parse,
         stopped_for_length=stopped_for_length,
         refused_for_placeholder=refused_for_placeholder,
+        refused_for_fact_check=refused_for_fact_check,
         answered_by_fallback=answered_by_fallback,
         stop_reason=stop_reason,
     )

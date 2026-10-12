@@ -16,6 +16,7 @@ from src.drafting.drafter import (
     DRAFTING_MAX_OUTPUT_TOKENS,
     MAX_EVIDENCE_MATCHES,
     DraftBlockedError,
+    DraftFactError,
     DraftingError,
     DraftParseError,
     DraftPlaceholderError,
@@ -24,6 +25,7 @@ from src.drafting.drafter import (
     build_user_message,
     draft_appeal,
 )
+from src.drafting.fact_check import FactProblem, FactProblemKind
 from src.drafting.prompts import DRAFTING_PURPOSE, DraftingPrompt
 from src.drafting.schemas import AppealDraft, Citation, ParagraphKind
 from src.extraction.schemas import DenialLetterExtraction
@@ -517,10 +519,83 @@ def test_a_draft_that_is_blocked_and_has_a_placeholder_is_reported_as_blocked(
         _draft(session_factory, StubProvider(answer))
 
 
+def test_a_draft_with_a_wrong_amount_and_other_as_the_reason_is_refused_with_no_repair(
+    session_factory: sessionmaker[Session],
+) -> None:
+    closing = "I appeal $999.99, denied for the reason 'other'."
+    provider = StubProvider(_answer_with_closing(closing, ("E1", GOOD_QUOTE)))
+
+    with pytest.raises(DraftFactError) as raised:
+        _draft(session_factory, provider)
+
+    assert raised.value.problems == (
+        FactProblem(kind=FactProblemKind.AMOUNT_NOT_A_DENIED_LINE, paragraph_index=2),
+        FactProblem(kind=FactProblemKind.OTHER_AS_REASON, paragraph_index=2),
+    )
+    assert str(raised.value) == (
+        "the draft is refused by the fact check: amount_not_a_denied_line x1, other_as_reason x1"
+    )
+    # The call was made and paid for: it is recorded, and there is no second call.
+    assert len(provider.requests) == 1
+    assert _stored_calls(session_factory) == 1
+
+
+def test_a_draft_that_names_the_amounts_of_its_denied_line_passes_the_fact_check(
+    session_factory: sessionmaker[Session],
+) -> None:
+    closing = "Line 2 was allowed at $130.10 and paid $0, with no other reason given."
+    answer = _answer_with_closing(closing, ("E1", GOOD_QUOTE))
+
+    result = _draft(session_factory, StubProvider(answer))
+
+    assert result.letter.paragraphs[-1].text == closing
+
+
+def test_an_amount_or_the_word_other_inside_a_quote_alone_does_not_refuse_the_draft(
+    session_factory: sessionmaker[Session],
+) -> None:
+    evidence_text = "A made-up fee of $999.99 applies when the category is 'other' in the list."
+    quote = "fee of $999.99 applies when the category is 'other' in"
+
+    result = draft_appeal(
+        _gateway(session_factory, StubProvider(_answer(("E1", quote)))),
+        PROMPT,
+        _letter(),
+        [_match(0, evidence_text)],
+    )
+
+    assert result.letter.paragraphs[1].citations[0].quote == quote
+
+
+def test_a_draft_that_is_blocked_and_has_a_wrong_fact_is_reported_as_blocked(
+    session_factory: sessionmaker[Session],
+) -> None:
+    answer = _answer_with_closing("I appeal $999.99.")
+
+    with pytest.raises(DraftBlockedError):
+        _draft(session_factory, StubProvider(answer))
+
+
+def test_a_draft_with_a_placeholder_and_a_wrong_fact_is_reported_for_the_placeholder(
+    session_factory: sessionmaker[Session],
+) -> None:
+    answer = _answer_with_closing("I appeal $999.99. [Your Name]", ("E1", GOOD_QUOTE))
+
+    with pytest.raises(DraftPlaceholderError):
+        _draft(session_factory, StubProvider(answer))
+
+
 @pytest.mark.parametrize(
     ("answer", "stop_reason", "error_type"),
     [
         (GOOD_ANSWER, "length", DraftTruncatedError),
+        (
+            _answer_with_closing(
+                f"{PATIENT_NAME} wants to appeal the denial of $999.99", ("E1", GOOD_QUOTE)
+            ),
+            "stop",
+            DraftFactError,
+        ),
         (
             _answer_with_closing(f"[{PATIENT_NAME}] appeal the denial", ("E1", GOOD_QUOTE)),
             "stop",

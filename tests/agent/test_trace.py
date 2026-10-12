@@ -156,17 +156,28 @@ def test_there_are_five_end_states_and_none_means_approved_or_sent() -> None:
     ]
 
 
-def test_a_draft_fails_in_one_of_four_ways() -> None:
+def test_a_draft_fails_in_one_of_five_ways() -> None:
     assert [failure.value for failure in DraftFailure] == [
         "blocked",
         "cut_off",
         "not_parseable",
         "placeholder_text",
+        "fact_check",
     ]
 
 
-@pytest.mark.parametrize("agent_version", ["v1", "v2"])
-@pytest.mark.parametrize("failure", ["blocked", "cut_off", "not_parseable"])
+@pytest.mark.parametrize(
+    ("agent_version", "failure"),
+    [
+        *[
+            (agent_version, failure)
+            for agent_version in ("v1", "v2", "v3")
+            for failure in ("blocked", "cut_off", "not_parseable")
+        ],
+        # `placeholder_text` came with agent version `v3`.
+        ("v3", "placeholder_text"),
+    ],
+)
 def test_a_stored_trace_with_a_failure_value_from_before_still_reads_back(
     agent_version: str, failure: str
 ) -> None:
@@ -212,6 +223,24 @@ def test_a_trace_with_the_placeholder_failure_reads_back_from_its_json_values() 
     stored = trace.model_dump(mode="json")
 
     assert stored["drafting"]["failure"] == "placeholder_text"
+    assert AgentTrace.model_validate(stored) == trace
+
+
+def test_a_trace_with_the_fact_check_failure_reads_back_from_its_json_values() -> None:
+    trace = AgentTrace(
+        end_state=EndState.DRAFT_FAILED,
+        extraction=EXTRACTION,
+        rules=RULES,
+        drafting=DraftingStep(
+            status=StepStatus.FAILED,
+            prompt_version="v2",
+            failure=DraftFailure.FACT_CHECK,
+        ),
+    )
+
+    stored = trace.model_dump(mode="json")
+
+    assert stored["drafting"]["failure"] == "fact_check"
     assert AgentTrace.model_validate(stored) == trace
 
 

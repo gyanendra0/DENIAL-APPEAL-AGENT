@@ -50,6 +50,7 @@ from tests.drafting.helpers import (
     two_problem_answer,
     uncited_answer,
     weaken_second_chunk,
+    wrong_amount_answer,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -108,6 +109,7 @@ def test_each_claim_is_drafted_and_its_checked_letter_is_stored(
         failed_to_parse=0,
         stopped_for_length=0,
         refused_for_placeholder=0,
+        refused_for_fact_check=0,
         answered_by_fallback=0,
         stop_reason=None,
     )
@@ -295,6 +297,31 @@ def test_a_draft_with_placeholder_text_is_counted_apart_not_stored_and_the_run_g
 
     assert (summary.refused_for_placeholder, summary.drafted) == (1, 1)
     assert (summary.failed_to_parse, summary.blocked, summary.stopped_for_length) == (0, 0, 0)
+    assert (summary.not_tried, summary.stop_reason) == (0, None)
+    assert set(stored_drafts(factory)) == {CLAIM_2}
+
+    # The next run tries the refused claim again, and only that one.
+    again = StubProvider(good_answer)
+    second = _run(factory, again)
+
+    assert (second.already_drafted, second.drafted) == (1, 1)
+    assert [is_for(CLAIM_1)(request) for request in again.requests] == [True]
+
+
+def test_a_draft_refused_by_the_fact_check_is_counted_apart_not_stored_and_the_run_goes_on(
+    factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider(
+        lambda request: (
+            wrong_amount_answer(request) if is_for(CLAIM_1)(request) else good_answer(request)
+        )
+    )
+
+    summary = _run(factory, primary)
+
+    assert (summary.refused_for_fact_check, summary.drafted) == (1, 1)
+    assert (summary.refused_for_placeholder, summary.failed_to_parse) == (0, 0)
+    assert (summary.blocked, summary.stopped_for_length) == (0, 0)
     assert (summary.not_tried, summary.stop_reason) == (0, None)
     assert set(stored_drafts(factory)) == {CLAIM_2}
 

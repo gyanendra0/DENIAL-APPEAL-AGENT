@@ -1,10 +1,10 @@
 """Drafts one appeal letter from a denial letter's fields and the retrieved evidence.
 
 One model call per letter, through the LLM gateway. The answer is parsed into `AppealDraft`
-and then checked by the citation validator and for placeholder text. An answer that was cut
-off, is not JSON, does not fit the shape, fails the validator or holds text in square
-brackets is an error: nothing is repaired and no second call is made. Only a draft that
-passed comes back, as an `AppealLetter`.
+and then checked by the citation validator, for placeholder text and for wrong facts. An
+answer that was cut off, is not JSON, does not fit the shape, fails the validator, holds text
+in square brackets or states a wrong fact is an error: nothing is repaired and no second call
+is made. Only a draft that passed comes back, as an `AppealLetter`.
 
 Letter text, quotes, evidence text and the model's answer never appear in a log line or an
 error message; the one log line per call is the gateway's. Nothing here sends a letter
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.db.models import LlmProvider
 from src.drafting.citation_validator import CitationProblem, validate_citations
+from src.drafting.fact_check import FactProblem, find_fact_problems
 from src.drafting.placeholder_check import find_placeholder_paragraphs
 from src.drafting.prompts import DRAFTING_PURPOSE, DraftingPrompt
 from src.drafting.schemas import (
@@ -73,6 +74,16 @@ class DraftPlaceholderError(DraftingError):
         self.paragraph_indexes = paragraph_indexes
 
 
+class DraftFactError(DraftingError):
+    """The fact check found a wrong fact. `problems` holds every one of them."""
+
+    def __init__(self, problems: tuple[FactProblem, ...]) -> None:
+        counts = Counter(problem.kind.value for problem in problems)
+        summary = ", ".join(f"{kind} x{count}" for kind, count in sorted(counts.items()))
+        super().__init__(f"the draft is refused by the fact check: {summary}")
+        self.problems = problems
+
+
 class DraftResult(BaseModel):
     """One checked letter, and who produced it."""
 
@@ -94,9 +105,9 @@ def draft_appeal(
 
     Spends money and can take several seconds: it makes one model call through `gateway`.
     `matches` is the search result in its order; the model sees the first as `E1`. Raises
-    `DraftTruncatedError`, `DraftParseError`, `DraftBlockedError` or `DraftPlaceholderError`
-    when the answer cannot be used; the gateway's own errors (over budget, no provider
-    available) pass through.
+    `DraftTruncatedError`, `DraftParseError`, `DraftBlockedError`, `DraftPlaceholderError`
+    or `DraftFactError` when the answer cannot be used; the gateway's own errors (over
+    budget, no provider available) pass through.
     """
     result = gateway.complete(
         LlmRequest(
@@ -125,6 +136,9 @@ def draft_appeal(
     placeholder_paragraphs = find_placeholder_paragraphs(draft)
     if placeholder_paragraphs:
         raise DraftPlaceholderError(placeholder_paragraphs)
+    fact_problems = find_fact_problems(draft, letter)
+    if fact_problems:
+        raise DraftFactError(fact_problems)
     return DraftResult(
         letter=_cited_letter(draft, matches),
         provider=result.provider,

@@ -65,7 +65,7 @@ LLM_FALLBACK_KEYS = (
     "LLM_FALLBACK_OUTPUT_USD_PER_MTOK",
 )
 VALIDATION = ["--split", "validation", "--prompt-version", PROMPT_VERSION]
-HEADLINE = "selected claims (validation split, prompt v999, search question v2)"
+HEADLINE = "selected claims (validation split, prompt v999, search question v3)"
 
 
 class Stubs:
@@ -411,7 +411,7 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
 
     assert main(["--split", "validation"]) == 1
 
-    assert DRAFTING_PROMPT_VERSION == "v1"
+    assert DRAFTING_PROMPT_VERSION == "v2"
     assert stored_drafts(factory) == {}
 
 

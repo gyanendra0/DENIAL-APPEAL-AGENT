@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Stored with every model call as `LlmRequest.purpose`, and the name of the prompts' folder.
 DRAFTING_PURPOSE = "drafting"
-DRAFTING_PROMPT_VERSION = "v1"
+DRAFTING_PROMPT_VERSION = "v2"
 # Also keeps a version from pointing outside the prompt folder ("../..").
 VERSION_PATTERN = re.compile(r"v[0-9]+")
 PROMPT_FILE_NAME = "appeal_letter.txt"

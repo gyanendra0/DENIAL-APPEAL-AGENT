@@ -21,7 +21,9 @@ from src.drafting.citation_validator import CitationProblemKind
 from src.rules.verdict import RuleOutcome, RuleReason
 
 # `v2`: the evidence search drops a match below a minimum similarity.
-AGENT_VERSION = "v2"
+# `v3`: the search question `v3`, the drafting prompt `v2`, and a draft with placeholder text
+# is refused.
+AGENT_VERSION = "v3"
 
 
 class StepStatus(StrEnum):

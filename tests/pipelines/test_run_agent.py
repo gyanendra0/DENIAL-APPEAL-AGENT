@@ -68,7 +68,7 @@ LLM_FALLBACK_KEYS = (
 BEFORE_THE_DEADLINE = ["--rules-today", "2008-06-01"]
 AFTER_THE_DEADLINE = ["--rules-today", "2009-01-01"]
 VALIDATION = ["--split", "validation", "--prompt-version", PROMPT_VERSION, *BEFORE_THE_DEADLINE]
-HEADLINE = "selected claims (validation split, agent v2, drafting prompt v999)"
+HEADLINE = "selected claims (validation split, agent v3, drafting prompt v999)"
 SETTINGS_LINE = "  rules today 2008-06-01, amount floor $25, score threshold 0.30"
 
 
@@ -495,7 +495,7 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
 
     assert main(["--split", "validation", *BEFORE_THE_DEADLINE]) == 1
 
-    assert DRAFTING_PROMPT_VERSION == "v1"
+    assert DRAFTING_PROMPT_VERSION == "v2"
     assert stored_drafts(factory) == {}
     assert stored_runs(factory) == {}
 

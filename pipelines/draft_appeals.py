@@ -1,7 +1,7 @@
 """Draft a cited appeal letter for the denied claims of one dataset split.
 
 Usage:
-    python3 -m pipelines.draft_appeals --split test [--limit 50] [--prompt-version v1]
+    python3 -m pipelines.draft_appeals --split test [--limit 50] [--prompt-version v2]
 
 Run `pipelines.extract_documents` and `pipelines.embed_evidence_corpus` first: this command
 reads the extracted fields of each claim's denial letter and searches the embedded evidence.

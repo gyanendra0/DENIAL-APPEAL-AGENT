@@ -33,9 +33,9 @@ def _write(prompt_dir: Path, version: str, text: str) -> Path:
     return path
 
 
-def test_the_purpose_is_drafting_and_the_default_version_is_v1() -> None:
+def test_the_purpose_is_drafting_and_the_default_version_is_v2() -> None:
     assert DRAFTING_PURPOSE == "drafting"
-    assert DRAFTING_PROMPT_VERSION == "v1"
+    assert DRAFTING_PROMPT_VERSION == "v2"
 
 
 def test_loads_the_prompt_of_the_asked_version(tmp_path: Path) -> None:

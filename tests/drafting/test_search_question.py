@@ -4,6 +4,7 @@ from src.db.models import DenialReasonCategory
 from src.drafting.search_question import (
     MIN_EVIDENCE_SIMILARITY,
     SEARCH_PHRASES,
+    SEARCH_QUESTION_VERSION,
     build_search_question,
 )
 from src.rag.retrieval import HIGHEST_SIMILARITY, LOWEST_SIMILARITY
@@ -17,7 +18,8 @@ def test_every_denial_reason_category_has_its_own_phrase() -> None:
 def test_the_phrases_are_the_decided_ones() -> None:
     # A change to a phrase needs a new version: stored drafts name the wording they used.
     # These are the `v3` phrases: `other`, `noncovered` and `medical_necessity` are new, the
-    # other three are those of `v1`. The version constant follows with the other versions.
+    # other three are those of `v1`.
+    assert SEARCH_QUESTION_VERSION == "v3"
     assert {category.value: phrase for category, phrase in SEARCH_PHRASES.items()} == {
         "noncovered": (
             "services excluded from Medicare coverage and the exceptions to the exclusions"

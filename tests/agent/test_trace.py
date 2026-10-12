@@ -31,8 +31,8 @@ RULES = RulesStep(
 )
 
 
-def test_the_agent_version_is_v2() -> None:
-    assert AGENT_VERSION == "v2"
+def test_the_agent_version_is_v3() -> None:
+    assert AGENT_VERSION == "v3"
 
 
 def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
@@ -86,6 +86,60 @@ def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
     assert trace.agent_version == "v1"
     assert trace.retrieval.min_similarity is None
     assert trace.retrieval.matches[0].similarity == 0.45
+
+
+def test_a_stored_trace_of_agent_version_v2_still_reads_back() -> None:
+    # What a `v2` loop stored: a minimum similarity, and a failure from before `placeholder_text`.
+    stored = {
+        "end_state": "draft_failed",
+        "agent_version": "v2",
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+            "reasons": [],
+        },
+        "scoring": {
+            "status": "done",
+            "feature_version": "v1",
+            "model_version": "v1",
+            "score": 0.75,
+            "threshold": 0.3,
+        },
+        "retrieval": {
+            "status": "done",
+            "search_question_version": "v2",
+            "embedding_model": "example-embedding-model",
+            "min_similarity": 0.55,
+            "matches": [
+                {
+                    "source": "cms_ncd",
+                    "source_document_id": "1",
+                    "chunk_index": 0,
+                    "text_sha256": MADE_UP_HASH,
+                    "similarity": 0.6,
+                }
+            ],
+        },
+        "drafting": {
+            "status": "failed",
+            "prompt_version": "v1",
+            "provider": None,
+            "model_name": None,
+            "cited_paragraphs": None,
+            "failure": "not_parseable",
+            "problem_kinds": [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.agent_version == "v2"
+    assert trace.retrieval.min_similarity == 0.55
+    assert trace.drafting.failure is DraftFailure.NOT_PARSEABLE
 
 
 def test_a_step_is_done_stopped_failed_or_not_run() -> None:

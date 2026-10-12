@@ -21,9 +21,8 @@ from src.db.models import DenialReasonCategory
 
 # Names the phrases below, what else goes into the question and the minimum similarity. Stored
 # with every draft. `v2` added the minimum; the phrases and the codes were those of `v1`.
-# The phrases below are already those of `v3` (three new ones, no procedure codes). The constant
-# becomes `v3` together with the prompt and agent versions; no real run may happen before that.
-SEARCH_QUESTION_VERSION = "v2"
+# `v3`: new phrases for `other`, `noncovered` and `medical_necessity`, and no procedure codes.
+SEARCH_QUESTION_VERSION = "v3"
 SEARCH_PHRASES: Mapping[DenialReasonCategory, str] = {
     DenialReasonCategory.NONCOVERED: (
         "services excluded from Medicare coverage and the exceptions to the exclusions"

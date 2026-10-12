@@ -54,6 +54,8 @@ OPENING_TEXT = "I am writing to appeal the denial of this made-up claim."
 POLICY_TEXT = "The determination covers the widget that was ordered."
 ABSENT_QUOTE = "This sentence is in no evidence text at all."
 CLOSING_WITH_PLACEHOLDER = "Sincerely, [Your Name]"
+# No denied line of the made-up letter has this amount.
+TEXT_WITH_A_WRONG_AMOUNT = "I appeal the made-up amount of $999.99."
 # What one drafted claim costs with the stubs: the question's embedding and the letter.
 CLAIM_COST = CALL_COST + EMBEDDING_COST
 EVIDENCE_DOCUMENT_ID = "1"
@@ -105,6 +107,11 @@ def two_problem_answer(request: LlmRequest) -> str:
 def placeholder_answer(request: LlmRequest) -> str:
     """A letter with a blank to fill in: the placeholder check refuses it."""
     return _answer({"kind": "other", "text": CLOSING_WITH_PLACEHOLDER, "citations": []})
+
+
+def wrong_amount_answer(request: LlmRequest) -> str:
+    """A letter with a dollar amount no denied line has: the fact check refuses it."""
+    return _answer({"kind": "other", "text": TEXT_WITH_A_WRONG_AMOUNT, "citations": []})
 
 
 def is_for(claim_id: str) -> Callable[[LlmRequest], bool]:

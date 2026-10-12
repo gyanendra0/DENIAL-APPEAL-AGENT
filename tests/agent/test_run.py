@@ -37,6 +37,7 @@ from tests.drafting.helpers import (
     stored_drafts,
     two_problem_answer,
     uncited_answer,
+    wrong_amount_answer,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -261,6 +262,29 @@ def test_a_claim_refused_for_placeholder_text_is_counted_and_taken_again_by_the_
     )
     assert first.end_states == _counts(draft_failed=1, needs_review=1)
     assert first.draft_failures == {DraftFailure.PLACEHOLDER_TEXT.value: 1}
+    assert set(stored_drafts(factory)) == {CLAIM_2}
+
+    primary = StubProvider(good_answer)
+    second = _run(factory, primary)
+
+    assert (second.already_finished, second.end_states) == (1, _counts(needs_review=1))
+    assert [is_for(CLAIM_1)(request) for request in primary.requests] == [True]
+    assert set(stored_drafts(factory)) == {CLAIM_1, CLAIM_2}
+
+
+def test_a_claim_refused_by_the_fact_check_is_counted_and_taken_again_by_the_next_run(
+    factory: sessionmaker[Session],
+) -> None:
+    first = _run(
+        factory,
+        StubProvider(
+            lambda request: (
+                wrong_amount_answer(request) if is_for(CLAIM_1)(request) else good_answer(request)
+            )
+        ),
+    )
+    assert first.end_states == _counts(draft_failed=1, needs_review=1)
+    assert first.draft_failures == {DraftFailure.FACT_CHECK.value: 1}
     assert set(stored_drafts(factory)) == {CLAIM_2}
 
     primary = StubProvider(good_answer)

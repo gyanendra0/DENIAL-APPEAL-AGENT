@@ -67,6 +67,7 @@ from tests.drafting.helpers import (
     two_problem_answer,
     uncited_answer,
     weaken_second_chunk,
+    wrong_amount_answer,
 )
 from tests.extraction.helpers import (
     CLAIM_1,
@@ -422,6 +423,21 @@ def test_a_draft_with_placeholder_text_fails_with_its_own_value_and_stores_nothi
         status=StepStatus.FAILED,
         prompt_version=PROMPT_VERSION,
         failure=DraftFailure.PLACEHOLDER_TEXT,
+    )
+    assert stored_drafts(factory) == {}
+
+
+def test_a_draft_refused_by_the_fact_check_fails_with_its_own_value_and_stores_nothing(
+    factory: sessionmaker[Session],
+) -> None:
+    trace = _run(factory, StubProvider(wrong_amount_answer))
+
+    assert trace.end_state is EndState.DRAFT_FAILED
+    assert trace.retrieval.status is StepStatus.DONE
+    assert trace.drafting == DraftingStep(
+        status=StepStatus.FAILED,
+        prompt_version=PROMPT_VERSION,
+        failure=DraftFailure.FACT_CHECK,
     )
     assert stored_drafts(factory) == {}
 

@@ -1,7 +1,7 @@
 """Draft a cited appeal letter for the denied claims of one dataset split.
 
 Usage:
-    python3 -m pipelines.draft_appeals --split test [--limit 50] [--prompt-version v2]
+    python3 -m pipelines.draft_appeals --split test [--limit 50] [--prompt-version v3]
 
 Run `pipelines.extract_documents` and `pipelines.embed_evidence_corpus` first: this command
 reads the extracted fields of each claim's denial letter and searches the embedded evidence.
@@ -151,6 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  failed to parse: {summary.failed_to_parse}")
     print(f"  stopped for length: {summary.stopped_for_length}")
     print(f"  refused for placeholder text: {summary.refused_for_placeholder}")
+    print(f"  refused by the fact check: {summary.refused_for_fact_check}")
     print(f"  answered by the fallback: {summary.answered_by_fallback}")
     print(f"  denied claims of the split left out (no current letter extraction): {left_out}")
     print(f"  time: {seconds:.0f} s")

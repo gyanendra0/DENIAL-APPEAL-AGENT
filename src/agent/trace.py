@@ -23,7 +23,9 @@ from src.rules.verdict import RuleOutcome, RuleReason
 # `v2`: the evidence search drops a match below a minimum similarity.
 # `v3`: the search question `v3`, the drafting prompt `v2`, and a draft with placeholder text
 # is refused.
-AGENT_VERSION = "v3"
+# `v4`: the drafting prompt `v3`, a message to the model without the claim totals, and a
+# draft with a wrong dollar amount or "other" given as the reason is refused.
+AGENT_VERSION = "v4"
 
 
 class StepStatus(StrEnum):
@@ -40,6 +42,7 @@ class DraftFailure(StrEnum):
     CUT_OFF = "cut_off"  # the answer reached the output limit
     NOT_PARSEABLE = "not_parseable"  # the answer is not JSON or does not fit a draft
     PLACEHOLDER_TEXT = "placeholder_text"  # a paragraph holds text in square brackets
+    FACT_CHECK = "fact_check"  # a wrong dollar amount, or "other" given as the reason
 
 
 class ExtractionStep(BaseModel):

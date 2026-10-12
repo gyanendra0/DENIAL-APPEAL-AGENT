@@ -48,8 +48,8 @@ class AgentRunSummary(BaseModel):
     """What one run did with the claims it was given.
 
     `end_states` counts the traces this run stored, by end state value. Of the `draft_failed`
-    ones, `draft_failures` says how many drafts were blocked, cut off or not parseable, and
-    `rules_failed` how many claims got no rules verdict. `stop_reason` is None when every
+    ones, `draft_failures` says how many drafts failed in each way (a `DraftFailure` value),
+    and `rules_failed` how many claims got no rules verdict. `stop_reason` is None when every
     claim was looked at; otherwise it says why the run ended early, and `not_tried` claims
     are left for the next run.
     """

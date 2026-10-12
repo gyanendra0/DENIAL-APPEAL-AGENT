@@ -670,9 +670,11 @@ embeddings, with the same chunk hashes and the same embedding rows.
 
 **What the chapters cover.** Chapters 15 and 16 are about `noncovered` and
 `medical_necessity` denials, chapters 29 and 30 about the appeal itself and about who is
-liable. Nothing in them is about `coordination_of_benefits`; that is the Medicare Secondary
+liable. Almost nothing in them is about `coordination_of_benefits` (one section of chapter
+16 is about a patient with other health coverage); that is the Medicare Secondary
 Payer manual (publication 100-05), which is not loaded. Whether a passage of these chapters
-is found for a real claim is not measured here (03-architecture.md 3.13, "Known limits").
+is found for a claim of the sample was measured later, with search question `v3`: every
+draft of the loop run of 2026-10-12 cites one (03-architecture.md 3.17).
 
 ## 2.4 Layer C — generated documents
 
@@ -1637,7 +1639,7 @@ check. One draft cost about $0.0005 and took about 5 seconds.
 |---|---|---|
 | `--split` | none, required | `train`, `validation` or `test`: the split whose denied claims are drafted |
 | `--limit` | all of them | Only the first this many claims, in claim id order, so the same limit always means the same claims |
-| `--prompt-version` | `v1` | The version of the drafting prompt |
+| `--prompt-version` | `v2` | The version of the drafting prompt. `v1` is still on disk and can be named |
 
 Only a denied claim whose denial letter has a current extraction is selected, and `--limit`
 counts only those. The command prints how many denied claims of the split were left out.
@@ -1647,15 +1649,23 @@ of at least 0.55 (the constant `MIN_EVIDENCE_SIMILARITY`), at most 5. A claim wi
 passage is still drafted, with no evidence, and its letter has no citation. Why 0.55 is in
 03-architecture.md 3.15.
 
+Since search question `v3` the question is one fixed phrase for the letter's denial reason,
+with no procedure codes, so every claim with the same reason gets the same passages. Since
+drafting prompt `v2` a draft with text in square brackets, such as `[Your Name]`, is
+refused. Both are described in 03-architecture.md 3.15.
+
 Each checked letter is saved as soon as it arrives. A claim that already has a draft of the
 prompt version is skipped, so after exit code 1 the same command continues where the run
-stopped. A draft that the citation check blocks, and an answer that cannot be used, is
-counted and **nothing is stored for it**; the run goes on. Such a claim is tried again by
+stopped. A draft that the citation check blocks, a draft with placeholder text, and an
+answer that cannot be used, is counted and **nothing is stored for it**; the run goes on.
+Such a claim is tried again by
 the next run. So a run drafts 0 claims and spends $0 once every selected claim has a draft,
 which can take more than two runs.
 
-The output of the first run, on 2026-10-11, with search question `v1` (no minimum). The
-first line now ends with `search question v2`; this command has not been run with `v2`:
+The output of the first run, on 2026-10-11, with drafting prompt `v1` and search question
+`v1` (no minimum). **This command has not been run since.** Today its first line ends with
+`prompt v2, search question v3`, and one more line, `refused for placeholder text: N`,
+follows `stopped for length`:
 
 ```text
 drafted 46 of 50 selected claims (test split, prompt v1, search question v1)
@@ -1688,9 +1698,11 @@ a person to review. Nothing is sent anywhere.
 | 1 | The run stopped early (the monthly budget is reached, no provider could answer, a provider refused the request, the evidence has no embedding, or the answer to a search cannot be used), or the split has no denied claim with a current letter extraction |
 | 2 | A bad argument, a prompt version with no prompt file included |
 
-Run it again after a new drafting prompt version. A claim keeps its old draft when its
-letter document, the evidence corpus or the search question version changes; what that
-means is in the known limits of 03-architecture.md 3.15.
+Run it again after a new drafting prompt version: it then writes a new draft beside the old
+one. With today's default `v2` it would draft every selected claim again, because the 79
+stored drafts of this command and of the earlier loop runs are of prompt `v1`. A claim
+keeps its old draft when its letter document, the evidence corpus or the search question
+version changes; what that means is in the known limits of 03-architecture.md 3.15.
 
 ### Running the agent loop
 
@@ -1719,7 +1731,7 @@ seconds. A claim the rules or the threshold stop costs nothing.
 | `--split` | none, required | `train`, `validation` or `test`: the split whose denied claims are taken |
 | `--rules-today` | none, required | The date the rules take as "today", as `YYYY-MM-DD`. There is no default because the rules never read the clock, and with the real date every made-up deadline has passed |
 | `--limit` | all of them | Only the first this many claims, in claim id order, so the same limit always means the same claims |
-| `--prompt-version` | `v1` | The version of the drafting prompt |
+| `--prompt-version` | `v2` | The version of the drafting prompt. `v1` is still on disk and can be named |
 
 Only a denied claim whose denial letter has a current extraction is selected, and `--limit`
 counts only those. The command prints how many denied claims of the split were left out.
@@ -1732,7 +1744,7 @@ Every claim ends in one of five end states, and every one of them is a stop for 
 | `needs_review_no_draft` | The rules sent the claim to a person; no draft |
 | `stopped_by_rules` | The rules closed the claim; no draft |
 | `below_threshold` | The score is under the threshold; no draft |
-| `draft_failed` | A step could not give an answer for this claim (the draft was blocked, cut off or could not be parsed, or the rules gave no verdict); no draft |
+| `draft_failed` | A step could not give an answer for this claim (the draft was blocked, cut off, could not be parsed or held placeholder text, or the rules gave no verdict); no draft |
 
 Each trace is saved in `agent_runs` as soon as its claim is done. A claim whose trace ended
 in one of the first four end states is skipped by a later run and costs nothing, so after
@@ -1745,8 +1757,13 @@ or `--prompt-version` changes. Only a new agent version takes every claim again.
 
 Since agent `v2` the search keeps only passages with a similarity of at least 0.55, at most
 5, as in the drafting command above. A claim with no such passage is still drafted, with no
-evidence, and ends as `needs_review` with a letter that has no citation. Its new draft
-replaces the one the claim had, because the drafting prompt version is the same.
+evidence, and ends as `needs_review` with a letter that has no citation. A new draft
+replaces the one the claim had for the same drafting prompt version.
+
+Since agent `v3` the loop uses search question `v3` (one fixed phrase per denial reason, no
+procedure codes) and drafting prompt `v2`, and a draft with text in square brackets ends as
+`draft_failed` with the failure `placeholder_text`. Its drafts are stored beside the
+drafts of prompt `v1`; nothing is written over.
 
 The output of the first run, on 2026-10-11, with agent `v1` (no minimum):
 
@@ -1781,6 +1798,37 @@ citation), 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold
 `draft_failed`, in 230 seconds for $0.019025; $0.780622 of the $3.00 monthly budget was
 then used. A second run took 0 of 120 claims and spent $0.000000. The other figures are in
 03-architecture.md 3.17.
+
+The output of the first `v3` run, on 2026-10-12, with `--limit 120`. It took all 120 claims
+again:
+
+```text
+ran the agent loop for 120 of 120 selected claims (test split, agent v3, drafting prompt v2)
+  rules today 2010-01-01, amount floor $25, score threshold 0.30
+  finished before this run: 0
+  needs_review: 47
+    drafted with at least one citation: 47
+  needs_review_no_draft: 15
+  stopped_by_rules: 48
+  below_threshold: 1
+  draft_failed: 9
+    blocked: 8
+    cut_off: 1
+    not_parseable: 0
+    placeholder_text: 0
+    no rules verdict: 0
+  answered by the fallback: 0
+  denied claims of the split left out (no current letter extraction): 10
+  time: 314 s
+  spent $0.035382 in this run; $0.822302 of the $3.00 monthly budget is used
+```
+
+A second run took the 9 failed claims again in 53 seconds for $0.005517: 7 ended as
+`needs_review` and 2 were blocked again. $0.827819 of the $3.00 monthly budget was then
+used. **No third run was made**, so 2 claims are still `draft_failed`, and the next run
+would take those 2 again and pay for them. After the two runs: 54 `needs_review` (all 54
+drafted with at least one citation), 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1
+`below_threshold`, 2 `draft_failed`. The other figures are in 03-architecture.md 3.17.
 
 The report prints counts only: no letter text, no document text and no extracted value.
 Nothing is sent anywhere.
@@ -1833,7 +1881,12 @@ version, the draft is stored, and the denial letter document stored now is the o
 draft was built from.
 
 **A new measurement needs a new folder.** The second measurement was exported with
-`--out-dir data/review/v2`, so the files of the first stay as they are.
+`--out-dir data/review/v2` and the third with `--out-dir data/review/v3`, so the files of
+the earlier ones stay as they are.
+
+**Only the newest measurement can be scored.** Both steps read the drafts of the current
+agent version and drafting prompt version (today agent `v3`, prompt `v2`). So `score` on a
+score file of the first or second measurement is refused. Those files stay readable.
 
 The output of the first export on 2026-10-11, with agent `v1`:
 
@@ -1907,6 +1960,48 @@ model, which knew the first result.
 
 The first measurement's score file can no longer be scored with the command: the agent
 loop ran again and wrote every one of its drafts anew, so `score` refuses each row.
+
+The third measurement, on 2026-10-12, after the manual chapters, search question `v3` and
+drafting prompt `v2` (agent `v3`). The output of `export`:
+
+```text
+exported 30 of 54 drafts that can be reviewed (seed 42, agent v3, drafting prompt v2)
+  with at least one citation: 30
+  left out, the denial letter changed after the draft: 0
+  file to read: data/review/v3/review_drafts.md
+  file to fill in: data/review/v3/review_scores.csv
+```
+
+The output of `score`:
+
+```text
+scored 30 drafts (acceptance target 60.00%)
+  accept: 2
+  accept_light_edits: 15
+  reject: 13
+    wrong_fact: 8
+    no_policy_argument: 1
+    citation_does_not_fit: 4
+    poor_wording: 0
+    other: 0
+  acceptance share: 17 of 30 (56.67%), below the target
+  drafts with a citation: 17 of 30 (56.67%)
+  drafts without a citation: 0 of 0 (n/a)
+```
+
+It exited with 1: **the share is below the 60% target.** Three things must be read with
+this number:
+
+- **A model gave these 30 verdicts too, not a person.** It was the same model, and it knew
+  both earlier results.
+- **The rubric was read in a new, easier way for one kind of letter.** When the denial
+  gives no specific reason, a letter that says so, cites the right to a redetermination
+  and asks for the reason and a second look was accepted. The first two measurements
+  would have rejected it. The same model wrote that reading and the prompt rule that
+  fits it. With the earlier reading the share is 10 of 30 (33.33%).
+- **The number is not firm.** A stricter reading of the `noncovered` letters gives 7 of 30
+  (23.33%) and a lenient reviewer up to 21 of 30 (70.00%). Why is in 03-architecture.md
+  3.17.
 
 Both steps print counts and shares only: no letter text, no document text and no extracted
 value. Nothing is sent anywhere.

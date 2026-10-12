@@ -1329,13 +1329,15 @@ About what the corpus can support:
   the policy text itself names it.
 - The manual text is the version current in 2026 too, with sections revised between 2003
   and 2026. The same gap to the 2008 to 2010 claims holds.
-- Nothing loaded is about `coordination_of_benefits`. That is the Medicare Secondary Payer
-  manual (publication 100-05), which is not loaded.
-- **Whether a manual passage is found for a real claim is not measured.** The question the
-  drafting step builds from a claim (3.15) was not changed, and it asks about coverage of a
-  service, not about appeal rights or liability. A passage is shown to the model only at a
-  similarity of 0.55 or more, and no run on real claims has been made since the chapters
-  were loaded. The search check in 3.14 uses hand-made questions, not claims.
+- Almost nothing loaded is about `coordination_of_benefits`. That is the Medicare Secondary
+  Payer manual (publication 100-05), which is not loaded.
+- When the chapters were loaded it was not known whether a manual passage is found for a
+  claim of the sample. It is since search question `v3` (3.15): in the loop run of
+  2026-10-12 every one of the 54 drafts cites a manual passage, with a similarity of at
+  least 0.6295 (3.17). One of the cited sections, `100-02-16-40.3`, is about a patient with
+  other health coverage, so the chapters do hold a little on `coordination_of_benefits`.
+  The passages are general rules for a denial reason, the same for every claim with that
+  reason; none is about the denied service.
 
 About the text:
 
@@ -1781,15 +1783,16 @@ they let through.
 |---|---|
 | `src/drafting/schemas.py` | The draft as the model answers it (`AppealDraft`, `DraftParagraph`, `DraftCitation`), the checked letter (`AppealLetter`, `LetterParagraph`, `Citation`) and `evidence_label(position)` |
 | `src/drafting/citation_validator.py` | `validate_citations(draft, matches)`, its answer `CitationCheck`, the four problem kinds and `MIN_QUOTE_CHARACTERS` |
-| `src/drafting/search_question.py` | `build_search_question(category, procedure_codes)`, `SEARCH_PHRASES`, `SEARCH_QUESTION_VERSION` and `MIN_EVIDENCE_SIMILARITY` |
+| `src/drafting/search_question.py` | `build_search_question(category)`, `SEARCH_PHRASES`, `SEARCH_QUESTION_VERSION` and `MIN_EVIDENCE_SIMILARITY` |
+| `src/drafting/placeholder_check.py` | `find_placeholder_paragraphs(draft)` and `PLACEHOLDER_PATTERN`: finds text in square brackets |
 | `src/drafting/prompts.py` | `load_drafting_prompt(prompt_dir, version)` and the default prompt version |
-| `src/drafting/drafter.py` | `draft_appeal(gateway, prompt, letter, matches)`, its result and its three errors |
+| `src/drafting/drafter.py` | `draft_appeal(gateway, prompt, letter, matches)`, its result and its four errors |
 | `src/drafting/store.py` | Reads the claims that can be drafted; saves rows of `appeal_drafts` |
 | `src/drafting/run.py` | `run_drafting(...)`: many claims, one at a time, each checked letter saved as it arrives |
 | `src/db/models.py` | `StoredAppealDraft`, the table `appeal_drafts` |
 | `src/db/migrations/versions/rev_0012_appeal_drafts.py` | Migration 0012: the table; the downgrade drops it |
 | `pipelines/draft_appeals.py` | The command ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
-| `config/prompts/drafting/<version>/appeal_letter.txt` | The prompt |
+| `config/prompts/drafting/<version>/appeal_letter.txt` | The prompt. Two versions are on disk, `v1` and `v2`; both can be loaded |
 
 The database model is named `StoredAppealDraft` because `AppealDraft` is already the name
 of the Pydantic shape of the model's answer.
@@ -1798,7 +1801,7 @@ of the Pydantic shape of the model's answer.
 
 1. Read the extracted fields of the claim's denial letter (the `document_extractions` row
    of extraction prompt `v2`, 3.9).
-2. Build the search question from the denial reason and the procedure codes.
+2. Build the search question: the fixed phrase of the letter's denial reason.
 3. Search the evidence with `search_evidence` (3.14) and keep at most 5 results, each with
    a similarity of at least 0.55 (see "The search question" below). This is one small paid
    embedding call. The search may return fewer than 5 results, or none.
@@ -1806,10 +1809,12 @@ of the Pydantic shape of the model's answer.
    call. It is made also when there is no result.
 5. Parse the answer into the draft shape.
 6. Run the citation validator on the draft and the same results.
-7. Turn each label into the four citation fields and store the checked letter.
+7. Look for placeholder text, which is text in square brackets (see "A draft that cannot be
+   used" below).
+8. Turn each label into the four citation fields and store the checked letter.
 
-Steps 4 to 6 are `draft_appeal`. Its docstring says it spends money. A failure at step 4, 5
-or 6 ends the work on this claim: nothing is repaired and the model is not called a second
+Steps 4 to 7 are `draft_appeal`. Its docstring says it spends money. A failure at step 4, 5,
+6 or 7 ends the work on this claim: nothing is repaired and the model is not called a second
 time.
 
 ### What the model is given
@@ -1828,10 +1833,56 @@ The model is **not** given the raw text of any document, the clinical note, the
 prior-authorisation record, the rules verdict or the win score.
 
 The system message is the prompt file. It is read from the folder in settings, and its
-version (`v1`, the constant `DRAFTING_PROMPT_VERSION`) is stored with every draft and with
-every spend row. The prompt holds no secret. It tells the model to write a policy paragraph
-only when a passage supports the appeal of this claim, and otherwise to write the letter
-with `other` paragraphs only.
+version (the constant `DRAFTING_PROMPT_VERSION`, today `v2`) is stored with every draft and
+with every spend row. The prompt holds no secret. It tells the model to write a policy
+paragraph only when a passage supports the appeal of this claim, and otherwise to write the
+letter with `other` paragraphs only.
+
+| Prompt version | Means |
+|---|---|
+| `v1` | The answer shape, the two kinds of paragraph, the quote rule and a short list of rules for the letter |
+| `v2` | The `v1` text as the base, plus fourteen rules against the faults the second review found (3.17). Today's version |
+
+The fourteen rules that `v2` adds, in the four groups of the prompt file:
+
+| Group | Rule |
+|---|---|
+| Kinds | A `policy` paragraph also says, in the model's own words, what the quoted rule means for this claim. A quote alone is not a paragraph. The rule gives one example: "the denial names no exclusion, and the quoted rule says that each exclusion must be analysed" |
+| Evidence | The evidence was found by a search for the general rule behind the denial reason; a passage is used only when it supports the appeal of this claim |
+| Evidence | A passage that is a sample letter or a sample notice is not a rule and is never cited |
+| Facts | Only the values of `denial_letter` are used for names, numbers, dates, codes and amounts; a value that is null or missing is left out, never made up |
+| Facts | No address block, no date line, no subject line, no text in square brackets and no blank to fill in later |
+| Facts | No fact is added about the care, about what the provider did or about what anyone said |
+| Facts | Each appealed line is named with its own procedure code, its own two amounts and its own reason |
+| Facts | The two claim totals are called claim totals and are never given as the amount of one service line |
+| Facts | A category value such as `other` is never written in the letter; the prompt gives plain words for each of the six reasons |
+| Letter | The letter is written for the patient, in the first person, and ends with the patient's name as the signature |
+| Letter | The opening names the payer, the claim number, the reference number, the patient and the member id |
+| Letter | The letter argues against the reason the denial gives and against no other reason |
+| Letter | For an `other` denial the letter says that the denial names no specific reason, asks the payer to state it, asks for the claim to be reviewed again, and cites the right to a review when a passage gives it |
+| Letter | The letter does not say that the denial is justified and does not ask the payer to send documents |
+
+The plain words for the six reasons are the ones the made-up denial letters use
+(`REASON_WORDING` in `src/synth/denial_letter.py`), and a test keeps the two equal.
+
+**The rule for an `other` denial was written to fit how the drafts are judged.** It was added on
+2026-10-12, after the reading of the rubric for an `other` letter had been fixed (3.17) and
+before any draft was written with `v2`. So the prompt tells the model to write the very
+letter that reading accepts. The `v2` file was changed in place for it, because no `v2`
+draft existed yet.
+
+**The example in the first rule is the argument most accepted letters make.** It was
+written after the trial searches had shown the passage it describes (the manual's sentence
+that each payment exclusion must be analysed). All 10 accepted `noncovered` letters of the
+third review use that sentence in that way (3.17). So that argument is the prompt's, not
+one the drafting model found on its own.
+
+Issue #53 planned ten rules. The count here is fourteen because it is taken from the
+prompt file: the three letter rules on the voice, the opening and what the letter must not
+say are counted one by one, and the rule for an `other` denial was added later.
+
+A prompt rule only asks. Of the fourteen, one is also checked in code: text in square
+brackets.
 
 Every drafting call is recorded in `llm_calls` with the purpose `drafting`. The output
 limit is 1,500 tokens (`DRAFTING_MAX_OUTPUT_TOKENS`).
@@ -1839,17 +1890,33 @@ limit is 1,500 tokens (`DRAFTING_MAX_OUTPUT_TOKENS`).
 ### The search question
 
 A denial letter holds a reason category and procedure codes. It holds no words about the
-service. So the question is one fixed phrase for the category, followed by the codes:
+service. So the question is one fixed phrase for the category, and nothing else:
 
-```text
-Medicare coverage of the item or service and the conditions under which it is covered. Procedure codes: <code>, <code>.
-```
+| Denial reason | The question | Since |
+|---|---|---|
+| `noncovered` | services excluded from Medicare coverage and the exceptions to the exclusions | `v3` |
+| `medical_necessity` | services that are not reasonable and necessary for the diagnosis or treatment of illness or injury and limitation on liability for such a denial | `v3` |
+| `other` | how to appeal a denied claim: the right to request a redetermination of an initial determination | `v3` |
+| `duplicate` | duplicate claim for the same service | `v1` |
+| `benefits_exhausted` | frequency limits and the number of covered services | `v1` |
+| `coordination_of_benefits` | Medicare as secondary payer and coverage by another insurer | `v1` |
 
-The phrases are the named constant `SEARCH_PHRASES`, one for each of the six denial reason
-categories. A letter whose reason is unknown gets the phrase of `other`. Each code is added
-once; with no code the question is the phrase alone.
+The phrases are the named constant `SEARCH_PHRASES`. A letter whose reason is unknown gets
+the phrase of `other`.
 
-`build_search_question` is pure: no model call, no database.
+`build_search_question(category)` is pure: no model call, no database.
+
+**The phrases ask for a general rule, not for the service.** The three new ones were written
+to reach the CMS manual chapters (3.13): what is excluded and when an exclusion does not
+apply, what "not reasonable and necessary" means, and the right to a second look. So
+**every claim with the same denial reason asks the same question and gets the same
+passages.**
+
+**The procedure codes are no longer in the question.** Up to `v2` the codes of the denied
+lines followed the phrase. A code tells the search nothing: 0 of the 66 distinct codes of
+the 55 claims measured on 2026-10-11 appear in the evidence text. In the trial searches of
+2026-10-12, adding one claim's codes to a phrase lowered its best similarity by 0.04 to
+0.08.
 
 **The minimum similarity.** The search always has a best match, also when nothing in the
 corpus is about the claim. So the caller passes `MIN_EVIDENCE_SIMILARITY` (0.55) to
@@ -1859,17 +1926,33 @@ holds it. Both callers pass it: the agent loop (3.16) and the command of this se
 
 **A claim with no match is still drafted.** The model is called with an empty evidence
 list, and the prompt tells it to write `other` paragraphs only. Such a letter has no
-citation, passes the validator and is stored. In the measured run this was 41 of the 56
-drafted claims (3.17).
+citation, passes the validator and is stored. With search question `v2` this was 41 of the
+56 drafted claims; with `v3` it was none of the 54 (3.17).
 
-`SEARCH_QUESTION_VERSION` names how the search is asked: the phrases, the way the codes are
-added, and the minimum. A change to any of them changes what a search finds, so it needs a
-new version. The version is stored with every draft.
+`SEARCH_QUESTION_VERSION` names how the search is asked: the phrases, what else goes into
+the question, and the minimum. A change to any of them changes what a search finds, so it
+needs a new version. The version is stored with every draft.
 
 | Version | Means |
 |---|---|
-| `v1` | The six phrases and the codes; no minimum, the top 5 results whatever their score |
-| `v2` | The same question text; a result must have a similarity of at least 0.55. Today's version |
+| `v1` | The six first phrases and the codes; no minimum, the top 5 results whatever their score |
+| `v2` | The same question text; a result must have a similarity of at least 0.55 |
+| `v3` | New phrases for `noncovered`, `medical_necessity` and `other`; no procedure codes; the minimum stays 0.55. Today's version |
+
+**How the three new phrases were chosen.** From 26 trial searches on 2026-10-12 (26 query
+embeddings, $0.000026), against the two evidence sources together. They were picked, not
+tuned: no set of questions with a known right answer was used.
+
+| Denial reason | Best similarity of the new phrase | Of the phrase before it |
+|---|---|---|
+| `other` | 0.7124 | 0.5108, below the minimum, so no evidence |
+| `noncovered` | 0.6966 | 0.6000 |
+| `medical_necessity` | 0.6615 | 0.6634, but its best match was a coverage determination that does not fit |
+| `coordination_of_benefits` (phrase unchanged) | 0.8044 | the same |
+| `duplicate` (phrase unchanged) | 0.3895, nothing reaches the minimum | the same |
+| `benefits_exhausted` (phrase unchanged) | 0.5129, nothing reaches the minimum | the same |
+
+These were measured without procedure codes.
 
 The value 0.55 is a **judgement**, not a measurement of what fits. It was set on 2026-10-11
 from two small sets of scores, which overlap:
@@ -1880,7 +1963,8 @@ from two small sets of scores, which overlap:
 | The expected determination of the 19 correct hits of the search check (3.14) | 0.5224 to 0.7802, median 0.6213 | 17 of 19 |
 
 Of the 28 citations in the 55 drafts of search question `v1`, 10 had a similarity of at
-least 0.55.
+least 0.55. Both sets were measured with the `v1` question text, before the manual chapters
+were loaded; the minimum was not looked at again for `v3`.
 
 ### The output shape
 
@@ -1944,20 +2028,40 @@ nothing to cite.
 
 ### A draft that cannot be used
 
-`draft_appeal` returns a checked letter or raises one of three errors:
+`draft_appeal` returns a checked letter or raises one of four errors:
 
 | Error | Raised when |
 |---|---|
 | `DraftTruncatedError` | The answer reached the output limit before it was complete |
 | `DraftParseError` | The answer is not JSON, or does not fit the draft shape |
 | `DraftBlockedError` | The validator found a problem; `problems` holds every one |
+| `DraftPlaceholderError` | A paragraph holds text in square brackets; the error holds the positions of those paragraphs |
 
-In all three cases the call is already paid for and recorded, **nothing is stored**, and
+In all four cases the call is already paid for and recorded, **nothing is stored**, and
 there is no repair and no second call. The run counts the case and goes on to the next
 claim. The gateway's own errors (over budget, no provider available) pass through.
 
 No error message quotes the model's answer, a quote or evidence text. The parser's own
 error would quote the answer, so it is dropped (`raise ... from None`).
+
+**The placeholder check.** A model that lacks a value sometimes writes a blank for a
+person to fill in, such as `[Your Name]`. In the second review 11 of the 30 notes named
+one (3.17). Such a letter is not ready for review, so `find_placeholder_paragraphs`
+refuses it. A placeholder is an opening square bracket with a closing one later in the
+`text` of the same paragraph, whatever is between them. The check is pure: no model call,
+no database.
+
+- Only the paragraph text is looked at. A `quote` is copied evidence text, and the
+  validator already compares it with its chunk.
+- The check runs **after** the citation validator. A draft with both faults is counted as
+  blocked, not as a placeholder.
+- The drafting command counts the case in its own report line,
+  `refused for placeholder text: N`. The agent loop records it as the drafting failure
+  `placeholder_text` (3.16).
+- The error holds paragraph positions only, never the text.
+
+Prompt `v2` also tells the model to write no text in square brackets. The check is there
+because a prompt rule only asks.
 
 ### The table
 
@@ -2003,7 +2107,8 @@ and costs nothing. Each letter is committed on its own, so a run that stopped ke
 finished and the same command continues it.
 
 **A claim with no usable draft is tried again by the next run.** Nothing is stored for a
-blocked draft or an unusable answer, so the next run sees the claim as not drafted and pays
+blocked draft, a draft with placeholder text or an unusable answer, so the next run sees
+the claim as not drafted and pays
 for one more try. A run drafts 0 and spends $0 only once every selected claim has a draft.
 
 The run ends early, without a traceback, in these cases. What was finished before is kept:
@@ -2025,8 +2130,9 @@ Measured on 2026-10-11 on the local database, after migration 0012: the test spl
 `--limit 50`, drafting prompt `v1`, search question `v1`, model `gpt-4o-mini`. The split
 has 759 denied claims; 749 have a current letter extraction and 10 were left out.
 
-These are the numbers of search question `v1`, **before the minimum similarity**. The
-command of this section has not been run with `v2`. The agent loop has, and its `v2`
+These are the numbers of search question `v1` and drafting prompt `v1`, **before the
+minimum similarity, the new phrases and prompt `v2`**. The command of this section has not
+been run since. The agent loop has, with search question `v2` and with `v3`, and those
 numbers are in 3.17.
 
 | Run | Drafted | Blocked | Failed to parse | Cost | Time |
@@ -2062,8 +2168,8 @@ Stored drafts with a citation, by the letter's denial reason:
 
 **35 of the 50 stored letters make no policy statement.** They are letters of `other`
 paragraphs only: the facts of the claim and a request to review it. That is what the prompt
-asks for when no passage fits, and it is the expected result of the weak search question
-(see the limits below).
+asks for when no passage fits, and it was the expected result of the `v1` search question,
+which had no words the evidence could match.
 
 The share of drafts a reviewer accepts (the 60% target of Stage 4) is **not** measured
 here. It is measured by the draft acceptance review (see 3.17).
@@ -2072,27 +2178,48 @@ here. It is measured by the draft acceptance review (see 3.17).
 
 About the evidence a draft gets:
 
-- The search question has no words about the service: a fixed phrase and code numbers. Only
-  4 of the 1,530 distinct procedure codes on denied lines appear as a word in any evidence
-  chunk, and 0 of the 66 distinct codes of the 55 claims measured for the minimum. So the
-  codes say almost nothing to the search, and the passages found may not be about the
-  claim's service. Version `v2` did not change the question text.
-- The minimum of 0.55 is a judgement from 19 hand-made questions and 55 claims. The two
-  score ranges overlap, so no value separates a passage that fits from one that does not.
+- **Every claim with the same denial reason gets the same passages.** The question is one
+  fixed phrase per reason and holds nothing about the claim. In the measured run of search
+  question `v3` the 60 citations of 54 drafts name only 8 manual sections, and two sections
+  hold 48 of the 60 (3.17).
+- **A letter argues a general rule, never the service itself.** No passage is about the
+  denied service, and the search does not look for one. The coverage determinations
+  (`cms_ncd`) are still searched, but no draft of the `v3` run cites one.
+- `duplicate` and `benefits_exhausted` claims get no passage: their phrases are unchanged
+  and reach 0.3895 and 0.5129, below the minimum. Such a claim is drafted with no evidence.
+  None of the claims drafted in the measured runs has one of these reasons, so this was
+  not seen in a real draft.
+- A claim whose lines have several denial reasons is searched by its headline reason only.
+  8 of the 56 claims drafted in the second run have such lines.
+- The three new phrases were chosen from 26 trial searches. They were not tuned, and no set
+  of questions with a known answer measures them.
+- The manual chapters hold sample letters and sample notices, which read like rules. Only a
+  prompt rule keeps the model from citing one; no code checks it.
+- The minimum of 0.55 is a judgement from 19 hand-made questions and 55 claims, measured
+  with the `v1` question. The two score ranges overlap, so no value separates a passage that
+  fits from one that does not.
 - A correct passage below the minimum is lost: 2 of the 19 correct hits of the search check
   score under 0.55.
-- A similarity of at least 0.55 does not prove a fit. In the second review all 6 sampled
-  drafts with a citation quote a determination that is not about the denied service (3.17).
-  That is the verdict of a model (Claude), not of a person. No code checks that a citation
-  fits the service; the reviewer judges it.
-- Most claims now get no evidence at all (41 of 56 in the measured run), so their letters
-  make no policy statement.
-- 394 of the 759 denied test claims are not about coverage policy (their reason is not
-  `noncovered` or `medical_necessity`), and the corpus has no appeal-rights text for them.
-  The CMS manuals that hold it are not loaded (3.13).
+- A similarity above the minimum does not prove a fit. In the second review all 6 sampled
+  drafts with a citation quoted a determination that was not about the denied service, and
+  in the third review 4 of 30 drafts were rejected because the quote does not support its
+  sentence (3.17). Those are verdicts of a model (Claude), not of a person. No code checks
+  that a citation fits; the reviewer judges it.
 - The policy text is the 2026 version and the claims are from 2008 to 2010. The letters
-  name made-up payers, while the evidence is Medicare policy. The drafts show the mechanism
-  (retrieve, cite, check); they are not real appeals.
+  name made-up payers, while the evidence is Medicare policy: a letter may speak of a
+  "redetermination" or of "the MAC" to a payer that is not Medicare. The drafts show the
+  mechanism (retrieve, cite, check); they are not real appeals.
+
+About the placeholder check:
+
+- A correct paragraph that holds a pair of square brackets is refused too, for example one
+  that repeats a bracketed note from the denial letter. This was not seen in the measured
+  run: 0 drafts were refused.
+- A single bracket with no partner is not caught, and neither is a blank written another
+  way, such as a row of underscores or "(your name)".
+- Thirteen of the fourteen rules of prompt `v2` are not checked by any code. The third review still
+  found a category word, a claim total given as a line amount and a wrong denial reason in
+  the drafts (3.17).
 
 About what the validator proves:
 
@@ -2111,15 +2238,16 @@ About stored drafts:
   drafted. The draft can be found as out of date, because its `text_sha256` no longer
   equals the stored letter's, but nothing marks it.
 - A draft is not redone when the search question version changes. The drafting command
-  skips a claim that has a draft for the drafting prompt version, so after the change to
-  `v2` it drafts 0 for those claims and their drafts keep the evidence of `v1`, found with
-  no minimum. The row's `search_question_version` shows which version a draft used. Only
-  the agent loop taking the claim again replaces it; a new drafting prompt version writes a
-  new draft beside it.
+  skips a claim that has a draft for the drafting prompt version, so such a draft keeps the
+  evidence of the version it was written with. The row's `search_question_version` shows
+  which version that was. Only the agent loop taking the claim again replaces it; a new
+  drafting prompt version writes a new draft beside it. That is what prompt `v2` did:
+  `appeal_drafts` now holds 54 drafts of prompt `v2` (search question `v3`) beside 79 of
+  prompt `v1` (56 of search question `v2`, 23 of `v1`).
 - A draft is not marked when the evidence corpus is loaded again. A citation whose
   `text_sha256` no longer matches a stored chunk is out of date; nothing looks for it.
-- A claim whose draft is blocked or unusable is paid for again on every run until it gets
-  a draft. Nothing limits the number of tries.
+- A claim whose draft is blocked, refused or unusable is paid for again on every run until
+  it gets a draft. Nothing limits the number of tries.
 
 About the run that was measured:
 
@@ -2183,7 +2311,7 @@ it as a column.
 | 1. Extraction | Reads the claim's stored letter extraction (the `document_extractions` row of extraction prompt `v2`, 3.9). It makes **no** extraction call | no |
 | 2. Rules | Calls `evaluate_rules` with the letter date, the appeal deadline and the total allowed charge from the extraction, and with "today" and the amount floor passed in | no |
 | 3. Scoring | Scores the claim with the saved win model. The three features come from the claim's stored rows through `build_claim_features` (`FEATURE_VERSION` `v1`), not from the letter | no |
-| 4. Retrieval | Builds the search question with `build_search_question` and calls `search_evidence` with `min_similarity=MIN_EVIDENCE_SIMILARITY` (0.55, see 3.15): at most 5 results, possibly none | one small embedding call |
+| 4. Retrieval | Builds the search question with `build_search_question` (the fixed phrase of the letter's denial reason, no procedure codes) and calls `search_evidence` with `min_similarity=MIN_EVIDENCE_SIMILARITY` (0.55, see 3.15): at most 5 results, possibly none | one small embedding call |
 | 5. Drafting | Calls `draft_appeal` with the letter's values and the results. A checked letter is stored in `appeal_drafts` | one model call |
 
 `run_agent_for_claim` takes a ready `AgentCandidate`: the claim id, the extracted letter,
@@ -2210,7 +2338,7 @@ with no citation ends as `needs_review`. There is no status and no end state of 
 | Rules | The verdict is `must_review` | `needs_review_no_draft` | The trace |
 | Rules | The rules give no verdict (the extracted amount is below zero) | `draft_failed` | The trace |
 | Scoring | The score is below the threshold | `below_threshold` | The trace |
-| Drafting | The draft is blocked by the validator, cut off at the output limit, or cannot be parsed | `draft_failed` | The trace; no draft |
+| Drafting | The draft is blocked by the validator, cut off at the output limit, cannot be parsed, or holds text in square brackets | `draft_failed` | The trace; no draft |
 | Drafting | The letter passed the validator | `needs_review` | The trace and the draft |
 
 Only a `pass` verdict goes on to scoring. A score **equal** to the threshold goes on. For
@@ -2250,7 +2378,7 @@ A step that did not run holds its status and nothing else. The facts each step r
 | `rules` | The rules version, "today", the amount floor, the outcome and every reason that fired |
 | `scoring` | The feature version, the model version, the score and the threshold |
 | `retrieval` | The search question version, the embedding model, the minimum similarity the search used (`min_similarity`), and per result the four citation fields (`source`, `source_document_id`, `chunk_index`, `text_sha256`, see 3.13) and its `similarity` |
-| `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`) and, when blocked, the kinds of problem the validator found |
+| `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`, `placeholder_text`) and, when blocked, the kinds of problem the validator found |
 
 **A trace never holds document text, an extracted value, the search question or letter
 text.** It holds versions, outcomes, numbers and the values that name a chunk. A test
@@ -2258,17 +2386,20 @@ guards this. The letter itself is in `appeal_drafts`; the trace names it by the 
 the drafting prompt version.
 
 Any change to a step, to what stops the loop or to an end state needs a new `AGENT_VERSION`
-(today `v2`).
+(today `v3`).
 
 | Version | Means |
 |---|---|
 | `v1` | The search had no minimum: the top 5 results whatever their score |
-| `v2` | The search drops a result below 0.55, and the trace records the minimum. Today's version |
+| `v2` | The search drops a result below 0.55, and the trace records the minimum |
+| `v3` | Search question `v3` and drafting prompt `v2` (3.15); a draft with text in square brackets is refused, with the new failure kind `placeholder_text`. Today's version |
 
-`min_similarity` is optional in the type. It is empty in a step that did not run and in a
-stored `v1` trace, so **a `v1` trace still validates** as an `AgentTrace`; a test guards
-it. A new agent version also means every claim is taken again, because a claim is skipped
-only for a trace of the same version (see "A run over many claims").
+**A stored `v1` or `v2` trace still validates** as an `AgentTrace`; a test guards each.
+`min_similarity` is optional in the type: it is empty in a step that did not run and in a
+stored `v1` trace. `placeholder_text` is one more value of the failure kind, and it is
+stored inside the `trace` JSON, so it needed no migration. A new agent version also means
+every claim is taken again, because a claim is skipped only for a trace of the same version
+(see "A run over many claims").
 
 ### The table
 
@@ -2360,8 +2491,12 @@ Measured on 2026-10-11 on the local database, after migration 0013: the test spl
 drafting prompt `v1`, model `gpt-4o-mini`. The split has 759 denied claims; 749 have a
 current letter extraction and 10 were left out.
 
-These are the numbers of agent `v1`, **before the minimum similarity**. The run of agent
-`v2` on 120 claims is in 3.17, under "Second measurement".
+These are the numbers of agent `v1`, **before the minimum similarity**. The later runs, on
+the same first 120 test claims, are in 3.17: agent `v2` under "Second measurement" and
+agent `v3` under "Third measurement". In short, for agent `v3` on 2026-10-12: 54
+`needs_review`, 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold` and
+2 `draft_failed` after two runs, for $0.040899; all 54 drafts carry a citation, and 0
+drafts were refused for placeholder text.
 
 | Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
 |---|---|---|---|---|---|---|---|---|
@@ -2445,11 +2580,19 @@ About stored drafts:
   statement. That is the weak search question of 3.15. With agent `v2` the question text
   is the same and the minimum drops the weak results, so 41 of the 56 drafts get no
   evidence at all.
-- The run of agent `v2` wrote over the drafts of agent `v1`. The drafting prompt is still
+- The run of agent `v2` wrote over the drafts of agent `v1`. Both used drafting prompt
   `v1` and `appeal_drafts` has one row per claim and prompt version, so the 55 drafts of
   the first review are no longer in the table. The `v1` traces stay in `agent_runs`, but a
   `v1` trace that ended as `needs_review` now describes a draft that was replaced. Keeping
   both drafts of a claim would need a migration.
+- The run of agent `v3` did **not** write over anything: it uses drafting prompt `v2`, so
+  its 54 drafts are stored beside the 56 of agent `v2`. Checked after the run:
+  `agent_runs` holds 120 traces each of `v1`, `v2` and `v3`, and `appeal_drafts` holds 54
+  drafts of prompt `v2` and 79 of prompt `v1`.
+- With agent `v3`, 2 of the 120 claims are still `draft_failed`: the validator blocked
+  their draft in both runs, and no third run was made. So "a run takes 0 claims and spends
+  $0 once no claim is left as `draft_failed`" was **not** checked on the real data for
+  `v3`. Tests prove it, and the real runs of `v1` and `v2` showed it.
 
 About the run that was measured:
 
@@ -2481,15 +2624,20 @@ Three things hold for the command:
 - **The terminal shows counts and shares only.** Letter text and document text go into one
   local file and are never printed.
 
-The share has been measured twice, both times on 2026-10-11:
+The share has been measured three times, twice on 2026-10-11 and once on 2026-10-12:
 
 | Measurement | Drafts of | Accepted | Scored by |
 |---|---|---|---|
-| First | agent `v1`, search question `v1` | **0 of 30 (0.00%)** | a model |
-| Second | agent `v2`, search question `v2` (the minimum similarity of 3.15) | **0 of 30 (0.00%)** | a model |
+| First | agent `v1`, search question `v1`, drafting prompt `v1` | **0 of 30 (0.00%)** | a model |
+| Second | agent `v2`, search question `v2` (the minimum similarity of 3.15), drafting prompt `v1` | **0 of 30 (0.00%)** | a model |
+| Third | agent `v3`, search question `v3` (new phrases, no codes), drafting prompt `v2`, the four manual chapters in the evidence | **17 of 30 (56.67%)** | a model, with a new and easier reading of the rubric |
 
 Every verdict was given **by a model, not by a person** (see "Who scored" below). The done
-condition is not met.
+condition is not met: 56.67% is below 60%.
+
+**The third number is not firm.** It rests on single judgement calls by the model that
+scored. Read in three other ways, the same 30 drafts give 23.33%, 33.33% or up to 70%
+(see "Third measurement").
 
 ### Where the code is
 
@@ -2534,8 +2682,9 @@ all scored drafts. A draft with no citation is judged by the same rubric.
 ### The method
 
 **Which drafts can be sampled.** A claim whose trace in `agent_runs` ended as
-`needs_review` for the current agent version (`AGENT_VERSION`, today `v2`; `v1` at the first
-measurement), that has a draft in `appeal_drafts` (drafting prompt `v1`), and whose denial
+`needs_review` for the current agent version (`AGENT_VERSION`, today `v3`), that has a draft
+in `appeal_drafts` of the current drafting prompt version (today `v2`; the first two
+measurements read agent `v1` and `v2` with prompt `v1`), and whose denial
 letter document stored now is the one the draft was built from. A claim with
 another end state or with no trace is never sampled, so the 23 older drafts on claims the
 rules now stop (3.16) are left out. A draft whose letter document changed is left out too
@@ -2692,13 +2841,137 @@ them has a new draft.
 The command exited with 1. **A model gave these 30 verdicts, not a person**, and it was the
 same model that had given the first 30 and knew their result.
 
+### Third measurement (search question `v3`, drafting prompt `v2`)
+
+The second measurement rejected 21 of 30 drafts for giving no policy argument. Two things
+changed before the third. Four CMS manual chapters were loaded as a second evidence source
+(3.13), so the corpus now holds general rules: exclusions, "not reasonable and necessary",
+appeal rights. And search question `v3`, drafting prompt `v2` and the placeholder check
+were built (3.15). The rubric text, the command, the sample size and the seed are the same.
+**The reading of the rubric is not the same**; see below. Measured on 2026-10-12 on the
+local database, at migration 0014.
+
+**The reading of the rubric, fixed before any draft.** The rubric says a draft needs a
+"real argument for overturning the denial". On 2026-10-12, before any draft of prompt `v2`
+existed, it was written down what that means for each denial reason, so that the reading
+could not bend to the result:
+
+| Denial reason | A draft is accepted only when |
+|---|---|
+| `noncovered`, `medical_necessity`, `coordination_of_benefits` | a policy paragraph ties a cited rule to that denial reason. A citation of the right to appeal alone is `no_policy_argument` |
+| `other` (the denial says only "could not be paid as submitted") | its facts are right, it says the denial names no specific reason, it cites the right to a redetermination, and it asks for the reason and a second look |
+
+**The second row is new and makes the target easier to reach.** Reviews 1 and 2 would have
+rejected such an `other` letter as `no_policy_argument`. Every note in the model's score
+file names the reading.
+
+**Step 1, the loop again.** Agent `v3` ran on the same 120 test claims (`--limit 120`,
+`--rules-today 2010-01-01`, amount floor 25, threshold 0.30, drafting prompt `v2`, model
+`gpt-4o-mini`).
+
+| Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 120 | 47 | 15 | 48 | 1 | 9 (8 blocked, 1 cut off) | $0.035382 | 314 seconds |
+| 2 | 9 | 7 | 0 | 0 | 0 | 2 (blocked) | $0.005517 | 53 seconds |
+
+Both runs exited with 0. Run 2 took the 9 failed claims again. Its 2 blocked drafts had the
+problems `quote_not_in_evidence` and `policy_without_citation`. **No third run was made**, so
+2 claims stay `draft_failed` and the run that takes 0 claims for $0 was not made (3.16).
+
+| Number | Third measurement | Second measurement |
+|---|---|---|
+| Rows in `agent_runs` for the agent version | 120: 54 `needs_review`, 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold`, 2 `draft_failed` | 120: 56, 15, 48, 1, 0 |
+| `needs_review` drafts | 54 | 56 |
+| Of them, with at least one citation | 54 | 13 |
+| Of them, drafted with no evidence | 0 | 41 |
+| Drafts refused for placeholder text | 0 | no such check |
+| Evidence results named in the traces | 280 (56 claims, 5 each), lowest similarity 0.5788 | 37, similarity 0.5501 to 0.6634 |
+| Citations in the drafts | 60: 48 drafts with one policy paragraph, 6 with two | 14, in 13 drafts |
+| Of them, from `cms_manual` | 60 | none; the source was not loaded |
+| Of them, from `cms_ncd` | 0 | 14 |
+| Of them, in the claim's trace with a similarity of at least 0.55 | 60 of 60 (lowest 0.6295) | 14 of 14 |
+| Of them, whose four values name a chunk in `evidence_chunks` | 60 of 60 | 14 of 14 |
+| Answered by the fallback | 0 | 0 |
+| Cost of the two runs | $0.040899 (the limit set for the run was $0.05) | $0.019025 |
+| Month-to-date spend after the runs | $0.827819 of the $3.00 cap | $0.780622 |
+
+The rows on citations and results were checked with one-off read-only queries, not a
+command. Before the run the month-to-date spend was $0.786920.
+
+The 60 citations name 8 manual sections:
+
+| Section | Title | Citations |
+|---|---|---|
+| `100-02-16-40` | No Legal Obligation to Pay for or Provide Services | 25 |
+| `100-04-29-310` | Redetermination - The First Level of Appeal | 23 |
+| `100-04-29-220` | Steps in the Appeals Process: Overview | 3 |
+| `100-02-16-40.3` | Medicare Patient Has Other Health Coverage | 3 |
+| `100-02-16-10` | General Exclusions from Coverage | 2 |
+| `100-02-16-20` | Services Not Reasonable and Necessary | 2 |
+| `100-04-29-310.1` | Filing a Request for Redetermination | 1 |
+| `100-04-30-20.1` | LOL Coverage Denials | 1 |
+
+After the runs `agent_runs` holds 120 traces each of `v1`, `v2` and `v3`. `appeal_drafts`
+holds the 54 new drafts of prompt `v2` beside the 79 drafts of prompt `v1` (56 of search
+question `v2` and the 23 older ones of 3.16). Nothing earlier was written over.
+
+**Step 2, the sample.** `export` wrote into a new folder and drew 30 of the 54 drafts that
+can be reviewed, with seed 42. All 30 carry at least one citation. No draft was left out
+for a changed letter.
+
+**Step 3, the verdicts.**
+
+| Number | Third measurement | Second | First |
+|---|---|---|---|
+| Drafts scored | 30 | 30 | 30 |
+| `accept` | 2 | 0 | 0 |
+| `accept_light_edits` | 15 | 0 | 0 |
+| `reject` | 13 | 30 | 30 |
+| **Acceptance share** | **17 of 30 (56.67%), below the 60% target** | **0 of 30 (0.00%)** | **0 of 30 (0.00%)** |
+| Drafts with a citation | 17 of 30 accepted | 0 of 6 | 0 of 15 |
+| Drafts without a citation | none in the sample | 0 of 24 | 0 of 15 |
+
+| Reject reason | Third measurement | Second | First |
+|---|---|---|---|
+| `wrong_fact` | 8 | 3 | 2 |
+| `citation_does_not_fit` | 4 | 6 | 14 |
+| `no_policy_argument` | 1 | 21 | 13 |
+| `poor_wording` | 0 | 0 | 0 |
+| `other` | 0 | 0 | 1 |
+
+By the reason the denial letter gives, as the model read it from the 30 letters:
+
+| Denial reason of the letter | Accepted |
+|---|---|
+| `noncovered` | 10 of 15 |
+| `other` | 7 of 13 |
+| `medical_necessity` | 0 of 1 |
+| `coordination_of_benefits` | 0 of 1 |
+
+The command exited with 1. **A model gave these 30 verdicts, not a person.** It was the same
+model that gave the first 60, it knew both earlier results, and it wrote both the reading
+above and the `other` rule of prompt `v2`.
+
+**How firm the number is.** 17 of 30 is 1 draft short of the target, and it moves a long
+way with the reading. The same 30 drafts, read in three other ways:
+
+| Reading | Accepted | Why |
+|---|---|---|
+| The one recorded | **17 of 30 (56.67%)** | |
+| The one-quote `noncovered` argument does not count | 7 of 30 (23.33%) | All 10 accepted `noncovered` letters rest on one sentence of one passage, "an analysis of each payment exclusion must be made before a determination can be made about whether Medicare can pay", used to ask which exclusion was applied. The passage is a rule about when Medicare may **not** pay. A stricter reviewer would call that no argument |
+| The reading of reviews 1 and 2 (no `other` letter is accepted) | 10 of 30 (33.33%) | The 7 accepted `other` letters cite only the right to a second look |
+| A lenient reviewer | up to 21 of 30 (70.00%) | Two rejected drafts have one sentence the quote does not support, and two have one wrong word (the category word `other` given as the reason). Fixing a sentence instead of rejecting accepts all four |
+
+The three other figures are the model's own count from its notes, not measurements. None
+of them is a second review.
+
 ### Who scored
 
-**A model gave the verdicts of both measurements, not a person.** The model was Claude, the
-coding assistant used to build this project. It read the same file a person would read and
-applied the rubric above. The project owner decided on 2026-10-11 to record this as the
-measurement, with a model acting in place of the reviewer. **No person has scored either
-sample.**
+**A model gave the verdicts of all three measurements, not a person.** The model was
+Claude, the coding assistant used to build this project. It read the same file a person
+would read and applied the rubric above. The project owner decided on 2026-10-11 to record
+this as the measurement, with a model acting in place of the reviewer. **No person has
+scored any of the three samples.**
 
 The second measurement was scored by the same model, after it had scored the first and knew
 the result was 0 of 30. It also knew what the change between the two was meant to do. So
@@ -2715,8 +2988,26 @@ at most about 20%. For the second measurement the same estimate is again about 6
 the drafts with correct facts, no placeholder and no citation that does not fit. Both
 figures are estimates, not measurements, and both are below the target.
 
+**The third measurement is the least independent of the three.** The same model scored
+again, and by then it:
+
+- knew both earlier results (0 of 30 twice) and that the stage is released at 60%;
+- had written the reading of the rubric that accepts an `other` letter;
+- had written the rule of prompt `v2` that tells the drafting model to write exactly that
+  letter (3.15);
+- had written into prompt `v2`, as an example, the argument that all 10 accepted
+  `noncovered` letters make (3.15);
+- had proposed the search phrases that bring back the passages the letters cite.
+
+The reading was fixed before any `v2` draft existed, so it was not bent to the drafts. But
+the prompt was fitted to the reading, and the reviewer then judged the result of its own
+rule. 7 of the 17 accepted drafts are `other` letters that only this reading accepts, and
+the other 10 are `noncovered` letters that make the argument the prompt gives as its
+example. So the rise from 0% to 56.67% is partly better drafts and partly an easier test,
+and the two cannot be told apart from these numbers.
+
 The model's verdicts are in a local file of their own in each review folder. The score file
-`export` wrote is still empty in both, ready for a person.
+`export` wrote is still empty in all three, ready for a person.
 
 ### What the rejected drafts show
 
@@ -2733,8 +3024,8 @@ The model's verdicts are in a local file of their own in each review folder. The
   drafts); the internal category word `other` shown to the insurer; a line amount mixed up
   with the claim total.
 
-Both main faults come from the search question (3.15), which holds one fixed phrase per
-denial reason and the procedure codes, and no words about the service.
+Both main faults come from the search question (3.15), which then held one fixed phrase
+per denial reason and the procedure codes, and no words about the service.
 
 The points above are from the first measurement. The second shows what the minimum
 similarity changed, as judged by the model:
@@ -2753,18 +3044,53 @@ similarity changed, as judged by the model:
   and a claim total given as a line amount are in the new drafts too. Several drafts argue
   medical necessity or "not covered" against a denial the letter gives another reason for.
 
-So the share did not move, as expected before the change was built. The corpus has no text
-about most denied services and none about appeal rights (3.13), and no search question can
-find what is not there.
+So the share did not move, as expected before the change was built. The corpus then had no
+text about most denied services and none about appeal rights (3.13), and no search question
+can find what is not there.
+
+The third measurement, as judged by the model:
+
+- **Every draft now makes a policy statement.** All 54 drafts carry a citation, each from
+  a manual chapter. `no_policy_argument` fell from 21 to 1. The one left is a medical
+  necessity letter that quotes the rule that services which are not reasonable and
+  necessary are not covered, which supports the denial.
+- **Wrong facts are now the main fault: 8 of the 13 rejects.** A claim total given as the
+  amount appealed or as "the total charge" (2 drafts; one of them also adds a fact that
+  is not in the letter); the category word `other` given as the denial's reason (2); a
+  denial reason the letter does not give (2); a wrong line number (1); a patient name
+  taken wrongly from a damaged name in the letter (1). Prompt `v2` has a rule against
+  the first three, and the model did not always follow it.
+- **A quote that is in the text can still be used for something it does not say.** 4
+  drafts were rejected as `citation_does_not_fit`: the paragraph draws a conclusion the
+  quoted passage does not support, and in one draft the passage says the opposite.
+- **The placeholders and the invented addresses are gone.** 0 of the 30 drafts has text
+  in square brackets (11 of the 30 notes of the second review named one), and none has an
+  invented address. The code check refused 0 drafts, so the prompt rule did this.
+- **The arguments are thin and all alike.** The 10 accepted `noncovered` letters use the
+  same sentence of the same passage, and the 7 accepted `other` letters cite the same
+  right to a redetermination. That is the cost of one question per denial reason (3.15).
+- **Smaller faults that were not counted as a wrong fact:** several letters copy a damaged
+  character from the noisy denial letter into a claim number or a name, as in reviews 1
+  and 2; 3 accepted letters have no closing or no name; every letter speaks of Medicare
+  terms, such as "the MAC", to a made-up payer. One accepted letter writes the category
+  word `noncovered` for the reason and was scored as a light edit, while two letters that
+  wrote `other` were rejected: there the word replaced the reason the letter gives.
+- **Seen, not looked into:** one sampled claim was searched and drafted as a medical
+  necessity denial, while its letter says the line "could not be paid as submitted".
 
 ### When the share is below 60%
 
 The done condition stays as it is: the target is not lowered and not reworded. Stage 4 is
 not released as `v0.5.0`. The most common reject reason picks the next piece of work, and
 the share is then measured again with the same command. After the first measurement that
-was the search (`citation_does_not_fit`). After the second it is `no_policy_argument`: the
+was the search (`citation_does_not_fit`). After the second it was `no_policy_argument`: the
 CMS manual chapters, for evidence that applies to more claims, and a drafting prompt `v2`,
-for the faults that repeat. Neither is built yet.
+for the faults that repeat. Both are built, and the third measurement is their result.
+
+After the third the most common reason is `wrong_fact`. So the next work is the facts of
+a letter (a line's amounts against the claim totals, no category word, the reason of each
+line), and after that an argument for a `noncovered` denial that is more than one sentence
+of one passage. Neither is built yet.
 
 A new measurement needs a new export into another folder, because a draft that was written
 again has a new fingerprint.
@@ -2780,25 +3106,37 @@ About who scored:
   and nothing records who filled it in or when.
 - The second measurement was scored by the same model that had scored the first and knew
   its result. A reviewer who expects no change is more likely to find none.
-- 29 of the 30 claims are in both samples, but each has a new draft, written by a model
-  whose answer changes from call to call. A difference between the two measurements is
-  partly the minimum and partly that chance.
+- 29 of the 30 claims are in both of the first two samples, but each has a new draft,
+  written by a model whose answer changes from call to call. A difference between the two
+  measurements is partly the minimum and partly that chance.
+- The third measurement was scored by the same model again. It knew both earlier results,
+  wrote the new reading for `other` letters and wrote the prompt rule that fits it (see
+  "Who scored").
+- **The three shares cannot be compared as one series.** The third used an easier reading
+  for `other` letters. With the reading of the first two it is 10 of 30 (33.33%).
+- The third share depends on single judgement calls. One draft more would meet the target,
+  and one way of reading the 10 `noncovered` letters takes it down to 23.33%.
+- How many claims the third sample shares with the first two was not recorded.
 
-About the first measurement's files:
+About the earlier measurements' files:
 
-- Its drafts are overwritten in `appeal_drafts` (3.16). Their text is only in the local
-  file the reviewer read, which is not committed.
+- The drafts of the first measurement are overwritten in `appeal_drafts` (3.16). Their
+  text is only in the local file the reviewer read, which is not committed.
 - Its score file can no longer be scored with the command. Every one of its 30 drafts was
   written again, so `score` refuses each row as "drafted again". The recorded 0 of 30
   cannot be reproduced from the database.
+- The drafts of the second measurement are still stored, but its score file can no longer
+  be scored either: the command reads only the drafts of the current agent version and
+  drafting prompt version. Only the third folder can be scored today.
 
 About the sample:
 
 - 30 drafts is a small sample. A measured 0 of 30 still fits a true share of up to about
   12% for the same reviewer. A measured 60% would stand for a true share of about 42% to
-  75%.
-- The drafts (55 in the first measurement, 56 in the second) come from the first 120 test
-  claims in claim id order, not from a draw over all 749 test claims that can be taken.
+  75%, and the measured 17 of 30 for about 39% to 73%.
+- The drafts (55 in the first measurement, 56 in the second, 54 in the third) come from
+  the first 120 test claims in claim id order, not from a draw over all 749 test claims
+  that can be taken.
 - `score` checks the number of rows and that each row belongs to a draft that can be
   reviewed. It does not prove the rows are the seed-42 sample.
 
@@ -2807,7 +3145,12 @@ About the data:
 - The claims, the people and the documents are made up. The share says nothing about real
   appeals.
 - The policy text is from 2026 and the claims are from 2008 to 2010 (3.13).
-- The payers are made up, and the policy text is Medicare policy.
+- The payers are made up, and the policy text is Medicare policy. Since the third
+  measurement every cited passage is a Medicare manual rule, so each letter argues a
+  Medicare rule to a payer that is not Medicare. The model did not reject a draft for
+  that.
+- The letters argue a general rule for the denial reason, never the denied service (3.15).
+  A reviewer who files real appeals may not count that as an argument at all.
 
 About the rubric:
 

@@ -62,6 +62,7 @@ from tests.drafting.helpers import (
     drafting_data,
     drafting_gateway,
     good_answer,
+    placeholder_answer,
     stored_drafts,
     two_problem_answer,
     uncited_answer,
@@ -208,14 +209,14 @@ def test_the_trace_records_the_facts_of_every_step(factory: sessionmaker[Session
     )
 
 
-def test_the_search_question_is_built_from_the_letters_reason_and_codes(
+def test_the_search_question_is_the_phrase_of_the_letters_reason_without_its_codes(
     factory: sessionmaker[Session],
 ) -> None:
     embedder = StubEmbedder()
 
     _run(factory, StubProvider(good_answer), embedder=embedder)
 
-    question = build_search_question(DenialReasonCategory.NONCOVERED, ["99213"])
+    question = build_search_question(DenialReasonCategory.NONCOVERED)
     assert [request.texts for request in embedder.requests] == [(question,)]
 
 
@@ -406,6 +407,21 @@ def test_an_answer_that_cannot_be_parsed_fails_the_draft_and_stores_nothing(
     assert (trace.drafting.status, trace.drafting.failure) == (
         StepStatus.FAILED,
         DraftFailure.NOT_PARSEABLE,
+    )
+    assert stored_drafts(factory) == {}
+
+
+def test_a_draft_with_placeholder_text_fails_with_its_own_value_and_stores_nothing(
+    factory: sessionmaker[Session],
+) -> None:
+    trace = _run(factory, StubProvider(placeholder_answer))
+
+    assert trace.end_state is EndState.DRAFT_FAILED
+    assert trace.retrieval.status is StepStatus.DONE
+    assert trace.drafting == DraftingStep(
+        status=StepStatus.FAILED,
+        prompt_version=PROMPT_VERSION,
+        failure=DraftFailure.PLACEHOLDER_TEXT,
     )
     assert stored_drafts(factory) == {}
 

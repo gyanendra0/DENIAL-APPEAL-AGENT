@@ -41,7 +41,7 @@ from tests.evaluation.review_helpers import (
 )
 from tests.extraction.helpers import CLAIM_1, CLAIM_2, CLAIM_3, LETTER, PATIENT_NAME, document_text
 
-HEADLINE = "drafts that can be reviewed (seed 42, agent v2, drafting prompt v1)"
+HEADLINE = "drafts that can be reviewed (seed 42, agent v3, drafting prompt v2)"
 HIDDEN_NOTE = "a made-up note nobody may print"
 
 
@@ -473,7 +473,7 @@ def test_a_stored_draft_that_does_not_fit_the_schema_exits_1_with_a_plain_messag
     assert _score(path) == 1
 
     assert capsys.readouterr().err == (
-        "cannot read the stored drafts: a stored draft of prompt version v1 does not fit the"
+        "cannot read the stored drafts: a stored draft of prompt version v2 does not fit the"
         " letter schema\n"
     )
 

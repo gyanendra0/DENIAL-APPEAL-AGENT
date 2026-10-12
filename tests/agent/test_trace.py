@@ -31,8 +31,8 @@ RULES = RulesStep(
 )
 
 
-def test_the_agent_version_is_v2() -> None:
-    assert AGENT_VERSION == "v2"
+def test_the_agent_version_is_v3() -> None:
+    assert AGENT_VERSION == "v3"
 
 
 def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
@@ -88,6 +88,60 @@ def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
     assert trace.retrieval.matches[0].similarity == 0.45
 
 
+def test_a_stored_trace_of_agent_version_v2_still_reads_back() -> None:
+    # What a `v2` loop stored: a minimum similarity, and a failure from before `placeholder_text`.
+    stored = {
+        "end_state": "draft_failed",
+        "agent_version": "v2",
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+            "reasons": [],
+        },
+        "scoring": {
+            "status": "done",
+            "feature_version": "v1",
+            "model_version": "v1",
+            "score": 0.75,
+            "threshold": 0.3,
+        },
+        "retrieval": {
+            "status": "done",
+            "search_question_version": "v2",
+            "embedding_model": "example-embedding-model",
+            "min_similarity": 0.55,
+            "matches": [
+                {
+                    "source": "cms_ncd",
+                    "source_document_id": "1",
+                    "chunk_index": 0,
+                    "text_sha256": MADE_UP_HASH,
+                    "similarity": 0.6,
+                }
+            ],
+        },
+        "drafting": {
+            "status": "failed",
+            "prompt_version": "v1",
+            "provider": None,
+            "model_name": None,
+            "cited_paragraphs": None,
+            "failure": "not_parseable",
+            "problem_kinds": [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.agent_version == "v2"
+    assert trace.retrieval.min_similarity == 0.55
+    assert trace.drafting.failure is DraftFailure.NOT_PARSEABLE
+
+
 def test_a_step_is_done_stopped_failed_or_not_run() -> None:
     assert [status.value for status in StepStatus] == ["done", "stopped", "failed", "not_run"]
 
@@ -102,8 +156,63 @@ def test_there_are_five_end_states_and_none_means_approved_or_sent() -> None:
     ]
 
 
-def test_a_draft_fails_in_one_of_three_ways() -> None:
-    assert [failure.value for failure in DraftFailure] == ["blocked", "cut_off", "not_parseable"]
+def test_a_draft_fails_in_one_of_four_ways() -> None:
+    assert [failure.value for failure in DraftFailure] == [
+        "blocked",
+        "cut_off",
+        "not_parseable",
+        "placeholder_text",
+    ]
+
+
+@pytest.mark.parametrize("agent_version", ["v1", "v2"])
+@pytest.mark.parametrize("failure", ["blocked", "cut_off", "not_parseable"])
+def test_a_stored_trace_with_a_failure_value_from_before_still_reads_back(
+    agent_version: str, failure: str
+) -> None:
+    stored = {
+        "end_state": "draft_failed",
+        "agent_version": agent_version,
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+        },
+        "scoring": {"status": "done", "score": 0.75, "threshold": 0.3},
+        "retrieval": {"status": "done", "matches": []},
+        "drafting": {
+            "status": "failed",
+            "prompt_version": "v1",
+            "failure": failure,
+            "problem_kinds": ["unknown_label"] if failure == "blocked" else [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.drafting.failure is DraftFailure(failure)
+    assert trace.model_dump(mode="json")["drafting"]["failure"] == failure
+
+
+def test_a_trace_with_the_placeholder_failure_reads_back_from_its_json_values() -> None:
+    trace = AgentTrace(
+        end_state=EndState.DRAFT_FAILED,
+        extraction=EXTRACTION,
+        rules=RULES,
+        drafting=DraftingStep(
+            status=StepStatus.FAILED,
+            prompt_version="v2",
+            failure=DraftFailure.PLACEHOLDER_TEXT,
+        ),
+    )
+
+    stored = trace.model_dump(mode="json")
+
+    assert stored["drafting"]["failure"] == "placeholder_text"
+    assert AgentTrace.model_validate(stored) == trace
 
 
 def test_the_steps_a_trace_is_not_given_are_recorded_as_not_run() -> None:

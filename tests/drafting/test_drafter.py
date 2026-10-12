@@ -18,6 +18,7 @@ from src.drafting.drafter import (
     DraftBlockedError,
     DraftingError,
     DraftParseError,
+    DraftPlaceholderError,
     DraftResult,
     DraftTruncatedError,
     build_user_message,
@@ -458,10 +459,73 @@ def test_a_quote_from_evidence_the_model_was_not_shown_blocks_the_draft(
     ]
 
 
+def _answer_with_closing(closing: str, *citations: tuple[str, str]) -> str:
+    answer = json.loads(_answer(*citations))
+    answer["paragraphs"].append({"kind": "other", "text": closing, "citations": []})
+    return json.dumps(answer)
+
+
+def test_a_draft_with_text_in_square_brackets_is_refused_with_no_repair(
+    session_factory: sessionmaker[Session],
+) -> None:
+    provider = StubProvider(_answer_with_closing("Sincerely, [Your Name]", ("E1", GOOD_QUOTE)))
+
+    with pytest.raises(DraftPlaceholderError) as raised:
+        _draft(session_factory, provider)
+
+    assert raised.value.paragraph_indexes == (2,)
+    assert str(raised.value) == "the draft holds text in square brackets in 1 paragraph(s)"
+    # The call was made and paid for: it is recorded, and there is no second call.
+    assert len(provider.requests) == 1
+    assert _stored_calls(session_factory) == 1
+
+
+def test_a_draft_with_no_square_bracket_passes_the_placeholder_check(
+    session_factory: sessionmaker[Session],
+) -> None:
+    answer = _answer_with_closing(f"Sincerely, {PATIENT_NAME}", ("E1", GOOD_QUOTE))
+
+    result = _draft(session_factory, StubProvider(answer))
+
+    assert [paragraph.text for paragraph in result.letter.paragraphs][-1] == (
+        f"Sincerely, {PATIENT_NAME}"
+    )
+
+
+def test_a_square_bracket_inside_a_quote_alone_does_not_refuse_the_draft(
+    session_factory: sessionmaker[Session],
+) -> None:
+    bracket_text = "Blue widgets [see the made-up section 2] are covered when ordered."
+    quote = "Blue widgets [see the made-up section 2] are covered"
+
+    result = draft_appeal(
+        _gateway(session_factory, StubProvider(_answer(("E1", quote)))),
+        PROMPT,
+        _letter(),
+        [_match(0, bracket_text)],
+    )
+
+    assert result.letter.paragraphs[1].citations[0].quote == quote
+
+
+def test_a_draft_that_is_blocked_and_has_a_placeholder_is_reported_as_blocked(
+    session_factory: sessionmaker[Session],
+) -> None:
+    answer = _answer_with_closing("Sincerely, [Your Name]")
+
+    with pytest.raises(DraftBlockedError):
+        _draft(session_factory, StubProvider(answer))
+
+
 @pytest.mark.parametrize(
     ("answer", "stop_reason", "error_type"),
     [
         (GOOD_ANSWER, "length", DraftTruncatedError),
+        (
+            _answer_with_closing(f"[{PATIENT_NAME}] appeal the denial", ("E1", GOOD_QUOTE)),
+            "stop",
+            DraftPlaceholderError,
+        ),
         (f"not json, about {PATIENT_NAME}: {GOOD_QUOTE}", "stop", DraftParseError),
         (
             json.dumps({"paragraphs": [{"kind": PATIENT_NAME, "text": GOOD_QUOTE}]}),

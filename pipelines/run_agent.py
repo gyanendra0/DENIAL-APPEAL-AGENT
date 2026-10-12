@@ -2,7 +2,7 @@
 
 Usage:
     python3 -m pipelines.run_agent --split test --rules-today 2010-01-01 [--limit 50]
-        [--prompt-version v1]
+        [--prompt-version v2]
 
 Run `pipelines.extract_documents`, `pipelines.train_win_model` and
 `pipelines.embed_evidence_corpus` first. Per claim the loop reads the stored extraction of the

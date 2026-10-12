@@ -1,7 +1,9 @@
+import re
 from pathlib import Path
 
 import pytest
 
+from src.db.models import DenialReasonCategory
 from src.drafting.citation_validator import MIN_QUOTE_CHARACTERS
 from src.drafting.prompts import (
     DRAFTING_PROMPT_VERSION,
@@ -10,10 +12,17 @@ from src.drafting.prompts import (
     load_drafting_prompt,
 )
 from src.drafting.schemas import AppealDraft, DraftCitation, DraftParagraph, ParagraphKind
+from src.extraction.schemas import DenialLetterExtraction, ExtractedDeniedLine
 from src.llm.gateway import LlmRequest
+from src.synth.denial_letter import REASON_WORDING
 
-# The prompt file in the repository: instructions only, so it is not test data.
+# The prompt files in the repository: instructions only, so they are not test data.
 REAL_PROMPT_DIR = Path(__file__).parents[2] / "config" / "prompts"
+REAL_VERSIONS = ["v1", "v2"]
+# The keys of the user message that are not a value of the denial letter.
+USER_MESSAGE_KEYS = {"denial_letter", "document_title", "section_number", "section_title"}
+# A name in double quotes with an underscore: a key or a category value, never a plain word.
+QUOTED_NAME = re.compile(r'"([a-z]+(?:_[a-z]+)+)"')
 
 
 def _write(prompt_dir: Path, version: str, text: str) -> Path:
@@ -24,9 +33,9 @@ def _write(prompt_dir: Path, version: str, text: str) -> Path:
     return path
 
 
-def test_the_purpose_is_drafting_and_the_default_version_is_v1() -> None:
+def test_the_purpose_is_drafting_and_the_default_version_is_v2() -> None:
     assert DRAFTING_PURPOSE == "drafting"
-    assert DRAFTING_PROMPT_VERSION == "v1"
+    assert DRAFTING_PROMPT_VERSION == "v2"
 
 
 def test_loads_the_prompt_of_the_asked_version(tmp_path: Path) -> None:
@@ -70,8 +79,9 @@ def test_a_badly_formed_version_is_refused_before_any_file_is_read(
         load_drafting_prompt(tmp_path, version)
 
 
-def test_the_real_v1_prompt_loads_and_fits_a_request() -> None:
-    prompt = load_drafting_prompt(REAL_PROMPT_DIR, DRAFTING_PROMPT_VERSION)
+@pytest.mark.parametrize("version", REAL_VERSIONS)
+def test_each_real_prompt_loads_and_fits_a_request(version: str) -> None:
+    prompt = load_drafting_prompt(REAL_PROMPT_DIR, version)
 
     request = LlmRequest(
         system=prompt.system,
@@ -80,11 +90,21 @@ def test_the_real_v1_prompt_loads_and_fits_a_request() -> None:
         prompt_version=prompt.version,
         purpose=DRAFTING_PURPOSE,
     )
-    assert request.prompt_version == "v1"
+    assert request.prompt_version == version
 
 
-def test_the_real_prompt_names_every_key_and_kind_of_the_draft_shape() -> None:
-    system = load_drafting_prompt(REAL_PROMPT_DIR, DRAFTING_PROMPT_VERSION).system
+def test_the_default_version_is_one_of_the_real_prompts() -> None:
+    assert DRAFTING_PROMPT_VERSION in REAL_VERSIONS
+
+
+def test_a_version_with_no_real_prompt_file_is_refused() -> None:
+    with pytest.raises(DraftingPromptError, match="not found"):
+        load_drafting_prompt(REAL_PROMPT_DIR, "v999")
+
+
+@pytest.mark.parametrize("version", REAL_VERSIONS)
+def test_each_real_prompt_names_every_key_and_kind_of_the_draft_shape(version: str) -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, version).system
 
     for model in (AppealDraft, DraftParagraph, DraftCitation):
         for name in model.model_fields:
@@ -93,7 +113,86 @@ def test_the_real_prompt_names_every_key_and_kind_of_the_draft_shape() -> None:
         assert f'"{kind.value}"' in system
 
 
-def test_the_real_prompt_gives_the_validators_minimum_quote_length() -> None:
-    system = load_drafting_prompt(REAL_PROMPT_DIR, DRAFTING_PROMPT_VERSION).system
+@pytest.mark.parametrize("version", REAL_VERSIONS)
+def test_each_real_prompt_gives_the_validators_minimum_quote_length(version: str) -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, version).system
 
     assert f"at least {MIN_QUOTE_CHARACTERS} characters" in system
+
+
+def test_the_v2_prompt_is_the_v1_prompt_up_to_the_rules_it_adds() -> None:
+    v1 = load_drafting_prompt(REAL_PROMPT_DIR, "v1").system
+    v2 = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+
+    # The JSON shape, the two kinds and the quote rule are word for word those of `v1`.
+    shared = v1[: v1.index("- Every other paragraph is")]
+    assert v2.startswith(shared)
+    assert v2 != v1
+
+
+@pytest.mark.parametrize("category", list(DenialReasonCategory))
+def test_the_v2_prompt_gives_the_denial_letters_plain_words_for_each_category(
+    category: DenialReasonCategory,
+) -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+
+    assert f'- "{category.value}": {REASON_WORDING[category]}\n' in system + "\n"
+
+
+def test_every_name_the_v2_prompt_quotes_is_a_real_key_or_category_value() -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+    known = (
+        USER_MESSAGE_KEYS
+        | set(DenialLetterExtraction.model_fields)
+        | set(ExtractedDeniedLine.model_fields)
+        | {category.value for category in DenialReasonCategory}
+    )
+
+    quoted = set(QUOTED_NAME.findall(system))
+
+    assert quoted - known == set()
+    # The values the rules lean on are really named.
+    assert {
+        "patient_name",
+        "payer_name",
+        "member_id",
+        "denied_lines",
+        "hcpcs_code",
+        "allowed_charge_amount",
+        "payment_amount",
+        "reason_category",
+        "denial_reason_category",
+        "total_allowed_charge_amount",
+        "total_payment_amount",
+    } <= quoted
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "no address block, no date line and no subject line",
+        "Never write text in square",
+        "sample letter or a sample notice",
+        "Call them the claim totals",
+        "Never write a\n  category value in the letter",
+        "against no other reason",
+        "A quote alone is not a paragraph",
+        "Add no fact about the care",
+        "do not ask the payer to send documents",
+        'write the\n  letter with "other" paragraphs only',
+        # Added after the ten rules: what a letter says when the denial names no reason.
+        'When "denial_reason_category" is "other", the denial names no specific reason',
+        "ask the payer to state the specific reason for the denial",
+        "the right to ask for a review\n  of a denied claim",
+    ],
+)
+def test_the_v2_prompt_holds_each_rule_of_the_design(words: str) -> None:
+    assert words in load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+
+
+def test_the_v2_prompt_holds_no_square_bracket_of_its_own() -> None:
+    # An example such as `[Your Name]` in the prompt could be copied into a letter.
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+
+    assert "[" not in system
+    assert "]" not in system

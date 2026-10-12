@@ -1,9 +1,10 @@
 """Drafts one appeal letter from a denial letter's fields and the retrieved evidence.
 
 One model call per letter, through the LLM gateway. The answer is parsed into `AppealDraft`
-and then checked by the citation validator. An answer that was cut off, is not JSON, does
-not fit the shape or fails the validator is an error: nothing is repaired and no second call
-is made. Only a draft that passed comes back, as an `AppealLetter`.
+and then checked by the citation validator and for placeholder text. An answer that was cut
+off, is not JSON, does not fit the shape, fails the validator or holds text in square
+brackets is an error: nothing is repaired and no second call is made. Only a draft that
+passed comes back, as an `AppealLetter`.
 
 Letter text, quotes, evidence text and the model's answer never appear in a log line or an
 error message; the one log line per call is the gateway's. Nothing here sends a letter
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.db.models import LlmProvider
 from src.drafting.citation_validator import CitationProblem, validate_citations
+from src.drafting.placeholder_check import find_placeholder_paragraphs
 from src.drafting.prompts import DRAFTING_PURPOSE, DraftingPrompt
 from src.drafting.schemas import (
     AppealDraft,
@@ -61,6 +63,16 @@ class DraftBlockedError(DraftingError):
         self.problems = problems
 
 
+class DraftPlaceholderError(DraftingError):
+    """A paragraph holds text in square brackets. `paragraph_indexes` counts from 0."""
+
+    def __init__(self, paragraph_indexes: tuple[int, ...]) -> None:
+        super().__init__(
+            f"the draft holds text in square brackets in {len(paragraph_indexes)} paragraph(s)"
+        )
+        self.paragraph_indexes = paragraph_indexes
+
+
 class DraftResult(BaseModel):
     """One checked letter, and who produced it."""
 
@@ -82,8 +94,9 @@ def draft_appeal(
 
     Spends money and can take several seconds: it makes one model call through `gateway`.
     `matches` is the search result in its order; the model sees the first as `E1`. Raises
-    `DraftTruncatedError`, `DraftParseError` or `DraftBlockedError` when the answer cannot be
-    used; the gateway's own errors (over budget, no provider available) pass through.
+    `DraftTruncatedError`, `DraftParseError`, `DraftBlockedError` or `DraftPlaceholderError`
+    when the answer cannot be used; the gateway's own errors (over budget, no provider
+    available) pass through.
     """
     result = gateway.complete(
         LlmRequest(
@@ -109,6 +122,9 @@ def draft_appeal(
     check = validate_citations(draft, matches)
     if not check.passed:
         raise DraftBlockedError(check.problems)
+    placeholder_paragraphs = find_placeholder_paragraphs(draft)
+    if placeholder_paragraphs:
+        raise DraftPlaceholderError(placeholder_paragraphs)
     return DraftResult(
         letter=_cited_letter(draft, matches),
         provider=result.provider,

@@ -31,8 +31,8 @@ RULES = RulesStep(
 )
 
 
-def test_the_agent_version_is_v3() -> None:
-    assert AGENT_VERSION == "v3"
+def test_the_agent_version_is_v4() -> None:
+    assert AGENT_VERSION == "v4"
 
 
 def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
@@ -142,6 +142,63 @@ def test_a_stored_trace_of_agent_version_v2_still_reads_back() -> None:
     assert trace.drafting.failure is DraftFailure.NOT_PARSEABLE
 
 
+def test_a_stored_trace_of_agent_version_v3_still_reads_back() -> None:
+    # What a `v3` loop stored: the search question `v3`, the drafting prompt `v2`, a manual
+    # chapter as a match, and a failure from before `fact_check`.
+    stored = {
+        "end_state": "draft_failed",
+        "agent_version": "v3",
+        "extraction": {"status": "done", "prompt_version": "v2", "text_sha256": MADE_UP_HASH},
+        "rules": {
+            "status": "done",
+            "rules_version": RULES_VERSION,
+            "today": "2010-01-01",
+            "amount_floor": "25",
+            "outcome": "pass",
+            "reasons": [],
+        },
+        "scoring": {
+            "status": "done",
+            "feature_version": "v1",
+            "model_version": "v1",
+            "score": 0.75,
+            "threshold": 0.3,
+        },
+        "retrieval": {
+            "status": "done",
+            "search_question_version": "v3",
+            "embedding_model": "example-embedding-model",
+            "min_similarity": 0.55,
+            "matches": [
+                {
+                    "source": "cms_manual",
+                    "source_document_id": "100-02-16-40",
+                    "chunk_index": 0,
+                    "text_sha256": MADE_UP_HASH,
+                    "similarity": 0.63,
+                }
+            ],
+        },
+        "drafting": {
+            "status": "failed",
+            "prompt_version": "v2",
+            "provider": None,
+            "model_name": None,
+            "cited_paragraphs": None,
+            "failure": "placeholder_text",
+            "problem_kinds": [],
+        },
+    }
+
+    trace = AgentTrace.model_validate(stored)
+
+    assert trace.agent_version == "v3"
+    assert trace.retrieval.search_question_version == "v3"
+    assert trace.drafting.prompt_version == "v2"
+    assert trace.drafting.failure is DraftFailure.PLACEHOLDER_TEXT
+    assert trace.model_dump(mode="json") == stored
+
+
 def test_a_step_is_done_stopped_failed_or_not_run() -> None:
     assert [status.value for status in StepStatus] == ["done", "stopped", "failed", "not_run"]
 
@@ -171,11 +228,14 @@ def test_a_draft_fails_in_one_of_five_ways() -> None:
     [
         *[
             (agent_version, failure)
-            for agent_version in ("v1", "v2", "v3")
+            for agent_version in ("v1", "v2", "v3", "v4")
             for failure in ("blocked", "cut_off", "not_parseable")
         ],
         # `placeholder_text` came with agent version `v3`.
         ("v3", "placeholder_text"),
+        ("v4", "placeholder_text"),
+        # `fact_check` came with agent version `v4`.
+        ("v4", "fact_check"),
     ],
 )
 def test_a_stored_trace_with_a_failure_value_from_before_still_reads_back(

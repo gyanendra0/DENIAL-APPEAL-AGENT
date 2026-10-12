@@ -68,7 +68,7 @@ LLM_FALLBACK_KEYS = (
 BEFORE_THE_DEADLINE = ["--rules-today", "2008-06-01"]
 AFTER_THE_DEADLINE = ["--rules-today", "2009-01-01"]
 VALIDATION = ["--split", "validation", "--prompt-version", PROMPT_VERSION, *BEFORE_THE_DEADLINE]
-HEADLINE = "selected claims (validation split, agent v3, drafting prompt v999)"
+HEADLINE = "selected claims (validation split, agent v4, drafting prompt v999)"
 SETTINGS_LINE = "  rules today 2008-06-01, amount floor $25, score threshold 0.30"
 
 
@@ -500,7 +500,7 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
 
     assert main(["--split", "validation", *BEFORE_THE_DEADLINE]) == 1
 
-    assert DRAFTING_PROMPT_VERSION == "v2"
+    assert DRAFTING_PROMPT_VERSION == "v3"
     headline = capsys.readouterr().out.splitlines()[0]
     assert headline.endswith(f"drafting prompt {DRAFTING_PROMPT_VERSION})")
     assert stored_drafts(factory) == {}

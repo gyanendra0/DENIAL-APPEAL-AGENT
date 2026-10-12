@@ -438,7 +438,7 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
 
     assert main(["--split", "validation"]) == 1
 
-    assert DRAFTING_PROMPT_VERSION == "v2"
+    assert DRAFTING_PROMPT_VERSION == "v3"
     headline = capsys.readouterr().out.splitlines()[0]
     assert f"prompt {DRAFTING_PROMPT_VERSION}, " in headline
     assert stored_drafts(factory) == {}

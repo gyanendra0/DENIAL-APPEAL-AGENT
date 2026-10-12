@@ -213,7 +213,7 @@ def test_every_end_state_is_final_except_a_failed_draft(factory: sessionmaker[Se
         assert CLAIM_1 not in finished
 
 
-@pytest.mark.parametrize("earlier_version", ["v1", "v2"])
+@pytest.mark.parametrize("earlier_version", ["v1", "v2", "v3"])
 def test_a_trace_of_an_earlier_agent_version_does_not_finish_a_claim(
     factory: sessionmaker[Session], earlier_version: str
 ) -> None:

@@ -11,6 +11,7 @@ from src.drafting.prompts import (
     DraftingPromptError,
     load_drafting_prompt,
 )
+from src.drafting.reason_words import REASON_WORDS
 from src.drafting.schemas import AppealDraft, DraftCitation, DraftParagraph, ParagraphKind
 from src.extraction.schemas import DenialLetterExtraction, ExtractedDeniedLine
 from src.llm.gateway import LlmRequest
@@ -18,9 +19,16 @@ from src.synth.denial_letter import REASON_WORDING
 
 # The prompt files in the repository: instructions only, so they are not test data.
 REAL_PROMPT_DIR = Path(__file__).parents[2] / "config" / "prompts"
-REAL_VERSIONS = ["v1", "v2"]
+REAL_VERSIONS = ["v1", "v2", "v3"]
 # The keys of the user message that are not a value of the denial letter.
 USER_MESSAGE_KEYS = {"denial_letter", "document_title", "section_number", "section_title"}
+# The keys of the message a prompt from `v3` on is sent: no claim total, and the reason in
+# plain words under `denial_reason` and, for a denied line, `reason`.
+PLAIN_LETTER_KEYS = (
+    set(DenialLetterExtraction.model_fields)
+    - {"total_allowed_charge_amount", "total_payment_amount", "denial_reason_category"}
+) | {"denial_reason"}
+PLAIN_LINE_KEYS = (set(ExtractedDeniedLine.model_fields) - {"reason_category"}) | {"reason"}
 # A name in double quotes with an underscore: a key or a category value, never a plain word.
 QUOTED_NAME = re.compile(r'"([a-z]+(?:_[a-z]+)+)"')
 
@@ -193,6 +201,96 @@ def test_the_v2_prompt_holds_each_rule_of_the_design(words: str) -> None:
 def test_the_v2_prompt_holds_no_square_bracket_of_its_own() -> None:
     # An example such as `[Your Name]` in the prompt could be copied into a letter.
     system = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+
+    assert "[" not in system
+    assert "]" not in system
+
+
+def test_the_v3_prompt_starts_as_the_first_two_do() -> None:
+    v1 = load_drafting_prompt(REAL_PROMPT_DIR, "v1").system
+    v2 = load_drafting_prompt(REAL_PROMPT_DIR, "v2").system
+    v3 = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+    # The JSON shape, the two kinds and the quote rule are word for word those of `v1`.
+    assert v3.startswith(v1[: v1.index("- Every other paragraph is")])
+    assert v3 != v2
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        # The three rules for the citation faults of the third review.
+        "Say nothing about a rule that the quote itself does not say",
+        "improper, wrong or against the rules unless the quote says\n  so",
+        "Never cite a rule that supports the denial",
+        "not reasonable and necessary is not covered supports the denial",
+        'write no "policy" paragraph',
+        # The rules that fit the message without totals and category values.
+        '"denial_letter" holds no amount for the whole claim',
+        "Write no claim total and no sum of\n  several lines",
+        "give the reason in plain words",
+        "Never give a single word or the name of a category",
+        'When "denial_reason" is "the service could not be paid as submitted"',
+        # Kept from `v2`.
+        "no address block, no date line and no subject line",
+        "Never write text in square",
+        "sample letter or a sample notice",
+        "against no other reason",
+        "A quote alone is not a paragraph",
+        "Add no fact about the care",
+        "do not ask the payer to send documents",
+        "ask the payer to state the specific reason for the\n  denial",
+        "right to ask for a review of a denied claim",
+    ],
+)
+def test_the_v3_prompt_holds_each_rule_of_the_design(words: str) -> None:
+    assert words in load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+
+def test_every_name_the_v3_prompt_quotes_is_a_key_of_the_message_it_is_sent() -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+    quoted = set(QUOTED_NAME.findall(system))
+
+    assert quoted - (USER_MESSAGE_KEYS | PLAIN_LETTER_KEYS | PLAIN_LINE_KEYS) == set()
+    assert {
+        "patient_name",
+        "payer_name",
+        "member_id",
+        "denied_lines",
+        "hcpcs_code",
+        "allowed_charge_amount",
+        "payment_amount",
+        "denial_reason",
+    } <= quoted
+    assert '"reason"' in system
+
+
+@pytest.mark.parametrize("category", list(DenialReasonCategory))
+def test_the_v3_prompt_names_no_category_value(category: DenialReasonCategory) -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+    # `"other"` is also a paragraph kind, so that one is looked for as an entry of a list.
+    assert f'- "{category.value}":' not in system
+    if category is not DenialReasonCategory.OTHER:
+        assert f'"{category.value}"' not in system
+
+
+def test_the_v3_prompt_names_no_claim_total_and_no_category_key() -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+    for name in ("total_allowed_charge_amount", "total_payment_amount", "reason_category"):
+        assert name not in system
+
+
+def test_the_words_the_v3_prompt_gives_for_a_denial_with_no_reason_are_the_real_ones() -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
+
+    assert f'When "denial_reason" is "{REASON_WORDS[DenialReasonCategory.OTHER]}"' in system
+
+
+def test_the_v3_prompt_holds_no_square_bracket_of_its_own() -> None:
+    system = load_drafting_prompt(REAL_PROMPT_DIR, "v3").system
 
     assert "[" not in system
     assert "]" not in system

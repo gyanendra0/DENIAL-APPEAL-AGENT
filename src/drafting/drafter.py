@@ -14,6 +14,7 @@ anywhere: the result is for a person to review.
 import json
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -22,6 +23,7 @@ from src.drafting.citation_validator import CitationProblem, validate_citations
 from src.drafting.fact_check import FactProblem, find_fact_problems
 from src.drafting.placeholder_check import find_placeholder_paragraphs
 from src.drafting.prompts import DRAFTING_PURPOSE, DraftingPrompt
+from src.drafting.reason_words import REASON_WORDS
 from src.drafting.schemas import (
     AppealDraft,
     AppealLetter,
@@ -29,7 +31,7 @@ from src.drafting.schemas import (
     LetterParagraph,
     evidence_label,
 )
-from src.extraction.schemas import DenialLetterExtraction
+from src.extraction.schemas import DenialLetterExtraction, ExtractedDeniedLine
 from src.llm.gateway import LlmGateway, LlmRequest
 from src.rag.retrieval import EvidenceMatch
 
@@ -40,6 +42,13 @@ DRAFTING_MAX_OUTPUT_TOKENS = 1500
 LENGTH_STOP_REASON = "length"
 # A label has at most two digits (`E99`), so a draft is never written from more matches.
 MAX_EVIDENCE_MATCHES = 99
+# The prompt versions written for the first message: every value of the letter, the two
+# claim totals and the category values included. Every later version gets the message
+# without the totals and with the reason in plain words.
+FULL_VALUE_MESSAGE_VERSIONS = frozenset({"v1", "v2"})
+# The claim totals. A prompt from `v3` on never sees them, so it cannot give one as the
+# amount of a service line.
+TOTAL_FIELDS = frozenset({"total_allowed_charge_amount", "total_payment_amount"})
 
 
 class DraftingError(Exception):
@@ -112,7 +121,7 @@ def draft_appeal(
     result = gateway.complete(
         LlmRequest(
             system=prompt.system,
-            user=build_user_message(letter, matches),
+            user=build_user_message(letter, matches, prompt_version=prompt.version),
             max_tokens=DRAFTING_MAX_OUTPUT_TOKENS,
             prompt_version=prompt.version,
             purpose=DRAFTING_PURPOSE,
@@ -147,16 +156,24 @@ def draft_appeal(
     )
 
 
-def build_user_message(letter: DenialLetterExtraction, matches: Sequence[EvidenceMatch]) -> str:
+def build_user_message(
+    letter: DenialLetterExtraction, matches: Sequence[EvidenceMatch], *, prompt_version: str
+) -> str:
     """Return the user message of a drafting call: the letter's values and the evidence.
 
     The values go without their confidence scores. Each match gets its label by position.
+    For the prompts `v1` and `v2` every value is sent as it is stored. For a later prompt
+    the two claim totals are left out, and the reason of the denial and of each denied line
+    goes in plain words under the keys `denial_reason` and `reason`.
     """
     if len(matches) > MAX_EVIDENCE_MATCHES:
         raise ValueError(
             f"a draft is written from at most {MAX_EVIDENCE_MATCHES} matches, got {len(matches)}"
         )
-    values = {name: field["value"] for name, field in letter.model_dump(mode="json").items()}
+    if prompt_version in FULL_VALUE_MESSAGE_VERSIONS:
+        values = {name: field["value"] for name, field in letter.model_dump(mode="json").items()}
+    else:
+        values = _values_in_plain_words(letter)
     evidence = [
         {
             "label": evidence_label(position),
@@ -168,6 +185,31 @@ def build_user_message(letter: DenialLetterExtraction, matches: Sequence[Evidenc
         for position, match in enumerate(matches)
     ]
     return json.dumps({"denial_letter": values, "evidence": evidence}, ensure_ascii=False, indent=2)
+
+
+def _values_in_plain_words(letter: DenialLetterExtraction) -> dict[str, Any]:
+    """Return the letter's values with no claim total and no category value."""
+    values: dict[str, Any] = {}
+    for name, field in letter.model_dump(mode="json").items():
+        if name in TOTAL_FIELDS:
+            continue
+        if name == "denied_lines":
+            lines = letter.denied_lines.value
+            values[name] = None if lines is None else [_line_in_plain_words(line) for line in lines]
+        elif name == "denial_reason_category":
+            category = letter.denial_reason_category.value
+            values["denial_reason"] = None if category is None else REASON_WORDS[category]
+        else:
+            values[name] = field["value"]
+    return values
+
+
+def _line_in_plain_words(line: ExtractedDeniedLine) -> dict[str, Any]:
+    """Return one denied line with its reason in plain words under the key `reason`."""
+    values = line.model_dump(mode="json")
+    del values["reason_category"]
+    values["reason"] = REASON_WORDS[line.reason_category]
+    return values
 
 
 def _cited_letter(draft: AppealDraft, matches: Sequence[EvidenceMatch]) -> AppealLetter:

@@ -9,12 +9,15 @@ import pytest
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.db.models import EvidenceSource, LlmCall, LlmProvider
+from src.db.models import DenialReasonCategory, EvidenceSource, LlmCall, LlmProvider
 from src.db.session import create_session_factory, session_scope
+from src.drafting import drafter
 from src.drafting.citation_validator import CitationProblemKind
 from src.drafting.drafter import (
     DRAFTING_MAX_OUTPUT_TOKENS,
+    FULL_VALUE_MESSAGE_VERSIONS,
     MAX_EVIDENCE_MATCHES,
+    TOTAL_FIELDS,
     DraftBlockedError,
     DraftFactError,
     DraftingError,
@@ -27,6 +30,7 @@ from src.drafting.drafter import (
 )
 from src.drafting.fact_check import FactProblem, FactProblemKind
 from src.drafting.prompts import DRAFTING_PURPOSE, DraftingPrompt
+from src.drafting.reason_words import REASON_WORDS
 from src.drafting.schemas import AppealDraft, Citation, ParagraphKind
 from src.extraction.schemas import DenialLetterExtraction
 from src.llm.gateway import (
@@ -64,6 +68,30 @@ LETTER_VALUES: dict[str, Any] = {
     "total_allowed_charge_amount": "130.10",
     "total_payment_amount": "0.00",
     "denial_reason_category": "noncovered",
+    "patient_name": PATIENT_NAME,
+    "member_id": "MBR-000001",
+    "provider_name": "Made Up Practice",
+    "payer_name": "Made Up Health Plan",
+    "reference_number": None,
+    "letter_date": "2008-03-20",
+    "appeal_deadline": "2008-09-16",
+}
+# What a prompt from `v3` on is sent: no claim total, and the reasons in plain words.
+PLAIN_LETTER_VALUES: dict[str, Any] = {
+    "claim_number": "123456789012345",
+    "service_from_date": "2008-03-01",
+    "service_thru_date": "2008-03-02",
+    "diagnosis_codes": ["4011", "25000"],
+    "denied_lines": [
+        {
+            "line_number": 2,
+            "hcpcs_code": "99213",
+            "allowed_charge_amount": "130.10",
+            "payment_amount": "0.00",
+            "reason": "the service is not covered",
+        }
+    ],
+    "denial_reason": "the service is not covered",
     "patient_name": PATIENT_NAME,
     "member_id": "MBR-000001",
     "provider_name": "Made Up Practice",
@@ -271,21 +299,98 @@ def test_the_call_goes_through_the_gateway_with_the_drafting_labels(
     assert request.prompt_version == PROMPT_VERSION
     assert request.max_tokens == DRAFTING_MAX_OUTPUT_TOKENS == 1500
     assert request.response_schema == AppealDraft.model_json_schema()
-    assert request.user == build_user_message(_letter(), MATCHES)
+    assert request.user == build_user_message(_letter(), MATCHES, prompt_version=PROMPT_VERSION)
     assert _stored_calls(session_factory) == 1
 
 
-def test_the_model_is_sent_the_letter_values_without_confidence_scores() -> None:
-    message = json.loads(build_user_message(_letter(), MATCHES))
+@pytest.mark.parametrize("prompt_version", ["v1", "v2"])
+def test_the_first_two_prompts_are_sent_every_letter_value_as_it_is_stored(
+    prompt_version: str,
+) -> None:
+    message = json.loads(build_user_message(_letter(), MATCHES, prompt_version=prompt_version))
 
     assert set(message) == {"denial_letter", "evidence"}
     assert message["denial_letter"] == LETTER_VALUES
-    assert "confidence" not in build_user_message(_letter(), MATCHES)
-    assert "0.37" not in build_user_message(_letter(), MATCHES)
+
+
+@pytest.mark.parametrize("prompt_version", ["v3", "v4", PROMPT_VERSION])
+def test_a_later_prompt_is_sent_no_claim_total_and_the_reasons_in_plain_words(
+    prompt_version: str,
+) -> None:
+    message = json.loads(build_user_message(_letter(), MATCHES, prompt_version=prompt_version))
+
+    assert set(message) == {"denial_letter", "evidence"}
+    assert message["denial_letter"] == PLAIN_LETTER_VALUES
+    assert list(message["denial_letter"]) == list(PLAIN_LETTER_VALUES)
+
+
+@pytest.mark.parametrize("category", list(DenialReasonCategory))
+def test_a_later_prompt_is_never_sent_a_category_value(category: DenialReasonCategory) -> None:
+    line = {**LETTER_VALUES["denied_lines"][0], "reason_category": category.value}
+    letter = _letter(denial_reason_category=category.value, denied_lines=[line])
+
+    values = json.loads(build_user_message(letter, [], prompt_version="v3"))["denial_letter"]
+
+    assert values["denial_reason"] == values["denied_lines"][0]["reason"] == REASON_WORDS[category]
+    assert f'"{category.value}"' not in json.dumps(values)
+    assert "category" not in json.dumps(values)
+
+
+def test_each_denied_line_is_sent_with_its_own_reason_in_plain_words() -> None:
+    first = LETTER_VALUES["denied_lines"][0]
+    second = {**first, "line_number": 5, "reason_category": "other"}
+
+    values = json.loads(
+        build_user_message(_letter(denied_lines=[first, second]), [], prompt_version="v3")
+    )["denial_letter"]
+
+    assert [line["reason"] for line in values["denied_lines"]] == [
+        "the service is not covered",
+        "the service could not be paid as submitted",
+    ]
+    assert values["denial_reason"] == "the service is not covered"
+
+
+def test_an_unknown_reason_and_unknown_denied_lines_stay_null_for_a_later_prompt() -> None:
+    letter = _letter(denial_reason_category=None, denied_lines=None)
+
+    values = json.loads(build_user_message(letter, [], prompt_version="v3"))["denial_letter"]
+
+    assert values["denial_reason"] is None
+    assert values["denied_lines"] is None
+
+
+def test_the_message_sent_follows_the_version_of_the_prompt(
+    session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = json.dumps({"paragraphs": [{"kind": "other", "text": OPENING_TEXT}]})
+    later = StubProvider(answer)
+    first = StubProvider(answer)
+
+    draft_appeal(_gateway(session_factory, later), PROMPT, _letter(), MATCHES)
+    # The made-up test version stands in for `v1` / `v2`, so no row with a real version is stored.
+    monkeypatch.setattr(
+        drafter, "FULL_VALUE_MESSAGE_VERSIONS", FULL_VALUE_MESSAGE_VERSIONS | {PROMPT_VERSION}
+    )
+    draft_appeal(_gateway(session_factory, first), PROMPT, _letter(), MATCHES)
+
+    assert json.loads(later.requests[0].user)["denial_letter"] == PLAIN_LETTER_VALUES
+    assert json.loads(first.requests[0].user)["denial_letter"] == LETTER_VALUES
+
+
+def test_only_the_first_two_prompt_versions_get_the_full_value_message() -> None:
+    assert {"v1", "v2"} == FULL_VALUE_MESSAGE_VERSIONS
+    assert {"total_allowed_charge_amount", "total_payment_amount"} == TOTAL_FIELDS
+    assert set(DenialLetterExtraction.model_fields) >= TOTAL_FIELDS
+
+
+def test_the_model_is_sent_the_letter_values_without_confidence_scores() -> None:
+    assert "confidence" not in build_user_message(_letter(), MATCHES, prompt_version=PROMPT_VERSION)
+    assert "0.37" not in build_user_message(_letter(), MATCHES, prompt_version=PROMPT_VERSION)
 
 
 def test_the_model_is_sent_each_match_with_its_label_by_position() -> None:
-    message = json.loads(build_user_message(_letter(), MATCHES))
+    message = json.loads(build_user_message(_letter(), MATCHES, prompt_version=PROMPT_VERSION))
 
     assert message["evidence"] == [
         {
@@ -306,7 +411,7 @@ def test_the_model_is_sent_each_match_with_its_label_by_position() -> None:
 
 
 def test_the_model_is_not_sent_the_fields_that_name_a_chunk() -> None:
-    message = build_user_message(_letter(), MATCHES)
+    message = build_user_message(_letter(), MATCHES, prompt_version=PROMPT_VERSION)
 
     for name in ("text_sha256", "source_document_id", "chunk_index", "similarity"):
         assert name not in message
@@ -314,22 +419,34 @@ def test_the_model_is_not_sent_the_fields_that_name_a_chunk() -> None:
 
 
 def test_text_that_is_not_ascii_is_sent_as_it_is() -> None:
-    message = build_user_message(_letter(patient_name="Zoë Ångström"), [_match(0, "naïve – café")])
+    message = build_user_message(
+        _letter(patient_name="Zoë Ångström"),
+        [_match(0, "naïve – café")],
+        prompt_version=PROMPT_VERSION,
+    )
 
     assert "Zoë Ångström" in message
     assert "naïve – café" in message
 
 
 def test_with_no_match_the_evidence_list_is_empty() -> None:
-    assert json.loads(build_user_message(_letter(), []))["evidence"] == []
+    assert (
+        json.loads(build_user_message(_letter(), [], prompt_version=PROMPT_VERSION))["evidence"]
+        == []
+    )
 
 
 def test_more_matches_than_there_are_labels_are_refused() -> None:
     matches = [_match(position, SECOND_TEXT) for position in range(MAX_EVIDENCE_MATCHES + 1)]
 
-    assert json.loads(build_user_message(_letter(), matches[:-1]))["evidence"][-1]["label"] == "E99"
+    assert (
+        json.loads(build_user_message(_letter(), matches[:-1], prompt_version=PROMPT_VERSION))[
+            "evidence"
+        ][-1]["label"]
+        == "E99"
+    )
     with pytest.raises(ValueError, match="at most 99 matches, got 100"):
-        build_user_message(_letter(), matches)
+        build_user_message(_letter(), matches, prompt_version=PROMPT_VERSION)
 
 
 def test_a_letter_with_no_policy_paragraph_passes_with_no_evidence(

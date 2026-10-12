@@ -213,12 +213,13 @@ def test_every_end_state_is_final_except_a_failed_draft(factory: sessionmaker[Se
         assert CLAIM_1 not in finished
 
 
-def test_a_trace_of_another_agent_version_does_not_finish_a_claim(
-    factory: sessionmaker[Session],
+@pytest.mark.parametrize("earlier_version", ["v1", "v2"])
+def test_a_trace_of_an_earlier_agent_version_does_not_finish_a_claim(
+    factory: sessionmaker[Session], earlier_version: str
 ) -> None:
     candidate = _validation(factory)[0]
-    _save(factory, candidate, _trace(EndState.STOPPED_BY_RULES, agent_version="v0"))
+    _save(factory, candidate, _trace(EndState.STOPPED_BY_RULES, agent_version=earlier_version))
 
     with session_scope(factory) as session:
         assert CLAIM_1 not in read_finished_claim_ids(session, AGENT_VERSION)
-        assert CLAIM_1 in read_finished_claim_ids(session, "v0")
+        assert CLAIM_1 in read_finished_claim_ids(session, earlier_version)

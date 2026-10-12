@@ -1841,13 +1841,13 @@ letter with `other` paragraphs only.
 | Prompt version | Means |
 |---|---|
 | `v1` | The answer shape, the two kinds of paragraph, the quote rule and a short list of rules for the letter |
-| `v2` | The `v1` text as the base, plus eleven rules against the faults the second review found (3.17). Today's version |
+| `v2` | The `v1` text as the base, plus fourteen rules against the faults the second review found (3.17). Today's version |
 
-The eleven rules that `v2` adds, in the four groups of the prompt file:
+The fourteen rules that `v2` adds, in the four groups of the prompt file:
 
 | Group | Rule |
 |---|---|
-| Kinds | A `policy` paragraph also says, in the model's own words, what the quoted rule means for this claim. A quote alone is not a paragraph |
+| Kinds | A `policy` paragraph also says, in the model's own words, what the quoted rule means for this claim. A quote alone is not a paragraph. The rule gives one example: "the denial names no exclusion, and the quoted rule says that each exclusion must be analysed" |
 | Evidence | The evidence was found by a search for the general rule behind the denial reason; a passage is used only when it supports the appeal of this claim |
 | Evidence | A passage that is a sample letter or a sample notice is not a rule and is never cited |
 | Facts | Only the values of `denial_letter` are used for names, numbers, dates, codes and amounts; a value that is null or missing is left out, never made up |
@@ -1856,19 +1856,32 @@ The eleven rules that `v2` adds, in the four groups of the prompt file:
 | Facts | Each appealed line is named with its own procedure code, its own two amounts and its own reason |
 | Facts | The two claim totals are called claim totals and are never given as the amount of one service line |
 | Facts | A category value such as `other` is never written in the letter; the prompt gives plain words for each of the six reasons |
+| Letter | The letter is written for the patient, in the first person, and ends with the patient's name as the signature |
+| Letter | The opening names the payer, the claim number, the reference number, the patient and the member id |
 | Letter | The letter argues against the reason the denial gives and against no other reason |
 | Letter | For an `other` denial the letter says that the denial names no specific reason, asks the payer to state it, asks for the claim to be reviewed again, and cites the right to a review when a passage gives it |
+| Letter | The letter does not say that the denial is justified and does not ask the payer to send documents |
 
 The plain words for the six reasons are the ones the made-up denial letters use
 (`REASON_WORDING` in `src/synth/denial_letter.py`), and a test keeps the two equal.
 
-**The last rule was written to fit how the drafts are judged.** It was added on
+**The rule for an `other` denial was written to fit how the drafts are judged.** It was added on
 2026-10-12, after the reading of the rubric for an `other` letter had been fixed (3.17) and
 before any draft was written with `v2`. So the prompt tells the model to write the very
 letter that reading accepts. The `v2` file was changed in place for it, because no `v2`
 draft existed yet.
 
-A prompt rule only asks. Of the eleven, one is also checked in code: text in square
+**The example in the first rule is the argument most accepted letters make.** It was
+written after the trial searches had shown the passage it describes (the manual's sentence
+that each payment exclusion must be analysed). All 10 accepted `noncovered` letters of the
+third review use that sentence in that way (3.17). So that argument is the prompt's, not
+one the drafting model found on its own.
+
+Issue #53 planned ten rules. The count here is fourteen because it is taken from the
+prompt file: the three letter rules on the voice, the opening and what the letter must not
+say are counted one by one, and the rule for an `other` denial was added later.
+
+A prompt rule only asks. Of the fourteen, one is also checked in code: text in square
 brackets.
 
 Every drafting call is recorded in `llm_calls` with the purpose `drafting`. The output
@@ -2204,7 +2217,7 @@ About the placeholder check:
   run: 0 drafts were refused.
 - A single bracket with no partner is not caught, and neither is a blank written another
   way, such as a row of underscores or "(your name)".
-- Ten of the eleven rules of prompt `v2` are not checked by any code. The third review still
+- Thirteen of the fourteen rules of prompt `v2` are not checked by any code. The third review still
   found a category word, a claim total given as a line amount and a wrong denial reason in
   the drafts (3.17).
 
@@ -2982,13 +2995,16 @@ again, and by then it:
 - had written the reading of the rubric that accepts an `other` letter;
 - had written the rule of prompt `v2` that tells the drafting model to write exactly that
   letter (3.15);
+- had written into prompt `v2`, as an example, the argument that all 10 accepted
+  `noncovered` letters make (3.15);
 - had proposed the search phrases that bring back the passages the letters cite.
 
 The reading was fixed before any `v2` draft existed, so it was not bent to the drafts. But
 the prompt was fitted to the reading, and the reviewer then judged the result of its own
-rule. 7 of the 17 accepted drafts are `other` letters that only this reading accepts. So
-the rise from 0% to 56.67% is partly better drafts and partly an easier test, and the two
-cannot be told apart from these numbers.
+rule. 7 of the 17 accepted drafts are `other` letters that only this reading accepts, and
+the other 10 are `noncovered` letters that make the argument the prompt gives as its
+example. So the rise from 0% to 56.67% is partly better drafts and partly an easier test,
+and the two cannot be told apart from these numbers.
 
 The model's verdicts are in a local file of their own in each review folder. The score file
 `export` wrote is still empty in all three, ready for a person.
@@ -3008,8 +3024,8 @@ The model's verdicts are in a local file of their own in each review folder. The
   drafts); the internal category word `other` shown to the insurer; a line amount mixed up
   with the claim total.
 
-Both main faults come from the search question (3.15), which holds one fixed phrase per
-denial reason and the procedure codes, and no words about the service.
+Both main faults come from the search question (3.15), which then held one fixed phrase
+per denial reason and the procedure codes, and no words about the service.
 
 The points above are from the first measurement. The second shows what the minimum
 similarity changed, as judged by the model:

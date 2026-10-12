@@ -402,7 +402,10 @@ def test_a_missing_gateway_setting_fails_before_any_claim_is_read_and_names_the_
 
 
 def test_the_default_prompt_version_is_the_one_in_the_code(
-    factory: sessionmaker[Session], stubs: Stubs, monkeypatch: pytest.MonkeyPatch
+    factory: sessionmaker[Session],
+    stubs: Stubs,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # The real prompt folder: its file exists for the default version.
     monkeypatch.delenv("PROMPT_DIR")
@@ -412,6 +415,8 @@ def test_the_default_prompt_version_is_the_one_in_the_code(
     assert main(["--split", "validation"]) == 1
 
     assert DRAFTING_PROMPT_VERSION == "v2"
+    headline = capsys.readouterr().out.splitlines()[0]
+    assert f"prompt {DRAFTING_PROMPT_VERSION}, " in headline
     assert stored_drafts(factory) == {}
 
 

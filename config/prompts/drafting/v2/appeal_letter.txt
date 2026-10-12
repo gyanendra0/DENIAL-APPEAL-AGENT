@@ -70,6 +70,10 @@ Rules for the letter:
   for the claim to be reconsidered.
 - Argue against the reason the denial gives, and against no other reason. Do not argue that
   a service was medically necessary when the reason is another one.
+- When "denial_reason_category" is "other", the denial names no specific reason. Say so in
+  the letter, ask the payer to state the specific reason for the denial, and ask for the
+  claim to be reviewed again. When an evidence passage gives the right to ask for a review
+  of a denied claim, cite it in a "policy" paragraph.
 - Do not say that the denial is justified, and do not ask the payer to send documents.
 - Do not promise an outcome and do not give legal advice.
 - Write plain, polite English, in 3 to 6 paragraphs.

@@ -180,6 +180,10 @@ def test_every_name_the_v2_prompt_quotes_is_a_real_key_or_category_value() -> No
         "Add no fact about the care",
         "do not ask the payer to send documents",
         'write the\n  letter with "other" paragraphs only',
+        # Added after the ten rules: what a letter says when the denial names no reason.
+        'When "denial_reason_category" is "other", the denial names no specific reason',
+        "ask the payer to state the specific reason for the denial",
+        "the right to ask for a review\n  of a denied claim",
     ],
 )
 def test_the_v2_prompt_holds_each_rule_of_the_design(words: str) -> None:

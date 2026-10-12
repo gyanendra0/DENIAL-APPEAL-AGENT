@@ -1889,7 +1889,8 @@ prompt file: the three letter rules on the voice, the opening and what the lette
 say are counted one by one, and the rule for an `other` denial was added later.
 
 A prompt rule only asks. Of the fourteen, one is also checked in code: text in square
-brackets.
+brackets. Two more, on claim totals and on category words, are checked in part since the
+fact check (see below).
 
 **What `v3` changes.** The third review rejected 8 of 30 drafts for a wrong fact and 4 for a
 citation that does not fit (3.17). Prompt `v3` adds three rules for the citation faults:
@@ -2126,8 +2127,9 @@ is pure: no model call, no database.
 
 - **A dollar amount** is a dollar sign followed by a number (`DOLLAR_AMOUNT_PATTERN`).
   Amounts are compared by value, so `$70` equals a stored `70.00`, and `$1,250.50` is read
-  with its thousands separator. When the letter has no denied line, every dollar amount is
-  refused.
+  with its thousands separator. The number is read whole: one written another way, such as
+  `$70,50` or `$70k`, is refused, also when it starts like a line's amount. When the letter
+  has no denied line, every dollar amount is refused.
 - **"Other" as the reason** is found by a fixed list of wordings
   (`OTHER_AS_REASON_PATTERNS`): the word alone in quotation marks, straight or curly, and
   phrases such as "the category of other" or "the reason was other", where the word ends
@@ -2312,9 +2314,10 @@ About the placeholder check:
   run: 0 drafts were refused.
 - A single bracket with no partner is not caught, and neither is a blank written another
   way, such as a row of underscores or "(your name)".
-- Thirteen of the fourteen rules of prompt `v2` are not checked by any code. The third review still
-  found a category word, a claim total given as a line amount and a wrong denial reason in
-  the drafts (3.17).
+- Eleven of the fourteen rules of prompt `v2` are not checked by any code, and two more (on
+  claim totals and on category words) only in part, by the fact check. The third review, before
+  that check, still found a category word, a claim total given as a line amount and a wrong
+  denial reason in the drafts (3.17).
 
 About prompt `v3` and the fact check:
 
@@ -2330,6 +2333,8 @@ About prompt `v3` and the fact check:
   line, not which line the sentence is about.
 - "Other" as the reason is found by a fixed list of wordings. Without quotation marks it
   is found only at the end of a phrase: "the category of other was given" passes.
+- The word "other" alone in quotation marks is refused wherever it stands, also when it is
+  not given as the reason. Such a draft is not stored and the next run tries the claim again.
 - The check compares the draft with the **extracted** letter, not with the letter
   document. A value the extraction read wrongly is taken as right. 4 of the 8 wrong facts
   of the third review came from the extraction (a reason read as `medical_necessity`, a

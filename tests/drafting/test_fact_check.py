@@ -108,6 +108,23 @@ def test_a_dollar_amount_that_no_denied_line_has_is_refused(text: str) -> None:
     assert _kinds(text) == [AMOUNT]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Line 2 was allowed at $70,50.",
+        "Line 2 was allowed at $70,50 and paid $0.00.",
+        "Line 2 was allowed at $70.00.5.",
+        "Line 2 was allowed at $70k.",
+        "Line 2 was allowed at $70million.",
+        "Line 3 was allowed at $1,250.50,5.",
+        "Line 3 was allowed at $1,2505.",
+        "Line 3 was allowed at $1.250,50.",
+    ],
+)
+def test_a_number_that_only_starts_like_a_denied_line_amount_is_refused(text: str) -> None:
+    assert _kinds(text) == [AMOUNT]
+
+
 def test_a_claim_total_passes_when_it_is_also_the_amount_of_a_denied_line() -> None:
     letter = _letter(total_allowed_charge_amount="70.00")
 
@@ -152,6 +169,7 @@ def test_an_amount_without_a_dollar_sign_before_a_number_is_not_checked(text: st
         "The reason given was Other; no detail followed.",
         "The denial was categorized as other.",
         "The denial reason is classified in the letter as other",
+        "The reason was other\nI ask for a review of the claim.",
     ],
 )
 def test_other_given_as_the_reason_is_refused(text: str) -> None:

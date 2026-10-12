@@ -10,7 +10,8 @@ validator already compares it with its chunk.
 
 Known limits: an amount written without a dollar sign is not seen; the sum of several denied
 lines is refused, because it is no line's own amount; "other" as the reason is found by a
-fixed list of wordings, and another wording passes.
+fixed list of wordings, and another wording passes; the word "other" alone in quotation marks
+is refused wherever it stands.
 """
 
 import re
@@ -22,9 +23,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.drafting.schemas import AppealDraft
 from src.extraction.schemas import DenialLetterExtraction
 
-# A dollar sign and a number: `$70`, `$70.00`, `$1,250.00`. The group is the number.
-DOLLAR_AMOUNT_PATTERN = re.compile(r"\$\s*(\d+(?:,\d{3})*(?:\.\d+)?)")
+# A dollar sign and everything written as one number after it: `$70`, `$70.00`, `$1,250.00`,
+# but also `$70,50` and `$70k`. The group is that text, read whole so no part of it is lost.
+DOLLAR_AMOUNT_PATTERN = re.compile(r"\$\s*(\d[\w,.]*)")
+# The only way of writing a number that is read as an amount.
+WELL_FORMED_NUMBER_PATTERN = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
 THOUSANDS_SEPARATOR = ","
+# A comma or a full stop after the number belongs to the sentence, not to the number.
+_SENTENCE_PUNCTUATION = ",."
 # Straight and curly quotation marks, single and double.
 _QUOTATION_MARKS = "\"'‘’“”"
 # The wordings that give the category value `other` as the denial's reason.
@@ -36,7 +42,8 @@ OTHER_AS_REASON_PATTERNS = (
     re.compile(
         r"\b(?:category|categorized|classified|reason)\b(?:\s+\w+){0,3}?\s+(?:of|as|is|was)"
         r"\s+other\b(?=\s*(?:[.,;:!?)]|$))",
-        re.IGNORECASE,
+        # `$` is also the end of a line inside a paragraph.
+        re.IGNORECASE | re.MULTILINE,
     ),
 )
 
@@ -62,6 +69,7 @@ def find_fact_problems(
 
     `letter` is the denial letter the draft was written from. A dollar amount must equal the
     allowed or the paid amount of one of its denied lines, by value: `$70` equals `70.00`.
+    A number written another way (`$70,50`, `$70k`) is no line's amount.
     A paragraph gives at most one problem of each kind.
     """
     line_amounts = _denied_line_amounts(letter)
@@ -89,8 +97,13 @@ def _denied_line_amounts(letter: DenialLetterExtraction) -> frozenset[Decimal]:
     )
 
 
-def _dollar_amounts(text: str) -> list[Decimal]:
-    return [
-        Decimal(number.replace(THOUSANDS_SEPARATOR, ""))
-        for number in DOLLAR_AMOUNT_PATTERN.findall(text)
-    ]
+def _dollar_amounts(text: str) -> list[Decimal | None]:
+    # None stands for a number that is not well formed. It equals no line's amount.
+    return [_read_amount(number) for number in DOLLAR_AMOUNT_PATTERN.findall(text)]
+
+
+def _read_amount(number: str) -> Decimal | None:
+    number = number.rstrip(_SENTENCE_PUNCTUATION)
+    if WELL_FORMED_NUMBER_PATTERN.fullmatch(number) is None:
+        return None
+    return Decimal(number.replace(THOUSANDS_SEPARATOR, ""))

@@ -2762,7 +2762,8 @@ Three things hold for the command:
 - **The terminal shows counts and shares only.** Letter text and document text go into one
   local file and are never printed.
 
-The share has been measured four times, twice on 2026-10-11 and twice on 2026-10-12:
+The share has been measured five times, twice on 2026-10-11, twice on 2026-10-12 and once
+on 2026-10-15:
 
 | Measurement | Drafts of | Accepted | Scored by |
 |---|---|---|---|
@@ -2770,14 +2771,20 @@ The share has been measured four times, twice on 2026-10-11 and twice on 2026-10
 | Second | agent `v2`, search question `v2` (the minimum similarity of 3.15), drafting prompt `v1` | **0 of 30 (0.00%)** | a model |
 | Third | agent `v3`, search question `v3` (new phrases, no codes), drafting prompt `v2`, the four manual chapters in the evidence | **17 of 30 (56.67%)** | a model, with a new and easier reading of the rubric |
 | Fourth | agent `v4`, search question `v3`, drafting prompt `v3` (no claim totals and no category values in the message, three citation rules), the fact check; a new sample from twice as many claims | **20 of 30 (66.67%)** | a model, with the reading of the third |
+| Fifth | agent `v4`, search question `v3`, drafting prompt `v3`, unchanged; a new sample only from claims no earlier review had read, drawn from 360 claims | **23 of 30 (76.67%)** | a model, with the reading of the third |
 
 Every verdict was given **by a model, not by a person** (see "Who scored" below).
 
-**As scored, the fourth share meets the 60% target. The number is not firm.** 7 of its 30
-verdicts are marked as borderline by the model that gave them: the share is 53.33% if the
-4 borderline accepts are rejected, and 76.67% if the 3 borderline rejects are accepted (see
-"Fourth measurement"). Whether Stage 4 is released as `v0.5.0` on this number is **not
-decided**; it is the project owner's decision.
+**The fifth share meets the 60% target, and it decides the release.** Before any of its
+drafts was read, the rule was written down: Stage 4 is released as `v0.5.0` when the fifth
+sample alone is at least 60% (18 of 30). It is 23 of 30. The model marked 10 of its
+verdicts as borderline, which move the share from 50.00% to 83.33%; that range was to be
+recorded, not to change the decision (see "Fifth measurement").
+
+**The fourth number is not firm.** 7 of its 30 verdicts are marked as borderline by the
+model that gave them: the share is 53.33% if the 4 borderline accepts are rejected, and
+76.67% if the 3 borderline rejects are accepted (see "Fourth measurement"). The project
+owner did not release on it and had the fifth measurement made first.
 
 **The third number is not firm either.** It rests on single judgement calls by the model
 that scored. Read in three other ways, the same 30 drafts give 23.33%, 33.33% or up to 70%
@@ -2792,7 +2799,7 @@ that scored. Read in three other ways, the same 30 drafts give 23.33%, 33.33% or
 | `src/evaluation/review_store.py` | `select_reviewable_claims` (the claims whose draft can be reviewed), `read_review_drafts`, `read_review_items` (what the reviewer sees), `draft_fingerprint` and `ReviewDataError` |
 | `src/evaluation/review_export.py` | `build_review_text` (the file to read) and `build_scores_csv` (the score file to fill in) |
 | `src/evaluation/review_score.py` | `read_review_scores`, `check_review_scores`, `count_without_verdict`, `build_review_report`, the printed `ReviewReport` and `ScoreFileError` |
-| `pipelines/review_drafts.py` | The command with its two steps, `export` and `score` ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
+| `pipelines/review_drafts.py` | The command with its two steps, `export` (with `--exclude-scored`, which leaves out the claims of earlier score files) and `score` ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
 
 The sampling function and the functions that build the two files and the report are pure.
 Only `review_store.py` reads the database and only the command writes files. There is no
@@ -2838,8 +2845,17 @@ and counted.
 **The draw.** `select_review_sample` sorts the claim ids and draws with
 `random.Random(seed)`. The same ids and the same seed always give the same sample, whatever
 order the ids arrive in. A size above the number of ids, a size below 1 and a repeated id
-are refused. Every measured review used 30 drafts. The first three used seed 42 and the
-fourth seed 43.
+are refused. Every measured review used 30 drafts. The first three used seed 42, the
+fourth seed 43 and the fifth seed 44.
+
+**Leaving out claims that were read before.** `export --exclude-scored <score csv>` takes
+out of the pool every claim named in that score file, before the draw. The option can be
+given once per file. Each file is read with `read_review_scores`, the reader `score` uses,
+so a file whose verdicts are still empty can be named too. A missing file or one that
+cannot be used stops the command with exit 1 before the database is opened, and no file is
+written. The printed headline counts the pool after leaving out, and one more line says how
+many were left out. Without the option the pool and the sample are the same as before. The
+fifth measurement named the four model score files of the earlier reviews.
 
 **What the reviewer sees.** Per draft: every paragraph of the draft with its quotes, the
 text of the denial letter document, and every cited chunk in full with its determination
@@ -3250,13 +3266,150 @@ those 7 decide whether the target is met:
 The first two other figures are the model's own count from its notes. The last two are
 worked out from the counts above. None of them is a second review.
 
+### Fifth measurement (claims no review has read)
+
+The fourth share met the target as scored, but it was not firm, and on the 17 claims no
+earlier review had read it was 10 of 17 (58.82%). So the project owner had the share
+measured once more, **only on drafts of claims no review and no prompt rule had read**,
+before deciding on the release. Nothing that writes or checks a draft changed: agent `v4`,
+search question `v3`, drafting prompt `v3`, the fact check, the evidence and the rubric
+text are those of the fourth measurement. What is new is the `--exclude-scored` option of
+`export` (see "The method"). Measured on 2026-10-15 on the local database, at migration
+0014.
+
+**Written down before any draft was read**, at the top of the model's notes in the review
+folder:
+
+- **The reading of the rubric** is the one of the third and fourth measurements, unchanged
+  (the table under "Third measurement").
+- **The decision rule:** Stage 4 is released as `v0.5.0` when the fifth sample alone is at
+  least 60%, 18 of 30 or more, and `score` exits with 0. Below that, no release, and the
+  next piece of work is chosen from the reject reasons.
+- **The borderline verdicts** are marked in the notes and the lowest and highest share they
+  give are recorded, but they do not change the decision.
+
+**Step 1, the loop on 360 claims.** The loop ran with `--limit 360` (`--rules-today
+2010-01-01`, amount floor 25, threshold 0.30, drafting prompt `v3`, model `gpt-4o-mini`).
+The agent version stayed `v4`, so the 240 claims it had finished were skipped: it took the
+next 120 test claims in claim id order (candidates 241 to 360) and the 3 claims left as
+`draft_failed` by the fourth measurement.
+
+| Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost |
+|---|---|---|---|---|---|---|---|
+| 1 | 123 | 40 | 11 | 59 | 5 | 8 (blocked) | $0.029160 |
+| 2 | 8 | 4 | 0 | 0 | 0 | 4 (3 blocked, 1 cut off) | $0.005872 |
+
+Both runs exited with 0. The time of the runs was not recorded. **No third run was made**,
+so 4 claims stay `draft_failed`.
+
+| Number | Fifth measurement | Fourth measurement |
+|---|---|---|
+| Claims the loop has finished for agent `v4` | 360 | 240 |
+| Rows in `agent_runs` for agent `v4` | 360: 150 `needs_review`, 35 `needs_review_no_draft`, 164 `stopped_by_rules`, 7 `below_threshold`, 4 `draft_failed` | 240: 106, 24, 105, 2, 3 |
+| New `needs_review` drafts | 44 | 106 |
+| Of them, with at least one citation | 44 | 105 |
+| Citations in the new drafts | 52: 36 drafts with one policy paragraph, 8 with two | 135 |
+| Of them, from `cms_manual` | 52 | 135 |
+| Of them, whose four values name a chunk in `evidence_chunks`, with the quote in its text | 52 of 52 | 135 of 135 name a chunk (whether the quote is in it was not recorded) |
+| Cost of the two runs | $0.035032 (the limit set for the run was $0.10) | $0.077256 |
+| Month-to-date spend after the runs | $0.940107 of the $3.00 cap | $0.905075 |
+
+The rows on citations were checked with one-off read-only queries, not a command. Of
+candidates 241 to 360, 45 reached drafting: `noncovered` 20, `other` 18,
+`medical_necessity` 5, `coordination_of_benefits` 2 (measured read-only before the run, with
+no model call).
+
+The 52 citations name 7 manual sections:
+
+| Section | Title | Citations |
+|---|---|---|
+| `100-02-16-40` | No Legal Obligation to Pay for or Provide Services | 19 |
+| `100-04-29-310` | Redetermination - The First Level of Appeal | 19 |
+| `100-04-29-220` | Steps in the Appeals Process: Overview | 8 |
+| `100-02-16-20` | Services Not Reasonable and Necessary | 2 |
+| `100-02-16-40.3` | Medicare Patient Has Other Health Coverage | 2 |
+| `100-04-30-100.2` | Conditions for Indemnification | 1 |
+| `100-04-30-20.1` | LOL Coverage Denials | 1 |
+
+After the runs `appeal_drafts` holds 150 drafts of prompt `v3`. Nothing earlier was
+written over.
+
+**Step 2, the sample.** `export` wrote into a new folder with **seed 44** and named the four
+model score files of the earlier reviews with `--exclude-scored`. Of the 150 drafts that can
+be reviewed, the 60 claims those files name were left out, so the pool was 90. 29 of the 30
+sampled drafts carry at least one citation. No draft was left out for a changed letter.
+
+| Sampled claims | Drafts in the sample |
+|---|---|
+| Candidates 1 to 120 (drafted for agent `v4`, never in a sample) | 6 |
+| Candidates 121 to 240 (drafted in the fourth measurement's run, never in a sample) | 12 |
+| Candidates 241 to 360 (new in this run) | 12 |
+
+**Step 3, the verdicts.**
+
+| Number | Fifth | Fourth | Third | Second | First |
+|---|---|---|---|---|---|
+| Drafts scored | 30 | 30 | 30 | 30 | 30 |
+| `accept` | 0 | 5 | 2 | 0 | 0 |
+| `accept_light_edits` | 23 | 15 | 15 | 0 | 0 |
+| `reject` | 7 | 10 | 13 | 30 | 30 |
+| **Acceptance share** | **23 of 30 (76.67%), meets the 60% target** | **20 of 30 (66.67%)** | **17 of 30 (56.67%)** | **0 of 30 (0.00%)** | **0 of 30 (0.00%)** |
+| Drafts with a citation | 23 of 29 accepted | 20 of 30 | 17 of 30 | 0 of 6 | 0 of 15 |
+| Drafts without a citation | 0 of 1 accepted | none in the sample | none in the sample | 0 of 24 | 0 of 15 |
+
+| Reject reason | Fifth | Fourth | Third | Second | First |
+|---|---|---|---|---|---|
+| `wrong_fact` | 3 | 2 | 8 | 3 | 2 |
+| `no_policy_argument` | 3 | 1 | 1 | 21 | 13 |
+| `citation_does_not_fit` | 1 | 7 | 4 | 6 | 14 |
+| `poor_wording` | 0 | 0 | 0 | 0 | 0 |
+| `other` | 0 | 0 | 0 | 0 | 1 |
+
+By the group of the sampled claim:
+
+| Sampled claims | Accepted |
+|---|---|
+| Candidates 1 to 120 | 4 of 6 (66.67%) |
+| Candidates 121 to 240 | 10 of 12 (83.33%) |
+| Candidates 241 to 360 | 9 of 12 (75.00%) |
+| Candidates 121 to 360, claims no loop run before the fourth measurement had taken | 19 of 24 (79.17%) |
+
+By the reason the denial letter gives, as the model read it from the 30 letters:
+
+| Denial reason of the letter | Accepted | Fourth measurement |
+|---|---|---|
+| `noncovered` | 12 of 13 | 11 of 17 |
+| `other` | 10 of 13 | 8 of 8 |
+| `medical_necessity` | 0 of 2 | 0 of 3 |
+| `coordination_of_benefits` | 1 of 1 | 1 of 2 |
+| `benefits_exhausted` | 0 of 1 | none in the sample |
+
+The command exited with 0. **A model gave these 30 verdicts, not a person.** It was the same
+model that gave the first 120 (see "Who scored").
+
+**The decision rule is met:** 23 of 30 is at least 18 of 30. So the next step after this
+work is merged is `/stage-release v0.5.0`.
+
+**How firm the number is.** The model marked 10 of its 30 verdicts as borderline in its
+notes: 8 accepts and 2 rejects. As written before scoring, they do not change the decision:
+
+| Reading | Accepted | Why |
+|---|---|---|
+| The one recorded | **23 of 30 (76.67%)** | |
+| The 8 borderline accepts are rejected | 15 of 30 (50.00%), below the target | Each is at the limit of a light edit, or has one sentence that goes past its quote |
+| The 2 borderline rejects are accepted | 25 of 30 (83.33%) | Each has one wrong detail in an otherwise usable letter |
+| The reading of reviews 1 and 2 (no `other` letter is accepted) | 13 of 30 (43.33%) | The 10 accepted `other` letters cite only the right to a second look |
+
+The first two other figures are the model's own count from its notes. The last is worked
+out from the counts above. None of them is a second review.
+
 ### Who scored
 
-**A model gave the verdicts of all four measurements, not a person.** The model was
+**A model gave the verdicts of all five measurements, not a person.** The model was
 Claude, the coding assistant used to build this project. It read the same file a person
 would read and applied the rubric above. The project owner decided on 2026-10-11 to record
 this as the measurement, with a model acting in place of the reviewer. **No person has
-scored any of the four samples.**
+scored any of the five samples.**
 
 The second measurement was scored by the same model, after it had scored the first and knew
 the result was 0 of 30. It also knew what the change between the two was meant to do. So
@@ -3312,8 +3465,24 @@ claims.
 15 of the 20 accepted drafts are light edits, and 4 of those are borderline. So the fourth
 number depends on where one reviewer drew the line of "at most 3 sentences".
 
+**The fifth measurement is no more independent of the scorer than the fourth.** The same
+model scored again. It knew all four earlier results, that the stage is released at 60%,
+and it had written the prompt rules and the fact check. Three things were done so that the
+result could not bend to that:
+
+- **The claims were new to every review and every prompt rule.** No claim of the sample was
+  in any earlier sample, so no prompt rule was written from its faults.
+- **The rule that decides the release was written first**, with the reading of the rubric
+  and the way the borderline verdicts are reported, before any draft was read.
+- **Nothing was changed between the runs.** No prompt, no check and no search phrase was
+  touched after the fourth measurement, so the fifth tests the same drafter.
+
+What was not done: a second scorer, or a person. All 23 accepted drafts are light edits,
+and 8 of them are borderline. So the fifth number still depends on where one reviewer drew
+the line of "at most 3 sentences", and with all 8 rejected it is 50.00%.
+
 The model's verdicts are in a local file of their own in each review folder. The score file
-`export` wrote is still empty in all four, ready for a person.
+`export` wrote is still empty in all five, ready for a person.
 
 ### What the rejected drafts show
 
@@ -3417,6 +3586,33 @@ The fourth measurement, as judged by the model:
   character from the noisy denial letter into the payer's name; several have no closing or
   no name; letters still speak of "the MAC" to a made-up payer.
 
+The fifth measurement, as judged by the model:
+
+- **A citation that does not fit fell from 7 rejects to 1.** The one left is a
+  `medical_necessity` letter: its paragraph states a rule the quote does not hold, and the
+  sentence it puts in quotation marks is not the cited sentence. Several accepted drafts
+  have one sentence that goes past its quote and were scored as a light edit; most of the
+  8 borderline accepts are of that kind.
+- **All 3 wrong facts come from the stored letter extraction, not from the drafter**
+  (checked read-only against the extraction). In 2 drafts the extraction reads the denial
+  as `medical_necessity` while the letter says the line "could not be paid as submitted",
+  and the draft then argues medical necessity. In 1 the extraction took the list number of
+  the denied line for its line number. The drafter wrote what it was given.
+- **`no_policy_argument` rose from 1 to 3**, each a different kind of draft: a
+  `medical_necessity` letter that quotes the rule which supports the denial; the one draft
+  without a citation (a `benefits_exhausted` denial, whose phrase reaches no passage, 3.15),
+  which only asks for details; and an `other` letter that cites the right to a review but
+  never says the denial names no reason and never asks for it.
+- **No `medical_necessity` letter was accepted: 0 of 2**, after 0 of 3 and 0 of 1. Together
+  with the 2 wrong facts above, every draft argued as a necessity denial was rejected.
+- **The accepted letters make the same two arguments as before.** The 10 accepted `other`
+  letters cite the right to a redetermination; the 12 accepted `noncovered` letters use the
+  sentence about analysing each exclusion. A letter about a claim with lines of several
+  reasons was accepted twice, but its not-covered lines got no argument of their own.
+- **Smaller faults that were not counted as a wrong fact:** several letters have no closing
+  or no name; letters still call a Medicare manual the payer's "own policy" or ask "the MAC"
+  to review.
+
 ### When the share is below 60%
 
 The done condition stays as it is: the target is not lowered and not reworded. Stage 4 is
@@ -3433,18 +3629,21 @@ citation faults (3.15). The fourth measurement is their result.
 
 **After the fourth the share is at the target as scored: 20 of 30 (66.67%).** `score`
 exits with 0. That is the first of the four measurements for which the rule of this
-sub-section does not apply as written. Three things are open:
+sub-section does not apply as written. The number was not firm (53.33% to 76.67% by the
+borderline verdicts), a model scored, and on the 17 new claims the share was 58.82%. So the
+project owner did not release on it and had the share measured once more, on claims no
+review had read, with the decision rule written first.
 
-- **The release is not decided.** The number is not firm (53.33% to 76.67% by the
-  borderline verdicts), a model scored, and on the 17 new claims the share is 58.82%.
-  Whether Stage 4 is released as `v0.5.0` on it is the project owner's decision. This
-  document records the number and does not say that the stage is released.
-- **The most common reject reason is now `citation_does_not_fit`** (7 of 10). Work on it
-  would be a check that a paragraph says no more than its quote, which no code can do
-  today, or a fixed argument per denial reason in place of a free one.
-- **Not built:** an argument for a `noncovered` denial that is more than one sentence of
-  one passage; any argument for a `medical_necessity` denial; a check of the reason of each
-  denied line; the extraction faults behind a wrong name or a wrong line.
+**After the fifth the decision rule is met: 23 of 30 (76.67%).** `score` exits with 0, and
+the next step is `/stage-release v0.5.0`. The release does not mean the drafts are done.
+Still not built:
+
+- an argument for a `noncovered` denial that is more than one sentence of one passage;
+- any argument for a `medical_necessity` denial (none accepted in any measurement);
+- a check that a paragraph says no more than its quote, which no code can do today;
+- a check of the reason of each denied line, and a fix for the extraction faults behind a
+  wrong reason, a wrong name or a wrong line;
+- a search phrase that reaches a passage for a `benefits_exhausted` denial (3.15).
 
 A new measurement needs a new export into another folder, because a draft that was written
 again has a new fingerprint.
@@ -3483,6 +3682,13 @@ About who scored:
   it from 53.33% to 76.67%, across the target. No second reviewer looked at them.
 - The fourth share is above the target only with the sampled claims of the first 120
   counted in. On the 17 new claims alone it is 58.82%.
+- The fifth measurement was scored by the same model again, knowing the four earlier
+  results and that the release depended on this one (see "Who scored").
+- The fifth share depends on 10 verdicts the model itself marked as borderline. They move
+  it from 50.00% to 83.33%. By the rule written before scoring they do not change the
+  decision, but no second reviewer looked at them.
+- **The five shares cannot be compared as one series.** With the reading of reviews 1 and
+  2 the fifth is 13 of 30 (43.33%).
 
 About the earlier measurements' files:
 
@@ -3495,23 +3701,29 @@ About the earlier measurements' files:
   be scored either: the command reads only the drafts of the current agent version and
   drafting prompt version.
 - The same holds for the third measurement since agent `v4` and prompt `v3` are the
-  defaults: its drafts are still stored, but `score` refuses its file. Only the fourth
-  folder can be scored today.
+  defaults: its drafts are still stored, but `score` refuses its file. The fourth and the
+  fifth folder can both be scored today, because both hold drafts of agent `v4` and prompt
+  `v3` and no claim of either was drafted again.
 
 About the sample:
 
 - 30 drafts is a small sample. A measured 0 of 30 still fits a true share of up to about
   12% for the same reviewer. A measured 60% would stand for a true share of about 42% to
-  75%, the measured 17 of 30 for about 39% to 73%, and the measured 20 of 30 for about 49%
-  to 81%. So the fourth sample alone cannot show that the true share is at 60% or above.
+  75%, the measured 17 of 30 for about 39% to 73%, the measured 20 of 30 for about 49%
+  to 81%, and the measured 23 of 30 for about 59% to 88%. So the fourth sample alone cannot
+  show that the true share is at 60% or above, and the fifth only just misses showing it.
 - The drafts (55 in the first measurement, 56 in the second, 54 in the third) come from
-  the first 120 test claims in claim id order, and the 106 of the fourth from the first
-  240, not from a draw over all 749 test claims that can be taken.
+  the first 120 test claims in claim id order, the 106 of the fourth from the first 240 and
+  the pool of 90 of the fifth from the first 360, not from a draw over all 749 test claims
+  that can be taken.
+- The fifth sample is drawn from the drafts no review had read. Of the 150 drafts of agent
+  `v4`, the 60 read before are left out on purpose, so the pool is not every draft of the
+  drafter.
 - `score` checks the number of rows and that each row belongs to a draft that can be
   reviewed. It does not prove the rows are the sample of the seed that was named.
 - The fourth sample holds 3 `medical_necessity` letters and 2 `coordination_of_benefits`
-  letters, and none for a `duplicate` or `benefits_exhausted` denial. The share says
-  almost nothing about those reasons.
+  letters, and none for a `duplicate` or `benefits_exhausted` denial. The fifth holds 2,
+  1, none and 1. The shares say almost nothing about those reasons.
 
 About the data:
 

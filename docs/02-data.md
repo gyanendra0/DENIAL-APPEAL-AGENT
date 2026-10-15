@@ -1876,6 +1876,23 @@ would take those 3 again and pay for them. After the two runs: 106 `needs_review
 drafted with at least one citation), 24 `needs_review_no_draft`, 105 `stopped_by_rules`, 2
 `below_threshold`, 3 `draft_failed`. The other figures are in 03-architecture.md 3.17.
 
+On 2026-10-15 the same agent `v4` ran with `--limit 360`. The 240 claims it had finished
+were skipped, so it took the next 120 claims in claim id order and the 3 claims left as
+`draft_failed`:
+
+```text
+python3 -m pipelines.run_agent --split test --rules-today 2010-01-01 --limit 360
+```
+
+Run 1 took 123 claims for $0.029160: 40 `needs_review`, 11 `needs_review_no_draft`, 59
+`stopped_by_rules`, 5 `below_threshold`, 8 `draft_failed` (all blocked). Run 2 took the 8
+again for $0.005872: 4 ended as `needs_review`, 3 were blocked again and 1 was cut off.
+$0.940107 of the $3.00 monthly budget was then used. **No third run was made**, so 4 claims
+are still `draft_failed`. After the two runs, for agent `v4`: 150 `needs_review` (all 44
+new drafts with at least one citation), 35 `needs_review_no_draft`, 164 `stopped_by_rules`,
+7 `below_threshold`, 4 `draft_failed`. The output was not saved; the other figures are in
+03-architecture.md 3.17.
+
 The report prints counts only: no letter text, no document text and no extracted value.
 Nothing is sent anywhere.
 
@@ -1916,7 +1933,8 @@ files into `--out-dir`:
 |---|---|---|
 | `--out-dir` | none, required | The folder the two files are written into. It is created when it does not exist |
 | `--size` | 30 | How many drafts are sampled |
-| `--seed` | 42 | The seed of the draw. The same seed and the same stored drafts always give the same sample. The fourth measurement used `--seed 43` |
+| `--seed` | 42 | The seed of the draw. The same seed and the same stored drafts always give the same sample. The fourth measurement used `--seed 43` and the fifth `--seed 44` |
+| `--exclude-scored` | none | A score file whose claims are left out of the pool before the draw. Give it once per file. A file with empty verdicts can be named. A missing file or one that cannot be used stops the command with exit 1, and nothing is written. Without it the sample is the same as before |
 
 **The file to read holds document text and letter text, so `--out-dir` must be a folder
 that is never committed.** `data/` is git-ignored, so `data/review/` is safe. An existing
@@ -1927,12 +1945,14 @@ version, the draft is stored, and the denial letter document stored now is the o
 draft was built from.
 
 **A new measurement needs a new folder.** The second measurement was exported with
-`--out-dir data/review/v2`, the third with `--out-dir data/review/v3` and the fourth with
-`--out-dir data/review/v4`, so the files of the earlier ones stay as they are.
+`--out-dir data/review/v2`, the third with `--out-dir data/review/v3`, the fourth with
+`--out-dir data/review/v4` and the fifth with `--out-dir data/review/v5`, so the files of
+the earlier ones stay as they are.
 
-**Only the newest measurement can be scored.** Both steps read the drafts of the current
-agent version and drafting prompt version (today agent `v4`, prompt `v3`). So `score` on a
-score file of the first, second or third measurement is refused. Those files stay readable.
+**Only the measurements of the current versions can be scored.** Both steps read the drafts
+of the current agent version and drafting prompt version (today agent `v4`, prompt `v3`).
+So `score` on a score file of the first, second or third measurement is refused. Those
+files stay readable. The fourth and the fifth can both be scored.
 
 The output of the first export on 2026-10-11, with agent `v1`:
 
@@ -2099,8 +2119,63 @@ with this number:
   of the 30 claims are among the first 120 test claims, and 10 of those 13 were accepted.
   17 are among the new 120, and 10 of those 17 were accepted (58.82%).
 
-Whether Stage 4 is released on this number is not decided. Why is in 03-architecture.md
-3.17.
+The project owner did not release Stage 4 on this number and had it measured once more.
+
+The fifth measurement, on 2026-10-15, with nothing changed in the drafter (agent `v4`,
+prompt `v3`), after the loop run on 360 claims above. The sample was drawn only from claims
+no earlier review had read, by naming the four model score files:
+
+```text
+python3 -m pipelines.review_drafts export --out-dir data/review/v5 --seed 44 \
+  --exclude-scored data/review/review_scores_claude.csv \
+  --exclude-scored data/review/v2/review_scores_claude.csv \
+  --exclude-scored data/review/v3/review_scores_claude.csv \
+  --exclude-scored data/review/v4/review_scores_claude.csv
+```
+
+Its output was not saved; this block is built again from the command's print lines and the
+recorded numbers:
+
+```text
+exported 30 of 90 drafts that can be reviewed (seed 44, agent v4, drafting prompt v3)
+  with at least one citation: 29
+  left out, the denial letter changed after the draft: 0
+  left out, named in an earlier score file: 60
+  file to read: data/review/v5/review_drafts.md
+  file to fill in: data/review/v5/review_scores.csv
+```
+
+The output of `score`, copied from a run of the command on the model's score file:
+
+```text
+scored 30 drafts (acceptance target 60.00%)
+  accept: 0
+  accept_light_edits: 23
+  reject: 7
+    wrong_fact: 3
+    no_policy_argument: 3
+    citation_does_not_fit: 1
+    poor_wording: 0
+    other: 0
+  acceptance share: 23 of 30 (76.67%), meets the target
+  drafts with a citation: 23 of 29 (79.31%)
+  drafts without a citation: 0 of 1 (0.00%)
+```
+
+It exited with 0: **the share meets the 60% target, and with it the rule written before
+scoring: release Stage 4 as `v0.5.0` when this sample alone is at least 18 of 30.** Three
+things must be read with this number:
+
+- **A model gave these 30 verdicts too, not a person.** It was the same model, and it knew
+  the four earlier results. None of the 30 claims had been read by a review or used for a
+  prompt rule.
+- **The rubric was read as in the third and fourth measurements.** With the reading of the
+  first two the share is 13 of 30 (43.33%).
+- **The number is not firm.** The model marked 10 verdicts as borderline: 15 of 30 (50.00%)
+  if the 8 borderline accepts are rejected, 25 of 30 (83.33%) if the 2 borderline rejects
+  are accepted. As written before scoring, that range does not change the decision.
+
+Why and the known limits are in 03-architecture.md 3.17.
 
 Both steps print counts and shares only: no letter text, no document text and no extracted
 value. Nothing is sent anywhere.
@@ -2108,5 +2183,5 @@ value. Nothing is sent anywhere.
 | Exit code | Meaning |
 |---|---|
 | 0 | `export`: the two files are written. `score`: the share is 60% or more |
-| 1 | `score`: the share is below 60%, a draft has no verdict yet (no share is printed), or the file cannot be used (a bad row, a wrong number of rows, a draft that was written again). `export`: the score file already exists, fewer drafts can be reviewed than `--size`, or a cited chunk is missing or changed |
+| 1 | `score`: the share is below 60%, a draft has no verdict yet (no share is printed), or the file cannot be used (a bad row, a wrong number of rows, a draft that was written again). `export`: the score file already exists, a file named by `--exclude-scored` is missing or cannot be used, fewer drafts are left to draw from than `--size`, or a cited chunk is missing or changed |
 | 2 | A bad argument: `--out-dir` names a file, the score file does not exist, a size below 1 |

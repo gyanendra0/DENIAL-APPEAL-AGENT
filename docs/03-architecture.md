@@ -2616,14 +2616,17 @@ current letter extraction and 10 were left out.
 
 These are the numbers of agent `v1`, **before the minimum similarity**. The later runs are
 in 3.17: agent `v2` under "Second measurement", agent `v3` under "Third measurement" (both
-on the same first 120 test claims) and agent `v4` under "Fourth measurement" (on the first
-240). In short, for agent `v3` on 2026-10-12: 54 `needs_review`, 15
-`needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold` and 2 `draft_failed`
+on the same first 120 test claims), agent `v4` under "Fourth measurement" (on the first
+240) and again under "Fifth measurement" (on the first 360). In short, for agent `v3` on
+2026-10-12: 54 `needs_review`, 15 `needs_review_no_draft`, 48 `stopped_by_rules`, 1 `below_threshold` and 2 `draft_failed`
 after two runs, for $0.040899; all 54 drafts carry a citation, and 0 drafts were refused
 for placeholder text. And for agent `v4` on 2026-10-12, with `--limit 240`: 106
 `needs_review`, 24 `needs_review_no_draft`, 105 `stopped_by_rules`, 2 `below_threshold` and
 3 `draft_failed` after two runs, for $0.077256; 105 of the 106 drafts carry a citation, and
-0 drafts were refused for placeholder text or by the fact check.
+0 drafts were refused for placeholder text or by the fact check. And for agent `v4` on
+2026-10-15, with `--limit 360` (two more runs, $0.035032): 150 `needs_review`, 35
+`needs_review_no_draft`, 164 `stopped_by_rules`, 7 `below_threshold` and 4 `draft_failed`
+in all for the first 360.
 
 | Run | Claims taken | `needs_review` | `needs_review_no_draft` | `stopped_by_rules` | `below_threshold` | `draft_failed` | Cost | Time |
 |---|---|---|---|---|---|---|---|---|
@@ -2679,8 +2682,8 @@ About scoring:
   [02-data.md 2.2.3](02-data.md#223-labels-rule-v2)). It says nothing about real appeals,
   and so neither does the threshold.
 - `below_threshold` is proven by the tests and not by the real run of this section: none of
-  the 50 claims scored below 0.30. The later runs saw it: 1 of the first 120 test claims
-  and 2 of the first 240 end as `below_threshold` (3.17).
+  the 50 claims scored below 0.30. The later runs saw it: 1 of the first 120 test claims,
+  2 of the first 240 and 7 of the first 360 end as `below_threshold` (3.17).
 
 About what a later run looks at:
 
@@ -3372,7 +3375,7 @@ By the group of the sampled claim:
 | Candidates 1 to 120 | 4 of 6 (66.67%) |
 | Candidates 121 to 240 | 10 of 12 (83.33%) |
 | Candidates 241 to 360 | 9 of 12 (75.00%) |
-| Candidates 121 to 360, claims no loop run before the fourth measurement had taken | 19 of 24 (79.17%) |
+| Candidates 121 to 360 (outside the first 120) | 19 of 24 (79.17%) |
 
 By the reason the denial letter gives, as the model read it from the 30 letters:
 
@@ -3385,7 +3388,7 @@ By the reason the denial letter gives, as the model read it from the 30 letters:
 | `benefits_exhausted` | 0 of 1 | none in the sample |
 
 The command exited with 0. **A model gave these 30 verdicts, not a person.** It was the same
-model that gave the first 120 (see "Who scored").
+model that gave the 120 verdicts of the first four measurements (see "Who scored").
 
 **The decision rule is met:** 23 of 30 is at least 18 of 30. So the next step after this
 work is merged is `/stage-release v0.5.0`.
@@ -3716,6 +3719,10 @@ About the sample:
   the first 120 test claims in claim id order, the 106 of the fourth from the first 240 and
   the pool of 90 of the fifth from the first 360, not from a draw over all 749 test claims
   that can be taken.
+- The pool of the fifth mixes drafts from two loop runs: 46 drafted on 2026-10-12 and 44
+  on 2026-10-15, with the same agent, prompt and search question versions and the same
+  model name. Nothing checks that the provider's model behind that name stayed the same
+  between the two days.
 - The fifth sample is drawn from the drafts no review had read. Of the 150 drafts of agent
   `v4`, the 60 read before are left out on purpose, so the pool is not every draft of the
   drafter.

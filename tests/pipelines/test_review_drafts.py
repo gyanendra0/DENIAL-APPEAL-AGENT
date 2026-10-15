@@ -87,6 +87,16 @@ def _fill_in(folder: Path, verdicts: dict[str, tuple[str, str]], note: str = "")
     return path
 
 
+def _earlier_scores(path: Path, claim_ids: list[str], verdict: str = "accept") -> Path:
+    """Write a made-up earlier score file naming `claim_ids`, each with `verdict`."""
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, lineterminator="\n")
+        writer.writerow(SCORE_COLUMNS)
+        for claim_id in claim_ids:
+            writer.writerow([claim_id, "0" * 64, verdict, "", ""])
+    return path
+
+
 def _score(path: Path, *extra: str) -> int:
     return main(["score", str(path), "--size", "3", *extra])
 
@@ -131,6 +141,7 @@ def test_export_writes_the_file_to_read_and_the_score_file_into_the_given_folder
         f"exported 3 of 3 {HEADLINE}",
         "  with at least one citation: 2",
         "  left out, the denial letter changed after the draft: 0",
+        "  left out, named in an earlier score file: 0",
         f"  file to read: {folder / REVIEW_FILE_NAME}",
         f"  file to fill in: {folder / SCORES_FILE_NAME}",
     ]
@@ -281,6 +292,169 @@ def test_an_existing_score_file_is_never_overwritten(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "already exists and is not overwritten" in captured.err
+
+
+def test_a_claim_named_in_an_excluded_score_file_is_never_sampled(
+    factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    earlier = _earlier_scores(tmp_path / "earlier.csv", [CLAIM_2])
+    folder = tmp_path / "review"
+
+    exit_code = main(
+        ["export", "--out-dir", str(folder), "--size", "2", "--exclude-scored", str(earlier)]
+    )
+
+    assert exit_code == 0
+    assert [row["claim_id"] for row in _rows(folder)] == [CLAIM_1, CLAIM_3]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"exported 2 of 2 {HEADLINE}"
+    assert lines[3] == "  left out, named in an earlier score file: 1"
+
+
+def test_the_option_given_twice_leaves_out_the_claims_of_both_files(
+    factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = _earlier_scores(tmp_path / "first.csv", [CLAIM_1])
+    second = _earlier_scores(tmp_path / "second.csv", [CLAIM_3, CLAIM_1])
+    folder = tmp_path / "review"
+
+    exit_code = main(
+        [
+            "export",
+            "--out-dir",
+            str(folder),
+            "--size",
+            "1",
+            "--exclude-scored",
+            str(first),
+            "--exclude-scored",
+            str(second),
+        ]
+    )
+
+    assert exit_code == 0
+    assert [row["claim_id"] for row in _rows(folder)] == [CLAIM_2]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"exported 1 of 1 {HEADLINE}"
+    assert lines[3] == "  left out, named in an earlier score file: 2"
+
+
+def test_an_excluded_file_naming_no_reviewable_claim_gives_the_same_files_as_no_option(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    earlier = _earlier_scores(tmp_path / "earlier.csv", ["999999999999999"])
+
+    assert main(["export", "--out-dir", str(tmp_path / "plain"), "--size", "2"]) == 0
+    assert (
+        main(
+            [
+                "export",
+                "--out-dir",
+                str(tmp_path / "excluded"),
+                "--size",
+                "2",
+                "--exclude-scored",
+                str(earlier),
+            ]
+        )
+        == 0
+    )
+
+    for name in (REVIEW_FILE_NAME, SCORES_FILE_NAME):
+        assert (tmp_path / "plain" / name).read_text(encoding="utf-8") == (
+            tmp_path / "excluded" / name
+        ).read_text(encoding="utf-8")
+
+
+def test_the_same_seed_and_the_same_excluded_files_give_the_same_sample(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    earlier = _earlier_scores(tmp_path / "earlier.csv", [CLAIM_3])
+    for name in ("a", "b"):
+        assert (
+            main(
+                [
+                    "export",
+                    "--out-dir",
+                    str(tmp_path / name),
+                    "--size",
+                    "1",
+                    "--seed",
+                    "44",
+                    "--exclude-scored",
+                    str(earlier),
+                ]
+            )
+            == 0
+        )
+
+    for name in (REVIEW_FILE_NAME, SCORES_FILE_NAME):
+        assert (tmp_path / "a" / name).read_text(encoding="utf-8") == (
+            tmp_path / "b" / name
+        ).read_text(encoding="utf-8")
+    assert _rows(tmp_path / "a")[0]["claim_id"] != CLAIM_3
+
+
+def test_a_score_file_with_empty_verdicts_can_be_used_to_leave_claims_out(
+    factory: sessionmaker[Session], tmp_path: Path
+) -> None:
+    earlier = _earlier_scores(tmp_path / "earlier.csv", [CLAIM_1, CLAIM_2], verdict="")
+    folder = tmp_path / "review"
+
+    exit_code = main(
+        ["export", "--out-dir", str(folder), "--size", "1", "--exclude-scored", str(earlier)]
+    )
+
+    assert exit_code == 0
+    assert [row["claim_id"] for row in _rows(folder)] == [CLAIM_3]
+
+
+@pytest.mark.parametrize(
+    ("content", "problem"),
+    [
+        (None, "  the score file cannot be read (FileNotFoundError)"),
+        ("made up\n", f"  the first line must be: {','.join(SCORE_COLUMNS)}"),
+    ],
+)
+def test_an_excluded_file_that_cannot_be_used_exits_1_naming_it_and_writes_nothing(
+    factory: sessionmaker[Session],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    content: str | None,
+    problem: str,
+) -> None:
+    earlier = tmp_path / "earlier.csv"
+    if content is not None:
+        earlier.write_text(content, encoding="utf-8")
+    folder = tmp_path / "review"
+
+    exit_code = main(["export", "--out-dir", str(folder), "--exclude-scored", str(earlier)])
+
+    assert exit_code == 1
+    assert not folder.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        f"cannot use the excluded score file {earlier}:",
+        problem,
+    ]
+
+
+def test_too_few_claims_left_after_leaving_out_exits_1_and_writes_nothing(
+    factory: sessionmaker[Session], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    earlier = _earlier_scores(tmp_path / "earlier.csv", [CLAIM_1, CLAIM_2])
+    folder = tmp_path / "review"
+
+    exit_code = main(
+        ["export", "--out-dir", str(folder), "--size", "2", "--exclude-scored", str(earlier)]
+    )
+
+    assert exit_code == 1
+    assert not folder.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "cannot export the sample: 2 drafts asked for, only 1 can be sampled\n"
 
 
 def test_score_prints_the_counts_and_exits_0_at_the_target(

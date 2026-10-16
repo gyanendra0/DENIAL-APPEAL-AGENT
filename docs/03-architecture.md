@@ -3906,6 +3906,9 @@ failed. The email, the password, its hash and the token are never logged, and no
 carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
 never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
 password would be the password, so `create_app` replaces it with `answer_validation_error`.
+A database error never shows the values of its query either: the engine is created with
+`hide_parameters=True` (`create_db_engine`), so a logged traceback of a failed sign-up does
+not carry the email or the hash. This holds for the pipelines too.
 
 ### Known limits
 

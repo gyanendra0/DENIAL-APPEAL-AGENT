@@ -1,4 +1,4 @@
-"""Core tables, uploads and jobs (business), public reference tables and `llm_calls`."""
+"""Core tables, uploads, jobs, draft review and audit (business), reference tables, `llm_calls`."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -125,6 +125,32 @@ class JobFailure(StrEnum):
     EVIDENCE_NOT_READY = "evidence_not_ready"  # no evidence vector stored
     INTERRUPTED = "interrupted"  # the process stopped while the job was queued or running
     INTERNAL_ERROR = "internal_error"
+
+
+class DraftReviewStatus(StrEnum):
+    """A person's decision on a draft. `approved` and `rejected` are final."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class DraftRejectReason(StrEnum):
+    """Why a reviewer rejected a draft: the review rubric's reasons, never free text."""
+
+    WRONG_FACT = "wrong_fact"
+    NO_POLICY_ARGUMENT = "no_policy_argument"
+    CITATION_DOES_NOT_FIT = "citation_does_not_fit"
+    POOR_WORDING = "poor_wording"
+    OTHER = "other"
+
+
+class AuditAction(StrEnum):
+    ACCOUNT_CREATED = "account_created"
+    UPLOAD_CREATED = "upload_created"
+    DRAFT_EDITED = "draft_edited"
+    DRAFT_APPROVED = "draft_approved"
+    DRAFT_REJECTED = "draft_rejected"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -870,6 +896,7 @@ class Job(AccountScopedMixin, TimestampMixin, Base):
     else about the error; a `done` job has the loop's `end_state` (a job the rules stopped is
     `done`, not `failed`). A job marked `interrupted` while still queued never started, so
     a failed job may have no `started_at`. The link to the upload carries `account_id`.
+    `cost_usd` is what the job's recorded model calls cost; it stays `0` until the job ends.
     """
 
     __tablename__ = "jobs"
@@ -896,6 +923,7 @@ class Job(AccountScopedMixin, TimestampMixin, Base):
             name="ck_jobs_times_match_status",
         ),
         CheckConstraint("finished_at >= started_at", name="ck_jobs_finished_not_before_started"),
+        CheckConstraint("cost_usd >= 0", name="ck_jobs_cost_usd_not_negative"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -913,6 +941,9 @@ class Job(AccountScopedMixin, TimestampMixin, Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, default=Decimal("0"), server_default="0"
+    )
 
 
 class UploadExtraction(AccountScopedMixin, TimestampMixin, Base):
@@ -1000,16 +1031,43 @@ class UploadDraft(AccountScopedMixin, TimestampMixin, Base):
     Business table, one row per job. `letter` holds the validated `AppealLetter`; a citation
     inside it names its chunk by value, never by a row id, so no link points at the evidence
     tables. Nothing here is ever sent to an insurer.
+
+    `letter` is the model's draft and never changes; a person's edits are `draft_revisions`.
+    The review columns follow `review_status`: a `pending` draft has none of them, an
+    `approved` one names the reviewer, the time and the version approved (`0` is the model's
+    draft, `1` and up a revision), a `rejected` one the reviewer, the time and a rubric
+    reason. The link to the reviewer carries `account_id` and has no cascade.
     """
 
     __tablename__ = "upload_drafts"
     __table_args__ = (
         UniqueConstraint("job_id", name="uq_upload_drafts_job_id"),
+        # The target of the revisions' link, which carries `account_id`.
+        UniqueConstraint("account_id", "job_id", name="uq_upload_drafts_account_job_id"),
         ForeignKeyConstraint(
             ["account_id", "job_id"],
             ["jobs.account_id", "jobs.id"],
             name="fk_upload_drafts_job",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "reviewed_by"],
+            ["users.account_id", "users.id"],
+            name="fk_upload_drafts_reviewer",
+        ),
+        CheckConstraint(
+            "(review_status = 'pending' AND reviewed_by IS NULL AND reviewed_at IS NULL"
+            " AND reject_reason IS NULL AND approved_version IS NULL)"
+            " OR (review_status = 'approved' AND reviewed_by IS NOT NULL"
+            " AND reviewed_at IS NOT NULL AND reject_reason IS NULL"
+            " AND approved_version IS NOT NULL)"
+            " OR (review_status = 'rejected' AND reviewed_by IS NOT NULL"
+            " AND reviewed_at IS NOT NULL AND reject_reason IS NOT NULL"
+            " AND approved_version IS NULL)",
+            name="ck_upload_drafts_review_matches_status",
+        ),
+        CheckConstraint(
+            "approved_version >= 0", name="ck_upload_drafts_approved_version_not_negative"
         ),
         CheckConstraint("prompt_version <> ''", name="ck_upload_drafts_prompt_version_not_empty"),
         CheckConstraint(
@@ -1032,3 +1090,88 @@ class UploadDraft(AccountScopedMixin, TimestampMixin, Base):
     )
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     letter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    review_status: Mapped[DraftReviewStatus] = mapped_column(
+        Enum(DraftReviewStatus, name="draft_review_status", values_callable=_values),
+        nullable=False,
+        default=DraftReviewStatus.PENDING,
+        server_default=DraftReviewStatus.PENDING.value,
+    )
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reject_reason: Mapped[DraftRejectReason | None] = mapped_column(
+        Enum(DraftRejectReason, name="draft_reject_reason", values_callable=_values),
+        nullable=True,
+    )
+    approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class DraftRevision(AccountScopedMixin, TimestampMixin, Base):
+    """One edited version of a job's draft, made by a person; the model's draft stays as it was.
+
+    Business table. `version` counts 1, 2, ... per job; `letter` holds the edited
+    `AppealLetter`, `text_sha256` its hash. The link to the draft carries `account_id` and
+    cascades; the link to the editor carries `account_id` and has no cascade.
+    """
+
+    __tablename__ = "draft_revisions"
+    __table_args__ = (
+        UniqueConstraint("job_id", "version", name="uq_draft_revisions_job_version"),
+        ForeignKeyConstraint(
+            ["account_id", "job_id"],
+            ["upload_drafts.account_id", "upload_drafts.job_id"],
+            name="fk_draft_revisions_draft",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "edited_by"],
+            ["users.account_id", "users.id"],
+            name="fk_draft_revisions_editor",
+        ),
+        CheckConstraint("version >= 1", name="ck_draft_revisions_version_positive"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_draft_revisions_text_sha256_format"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    letter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    edited_by: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
+    """One thing a person did: who, what, on which job, when (`created_at`).
+
+    Business table, written in the same transaction as the change; the code only inserts.
+    `detail` holds fixed keys only (a version number, a reject reason), never document text.
+    `job_id` is empty exactly for `account_created`. The links to the user and the job carry
+    `account_id` and have no cascade, so an audited job cannot be deleted on its own;
+    deleting the account removes everything.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_id", "user_id"], ["users.account_id", "users.id"], name="fk_audit_events_user"
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "job_id"], ["jobs.account_id", "jobs.id"], name="fk_audit_events_job"
+        ),
+        CheckConstraint(
+            "(action = 'account_created') = (job_id IS NULL)",
+            name="ck_audit_events_job_matches_action",
+        ),
+        CheckConstraint("jsonb_typeof(detail) = 'object'", name="ck_audit_events_detail_is_object"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[AuditAction] = mapped_column(
+        Enum(AuditAction, name="audit_action", values_callable=_values), nullable=False
+    )
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detail: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )

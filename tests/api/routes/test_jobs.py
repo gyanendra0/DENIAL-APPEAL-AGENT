@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.app import create_app
 from src.api.passwords import hash_password
-from src.api.routes.jobs import BAD_FILE_NAME, FILE_TOO_LARGE, JOB_NOT_FOUND
+from src.api.routes.jobs import BAD_FILE_NAME, JOB_NOT_FOUND
 from src.api.upload_file import NOT_UTF8, PDF_UNREADABLE
+from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
 from src.db.models import Job, JobStatus, Upload, UploadFileType, User, UserRole
 from src.extraction.prompts import ExtractionPrompt

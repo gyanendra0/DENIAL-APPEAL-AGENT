@@ -3976,6 +3976,7 @@ The letters used so far are made up, so no real patient data is involved.
 | File | Holds |
 |---|---|
 | `src/api/routes/jobs.py` | `POST /uploads` and `GET /jobs/{job_id}`; the answers `UploadAccepted` and `JobResponse` |
+| `src/api/upload_limit.py` | `UploadSizeLimit`, the middleware that checks the declared size of `POST /uploads` before its body is read |
 | `src/api/upload_file.py` | `read_uploaded_letter(data)`: the file type from the first bytes and the text, or `UploadFileError` with a fixed message |
 | `src/ingest/pdf_text.py` | `read_pdf_bytes(data, name)`: the text of every page of a PDF held in memory (the reader of 2.3.2, for bytes) |
 | `src/jobs/store.py` | `NewUpload`, `create_upload_job`, `find_job`, `start_job`, `read_upload_text`, `save_upload_extraction`, `finish_job_done`, `finish_job_failed`, `mark_interrupted_jobs`; `JobNotFoundError`, `JobStateError` |
@@ -3993,14 +3994,20 @@ The letters used so far are made up, so no real patient data is involved.
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `413` for a file over `UPLOAD_MAX_BYTES`; `422` for a file that cannot be read as a letter (one fixed message per case, below) |
+| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `411` without a `Content-Length` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (step 1); `422` for a file that cannot be read as a letter (one fixed message per case, below) |
 | `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account or no job at all |
 
 The upload is a form field `file` (`multipart/form-data`, read by `python-multipart`).
 
 ### An upload, step by step
 
-1. At most `UPLOAD_MAX_BYTES` + 1 bytes are read. More than the limit is `413`.
+1. Before the body is read, and before the login check, the middleware `UploadSizeLimit`
+   reads the size the client declares in `Content-Length`. No header is `411`, a header that
+   is not a whole number is `400`, and a size over `UPLOAD_MAX_BYTES` + 16,384 bytes (room for
+   the form around the file) is `413`. The server never reads past the declared size, so a
+   huge body is refused without being received; FastAPI would otherwise write all of it to a
+   temporary file first. Then at most `UPLOAD_MAX_BYTES` + 1 bytes of the file are read, and
+   a file over the limit is `413`.
 2. The file name must be 1 to 255 characters after trimming, or `422`. It is stored, never
    logged and never answered.
 3. The type is decided from the first bytes, never from the name or the browser's content
@@ -4116,6 +4123,10 @@ with a draft. Two letters are too few to say how often an upload is drafted.
 - **A job runs in the API process.** A restart fails its jobs as `interrupted`, and the user
   uploads again. There is no retry, no queue shared by several processes and no limit on how
   many jobs run at once.
+- **The API must run as one process.** Each start marks every unfinished job of every account
+  `interrupted`, so a second process (`--workers` above 1, or an old and a new process
+  overlapping in a restart) fails the jobs the other one is still running. Such a job still
+  spends its model calls, and its result is not stored.
 - **No OCR.** A scanned PDF holds no text and is refused at upload.
 - **One letter per upload.** The clinical note and the prior-authorisation record are not
   uploaded or read; the letter type is not checked, the file is read as a denial letter.

@@ -22,6 +22,7 @@ from src.api.dependencies import (
     require_role,
 )
 from src.api.upload_file import UploadFileError, read_uploaded_letter
+from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
 from src.db.models import EndState, JobFailure, JobStatus, UserRole
 from src.jobs.store import NewUpload, create_upload_job, find_job
@@ -32,7 +33,6 @@ router = APIRouter(tags=["jobs"])
 
 MAX_FILE_NAME_CHARACTERS = 255  # the length of `uploads.file_name`
 JOB_NOT_FOUND = "job not found"
-FILE_TOO_LARGE = "the file is larger than the upload limit"
 BAD_FILE_NAME = f"the file needs a name of 1 to {MAX_FILE_NAME_CHARACTERS} characters"
 
 

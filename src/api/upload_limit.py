@@ -3,8 +3,10 @@
 FastAPI reads a whole `multipart/form-data` body (into a temporary file, with no total cap)
 before any dependency or route code runs, the login check included. This middleware checks the
 size the client declares in `Content-Length` first, so a huge body is answered `413` without
-being received. The server never reads past the declared length, so the declared size is a cap.
-The route still checks the exact file size against `UPLOAD_MAX_BYTES`.
+being received. An upload with a `Transfer-Encoding` header is refused: with it, the server
+frames the body by its chunks and reads past `Content-Length`. Without it, the server never
+reads past the declared length, so the declared size is a cap. The route still checks the exact
+file size against `UPLOAD_MAX_BYTES`.
 """
 
 from starlette.responses import JSONResponse
@@ -17,7 +19,7 @@ UPLOAD_PATH = "/uploads"
 # 255 characters (up to 4 bytes each in UTF-8).
 MULTIPART_OVERHEAD_BYTES = 16_384
 FILE_TOO_LARGE = "the file is larger than the upload limit"
-LENGTH_REQUIRED = "the upload needs a Content-Length header"
+LENGTH_REQUIRED = "the upload needs a Content-Length header and no Transfer-Encoding"
 BAD_LENGTH = "the Content-Length header is not a whole number"
 
 
@@ -31,12 +33,16 @@ class UploadSizeLimit:
         if (
             scope["type"] != "http"
             or scope["method"] != "POST"
-            or scope["path"].rstrip("/") != UPLOAD_PATH
+            or _route_path(scope).rstrip("/") != UPLOAD_PATH
         ):
             await self.app(scope, receive, send)
             return
         settings: ApiSettings = scope["app"].state.api_settings
-        refusal = _refusal(_content_length(scope), settings.upload_max_bytes)
+        refusal = _refusal(
+            _header(scope, b"content-length"),
+            _header(scope, b"transfer-encoding") is not None,
+            settings.upload_max_bytes,
+        )
         if refusal is None:
             await self.app(scope, receive, send)
             return
@@ -44,17 +50,28 @@ class UploadSizeLimit:
         await JSONResponse({"detail": detail}, status_code=status_code)(scope, receive, send)
 
 
-def _content_length(scope: Scope) -> str | None:
-    for name, value in scope["headers"]:
-        if name == b"content-length":
+def _route_path(scope: Scope) -> str:
+    """The path the router matches: the full path without the app's `root_path` in front."""
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if root_path and path.startswith(root_path):
+        return path[len(root_path) :]
+    return path
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    for header_name, value in scope["headers"]:
+        if header_name == name:
             text: str = value.decode("latin-1")
             return text
     return None
 
 
-def _refusal(content_length: str | None, upload_max_bytes: int) -> tuple[int, str] | None:
+def _refusal(
+    content_length: str | None, chunked: bool, upload_max_bytes: int
+) -> tuple[int, str] | None:
     """Return the status and message to answer with, or None to let the request through."""
-    if content_length is None:
+    if content_length is None or chunked:
         return 411, LENGTH_REQUIRED
     if not content_length.isascii() or not content_length.isdigit():
         return 400, BAD_LENGTH

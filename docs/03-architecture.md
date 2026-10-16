@@ -3994,7 +3994,7 @@ The letters used so far are made up, so no real patient data is involved.
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `411` without a `Content-Length` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (step 1); `422` for a file that cannot be read as a letter (one fixed message per case, below) |
+| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `411` without a `Content-Length` header or with a `Transfer-Encoding` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (step 1); `422` for a file that cannot be read as a letter (one fixed message per case, below) |
 | `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account or no job at all |
 
 The upload is a form field `file` (`multipart/form-data`, read by `python-multipart`).
@@ -4002,11 +4002,13 @@ The upload is a form field `file` (`multipart/form-data`, read by `python-multip
 ### An upload, step by step
 
 1. Before the body is read, and before the login check, the middleware `UploadSizeLimit`
-   reads the size the client declares in `Content-Length`. No header is `411`, a header that
-   is not a whole number is `400`, and a size over `UPLOAD_MAX_BYTES` + 16,384 bytes (room for
-   the form around the file) is `413`. The server never reads past the declared size, so a
-   huge body is refused without being received; FastAPI would otherwise write all of it to a
-   temporary file first. Then at most `UPLOAD_MAX_BYTES` + 1 bytes of the file are read, and
+   reads the size the client declares in `Content-Length`. No such header, or any
+   `Transfer-Encoding` header (a chunked body, framed by its chunks and not by the declared
+   size), is `411`; a header that is not a whole number is `400`; a size over
+   `UPLOAD_MAX_BYTES` + 16,384 bytes (room for the form around the file) is `413`. Without
+   `Transfer-Encoding` the server never reads past the declared size, so a huge body is refused
+   without being received; FastAPI would otherwise write all of it to a temporary file first.
+   The path is compared without the app's `root_path`, as the router compares it. Then at most `UPLOAD_MAX_BYTES` + 1 bytes of the file are read, and
    a file over the limit is `413`.
 2. The file name must be 1 to 255 characters after trimming, or `422`. It is stored, never
    logged and never answered.

@@ -24,8 +24,7 @@ UPLOAD_MAX_BYTES = 100
 LARGEST_ALLOWED = UPLOAD_MAX_BYTES + MULTIPART_OVERHEAD_BYTES
 
 
-@pytest.fixture
-def client() -> Iterator[TestClient]:
+def _app() -> FastAPI:
     """An app with the middleware and routes that only say how many bytes they received."""
     app = FastAPI()
     app.state.api_settings = ApiSettings(  # type: ignore[call-arg]
@@ -38,7 +37,12 @@ def client() -> Iterator[TestClient]:
 
     app.add_api_route("/uploads", received, methods=["POST"])
     app.add_api_route("/other", received, methods=["POST"])
-    with TestClient(app, base_url=BASE_URL) as test_client:
+    return app
+
+
+@pytest.fixture
+def client() -> Iterator[TestClient]:
+    with TestClient(_app(), base_url=BASE_URL) as test_client:
         yield test_client
 
 
@@ -48,6 +52,8 @@ def _post(client: TestClient, path: str, length: str) -> tuple[int, dict[str, ob
     return response.status_code, body
 
 
+# The body sent is 1 byte: this shows the middleware answers from the header alone. That the
+# server never reads past a declared size comes from the HTTP parser (uvicorn), not from here.
 def test_a_declared_size_over_the_limit_is_413_before_the_body_is_read(
     client: TestClient,
 ) -> None:
@@ -79,6 +85,25 @@ def test_a_declared_size_that_is_not_a_whole_number_is_400(
 ) -> None:
     response = client.post("/uploads", content=b"x", headers={b"content-length": length})
     assert (response.status_code, response.json()) == (400, {"detail": BAD_LENGTH})
+
+
+@pytest.mark.parametrize("length", [None, b"5"])
+def test_an_upload_with_a_transfer_encoding_is_411(
+    client: TestClient, length: bytes | None
+) -> None:
+    # With chunked framing the server reads past any declared size, so it is never trusted.
+    headers = {b"transfer-encoding": b"chunked"}
+    if length is not None:
+        headers[b"content-length"] = length
+    response = client.post("/uploads", content=b"x", headers=headers)
+    assert (response.status_code, response.json()) == (411, {"detail": LENGTH_REQUIRED})
+
+
+def test_an_upload_under_a_root_path_is_checked_too() -> None:
+    with TestClient(_app(), base_url=BASE_URL, root_path="/api") as client:
+        assert _post(client, "/api/uploads", str(LARGEST_ALLOWED + 1))[0] == 413
+        response = client.post("/api/uploads", content=b"x" * LARGEST_ALLOWED)
+        assert (response.status_code, response.json()) == (200, {"received": LARGEST_ALLOWED})
 
 
 def test_a_trailing_slash_is_checked_too(client: TestClient) -> None:

@@ -1,0 +1,42 @@
+"""Login finds the user by email and checks the password; an unknown email costs the same."""
+
+import pytest
+from sqlalchemy.orm import Session
+
+from src.api import login
+from src.api.login import authenticate
+from src.api.signup import create_account_with_admin
+
+PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
+WRONG_PASSWORD = "wrong-password"  # noqa: S105  (made up)
+
+
+def test_right_password_returns_the_user(session: Session) -> None:
+    user = create_account_with_admin(
+        session, account_name="One", email="a@x.org", password=PASSWORD
+    )
+    assert authenticate(session, email="a@x.org", password=PASSWORD) is user
+
+
+def test_wrong_password_returns_none(session: Session) -> None:
+    create_account_with_admin(session, account_name="One", email="a@x.org", password=PASSWORD)
+    assert authenticate(session, email="a@x.org", password=PASSWORD + "!") is None
+
+
+def test_unknown_email_returns_none_after_the_dummy_check(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+    monkeypatch.setattr(login, "verify_dummy_password", checked.append)
+    assert authenticate(session, email="nobody@x.org", password=PASSWORD) is None
+    assert checked == [PASSWORD]
+
+
+def test_known_email_skips_the_dummy_check(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_account_with_admin(session, account_name="One", email="a@x.org", password=PASSWORD)
+    checked: list[str] = []
+    monkeypatch.setattr(login, "verify_dummy_password", checked.append)
+    authenticate(session, email="a@x.org", password=WRONG_PASSWORD)
+    assert checked == []

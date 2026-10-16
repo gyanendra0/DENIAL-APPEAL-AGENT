@@ -74,6 +74,13 @@ def create_upload_job(session: Session, account_id: int, upload: NewUpload) -> i
     return job.id
 
 
+def find_job(session: Session, account_id: int, job_id: int) -> Job | None:
+    """Return the job `job_id` of `account_id`, or None (also for another account's job)."""
+    return session.scalars(
+        select(Job).where(Job.account_id == account_id, Job.id == job_id)
+    ).one_or_none()
+
+
 def start_job(session: Session, account_id: int, job_id: int) -> bool:
     """Move a `queued` job of `account_id` to `running`. False when it was not `queued`."""
     started = session.execute(

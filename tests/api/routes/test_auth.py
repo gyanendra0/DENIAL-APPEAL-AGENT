@@ -210,11 +210,16 @@ def test_signup_whose_commit_fails_is_not_answered_201(api_connection: Connectio
         join_transaction_mode="create_savepoint",
         expire_on_commit=False,
     )
-    app = create_app(api_settings=api_settings(), session_factory=factory)
-    with TestClient(app, base_url=BASE_URL, raise_server_exceptions=False) as client:
-        response = client.post(
-            "/auth/signup",
-            json={"account_name": "c", "email": "a@x.org", "password": PASSWORD},
-        )
+    app = create_app(
+        api_settings=api_settings(),
+        session_factory=factory,
+        job_runner=lambda account_id, job_id: None,
+    )
+    # Not entered with `with`, so the startup sweep (whose commit would fail too) does not run.
+    client = TestClient(app, base_url=BASE_URL, raise_server_exceptions=False)
+    response = client.post(
+        "/auth/signup",
+        json={"account_name": "c", "email": "a@x.org", "password": PASSWORD},
+    )
     assert response.status_code == 500
     assert "set-cookie" not in response.headers

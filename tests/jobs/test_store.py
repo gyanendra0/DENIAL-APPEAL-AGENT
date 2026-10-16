@@ -28,6 +28,7 @@ from src.jobs.store import (
     JobNotFoundError,
     JobStateError,
     create_upload_job,
+    find_job,
     finish_job_done,
     finish_job_failed,
     mark_interrupted_jobs,
@@ -280,3 +281,20 @@ def test_unfinished_jobs_of_every_account_are_marked_interrupted(
     assert _job(session, queued).started_at is None
     assert _job(session, done).status is JobStatus.DONE
     assert mark_interrupted_jobs(session) == 0
+
+
+def test_finds_a_job_of_its_own_account(session: Session, members: tuple[Member, Member]) -> None:
+    member, _ = members
+    job_id = create_upload_job(session, member.account_id, new_upload(member))
+    found = find_job(session, member.account_id, job_id)
+    assert found is not None
+    assert (found.id, found.status) == (job_id, JobStatus.QUEUED)
+
+
+def test_finds_no_job_of_another_account_or_an_unknown_id(
+    session: Session, members: tuple[Member, Member]
+) -> None:
+    member, other = members
+    job_id = create_upload_job(session, member.account_id, new_upload(member))
+    assert find_job(session, other.account_id, job_id) is None
+    assert find_job(session, member.account_id, job_id + 1_000_000) is None

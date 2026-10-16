@@ -1,7 +1,8 @@
 """The real app on `app_test`, inside one outer transaction that is rolled back after each test.
 
 The app's own `get_db_session` runs unchanged: its commit only releases a savepoint, so a route
-test sees its writes and leaves nothing behind.
+test sees its writes and leaves nothing behind. The app's job runner only records the jobs it
+is given (`job_calls`), so no job runs and no model is called.
 """
 
 from collections.abc import Iterator
@@ -47,10 +48,22 @@ def db_session(api_connection: Connection) -> Iterator[Session]:
 
 
 @pytest.fixture
-def api_client(api_connection: Connection) -> Iterator[TestClient]:
+def job_calls() -> list[tuple[int, int]]:
+    """The (account id, job id) of every job the app handed to its runner, in order."""
+    return []
+
+
+@pytest.fixture
+def api_client(
+    api_connection: Connection, job_calls: list[tuple[int, int]]
+) -> Iterator[TestClient]:
     factory = sessionmaker(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
-    app = create_app(api_settings=api_settings(), session_factory=factory)
+
+    def record_job(account_id: int, job_id: int) -> None:
+        job_calls.append((account_id, job_id))
+
+    app = create_app(api_settings=api_settings(), session_factory=factory, job_runner=record_job)
     with TestClient(app, base_url=BASE_URL) as client:
         yield client

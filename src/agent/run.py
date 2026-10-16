@@ -28,6 +28,7 @@ from src.drafting.run import (
     REQUEST_REFUSED,
     SEARCH_ANSWER_NOT_USABLE,
 )
+from src.drafting.store import build_appeal_draft_row, save_appeal_draft
 from src.llm.gateway import (
     EmbeddingAnswerError,
     LlmBudgetExceededError,
@@ -91,7 +92,8 @@ def run_agent(
     Spends money and can take minutes: one embedding call and one model call, several seconds
     each, per claim that passes the rules and the threshold. A claim they stop costs nothing.
     `embedding_model` must be the model the gateway embeds with. Each trace is committed on
-    its own, so a run that stops keeps what it finished.
+    its own, together with the claim's checked letter (stored in `appeal_drafts`), so a run
+    that stops keeps what it finished.
 
     The run ends early, without an error, when the budget is reached, no provider can answer,
     a provider refuses a request, the evidence has no stored vector, or the answer to a
@@ -110,7 +112,7 @@ def run_agent(
             already_finished += 1
         else:
             try:
-                trace = run_agent_for_claim(
+                outcome = run_agent_for_claim(
                     session_factory,
                     gateway,
                     prompt,
@@ -140,7 +142,11 @@ def run_agent(
                 # paid for. The error's text holds no number of the vector.
                 stop_reason = f"{SEARCH_ANSWER_NOT_USABLE}: {error}"
                 break
+            trace = outcome.trace
             with session_scope(session_factory) as session:
+                # A checked letter replaces the draft the claim had for the prompt version.
+                if outcome.draft is not None:
+                    save_appeal_draft(session, build_appeal_draft_row(candidate, outcome.draft))
                 save_agent_run(session, build_agent_run_row(candidate, trace))
             end_states[trace.end_state.value] += 1
             drafted_with_citation += bool(trace.drafting.cited_paragraphs)

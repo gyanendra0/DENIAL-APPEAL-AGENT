@@ -1,6 +1,7 @@
 import json
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +12,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 import src.agent
-from src.agent.loop import AgentCandidate, run_agent_for_claim
+from src.agent.loop import AgentCandidate, AgentOutcome, LoopInput, run_agent_for_claim
 from src.agent.trace import (
     AGENT_VERSION,
     AgentTrace,
@@ -30,7 +31,6 @@ from src.db.models import (
 )
 from src.db.session import session_scope
 from src.drafting.citation_validator import CitationProblemKind
-from src.drafting.schemas import AppealLetter
 from src.drafting.search_question import (
     MIN_EVIDENCE_SIMILARITY,
     SEARCH_PHRASES,
@@ -39,6 +39,7 @@ from src.drafting.search_question import (
 )
 from src.drafting.store import select_draft_candidates
 from src.extraction.prompts import EXTRACTION_PROMPT_VERSION
+from src.extraction.schemas import DenialLetterExtraction
 from src.extraction.store import text_sha256
 from src.llm.gateway import (
     EmbeddingAnswerError,
@@ -94,6 +95,25 @@ FEATURES = ClaimFeatures(
 CLOCK_READ = re.compile(r"\.today\(|\.now\(|\butcnow\b|\bimport time\b|\bfrom time\b")
 
 
+@dataclass(frozen=True)
+class _LetterOnly:
+    """A loop input that is not a sample claim: no claim id, and maybe no features."""
+
+    text_sha256: str
+    letter: DenialLetterExtraction
+    extraction_prompt_version: str
+    features: ClaimFeatures | None
+
+
+def _without_features(candidate: AgentCandidate) -> _LetterOnly:
+    return _LetterOnly(
+        text_sha256=candidate.text_sha256,
+        letter=candidate.letter,
+        extraction_prompt_version=candidate.extraction_prompt_version,
+        features=None,
+    )
+
+
 def _not_expected(request: object) -> Exception:
     return AssertionError("no model call is expected for this claim")
 
@@ -125,17 +145,17 @@ def _candidate(factory: sessionmaker[Session], **changed: Any) -> AgentCandidate
     )
 
 
-def _run(
+def _outcome(
     factory: sessionmaker[Session],
     primary: StubProvider,
     *,
     fallback: StubProvider | None = None,
     embedder: StubEmbedder | None = None,
-    candidate: AgentCandidate | None = None,
+    candidate: LoopInput | None = None,
     model: WinModel | None = None,
     today: date = BEFORE_THE_DEADLINE,
     win_threshold: float = THRESHOLD,
-) -> AgentTrace:
+) -> AgentOutcome:
     return run_agent_for_claim(
         factory,
         drafting_gateway(factory, primary, fallback, embedder),
@@ -149,13 +169,20 @@ def _run(
     )
 
 
-def test_a_claim_that_passes_every_step_needs_review_and_its_letter_is_stored(
+def _run(factory: sessionmaker[Session], primary: StubProvider, **options: Any) -> AgentTrace:
+    """The trace of `_outcome`."""
+    return _outcome(factory, primary, **options).trace
+
+
+def test_a_claim_that_passes_every_step_needs_review_and_its_letter_is_returned(
     factory: sessionmaker[Session],
 ) -> None:
     primary = StubProvider(good_answer)
     embedder = StubEmbedder()
 
-    trace = _run(factory, primary, embedder=embedder)
+    outcome = _outcome(factory, primary, embedder=embedder)
+
+    trace = outcome.trace
 
     assert trace.end_state is EndState.NEEDS_REVIEW
     assert trace.agent_version == AGENT_VERSION
@@ -166,10 +193,18 @@ def test_a_claim_that_passes_every_step_needs_review_and_its_letter_is_stored(
     # One claim makes one embedding call and one chat call, and no extraction call.
     assert (len(embedder.requests), len(primary.requests)) == (1, 1)
     assert primary.requests[0].system == PROMPT.system
-    drafts = stored_drafts(factory)
-    assert set(drafts) == {CLAIM_1}
-    letter = AppealLetter.model_validate(drafts[CLAIM_1].letter)
-    assert letter.paragraphs[1].citations
+    assert outcome.draft is not None
+    assert outcome.draft.letter.paragraphs[1].citations
+    assert (outcome.draft.prompt_version, outcome.draft.model_name) == (PROMPT_VERSION, MODEL_NAME)
+    # The loop stores nothing; the caller decides where the letter goes.
+    assert stored_drafts(factory) == {}
+
+
+def test_the_returned_letters_repr_holds_no_letter_text(factory: sessionmaker[Session]) -> None:
+    outcome = _outcome(factory, StubProvider(good_answer))
+
+    assert OPENING_TEXT not in repr(outcome)
+    assert POLICY_TEXT not in repr(outcome)
 
 
 def test_the_trace_records_the_facts_of_every_step(factory: sessionmaker[Session]) -> None:
@@ -254,15 +289,16 @@ def test_a_claim_with_no_match_at_the_minimum_is_drafted_with_no_evidence(
     # A question vector that points away from both stored chunks.
     embedder = StubEmbedder(filler={1: -0.5})
 
-    trace = _run(factory, primary, embedder=embedder)
+    outcome = _outcome(factory, primary, embedder=embedder)
 
+    trace = outcome.trace
     assert json.loads(primary.requests[0].user)["evidence"] == []
     assert trace.end_state is EndState.NEEDS_REVIEW
     assert (trace.retrieval.status, trace.retrieval.matches) == (StepStatus.DONE, ())
     assert trace.retrieval.min_similarity == MIN_EVIDENCE_SIMILARITY
     assert trace.drafting.cited_paragraphs == 0
-    letter = AppealLetter.model_validate(stored_drafts(factory)[CLAIM_1].letter)
-    assert [paragraph.citations for paragraph in letter.paragraphs] == [()]
+    assert outcome.draft is not None
+    assert [paragraph.citations for paragraph in outcome.draft.letter.paragraphs] == [()]
 
 
 def test_a_hard_fail_stops_the_claim_with_no_model_call_and_no_draft(
@@ -442,29 +478,57 @@ def test_a_draft_refused_by_the_fact_check_fails_with_its_own_value_and_stores_n
     assert stored_drafts(factory) == {}
 
 
-def test_a_new_draft_replaces_the_one_the_claim_had(factory: sessionmaker[Session]) -> None:
-    _run(factory, StubProvider(good_answer))
+def test_a_failed_draft_returns_no_letter(factory: sessionmaker[Session]) -> None:
+    outcome = _outcome(factory, StubProvider(absent_quote_answer))
 
-    trace = _run(factory, StubProvider(uncited_answer))
-
-    assert trace.end_state is EndState.NEEDS_REVIEW
-    assert trace.drafting.cited_paragraphs == 0
-    drafts = stored_drafts(factory)
-    assert set(drafts) == {CLAIM_1}
-    letter = AppealLetter.model_validate(drafts[CLAIM_1].letter)
-    assert [paragraph.text for paragraph in letter.paragraphs] == [OPENING_TEXT]
+    assert outcome.trace.end_state is EndState.DRAFT_FAILED
+    assert outcome.draft is None
 
 
-def test_a_failed_draft_leaves_the_stored_draft_as_it_was(
+def test_a_letter_that_is_not_a_sample_claim_is_drafted_too(
     factory: sessionmaker[Session],
 ) -> None:
-    _run(factory, StubProvider(good_answer))
+    candidate = _candidate(factory)
+    letter_only = _LetterOnly(
+        text_sha256=candidate.text_sha256,
+        letter=candidate.letter,
+        extraction_prompt_version=candidate.extraction_prompt_version,
+        features=FEATURES,
+    )
 
-    trace = _run(factory, StubProvider(absent_quote_answer))
+    outcome = _outcome(factory, StubProvider(good_answer), candidate=letter_only)
 
-    assert trace.end_state is EndState.DRAFT_FAILED
-    letter = AppealLetter.model_validate(stored_drafts(factory)[CLAIM_1].letter)
-    assert letter.paragraphs[1].citations
+    assert outcome.trace.end_state is EndState.NEEDS_REVIEW
+    assert outcome.draft is not None
+
+
+def test_a_claim_without_features_waits_for_a_person_with_no_model_call(
+    factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider(error=_not_expected)
+    embedder = StubEmbedder(errors={1: _not_expected(None)})
+    candidate = _without_features(_candidate(factory))
+
+    outcome = _outcome(factory, primary, embedder=embedder, candidate=candidate)
+
+    trace = outcome.trace
+    assert trace.end_state is EndState.NEEDS_REVIEW_NO_DRAFT
+    assert trace.rules.status is StepStatus.DONE
+    assert trace.scoring == ScoringStep(status=StepStatus.STOPPED, threshold=THRESHOLD)
+    assert trace.retrieval == RetrievalStep(status=StepStatus.NOT_RUN)
+    assert trace.drafting == DraftingStep(status=StepStatus.NOT_RUN)
+    assert (primary.requests, embedder.requests, outcome.draft) == ([], [], None)
+
+
+def test_the_rules_still_stop_a_claim_without_features(factory: sessionmaker[Session]) -> None:
+    candidate = _without_features(_candidate(factory))
+
+    trace = _run(
+        factory, StubProvider(error=_not_expected), candidate=candidate, today=AFTER_THE_DEADLINE
+    )
+
+    assert trace.end_state is EndState.STOPPED_BY_RULES
+    assert trace.scoring.status is StepStatus.NOT_RUN
 
 
 def test_the_fallbacks_answer_is_named_in_the_trace(factory: sessionmaker[Session]) -> None:

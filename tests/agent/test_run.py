@@ -4,14 +4,14 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Engine
+from sqlalchemy import Engine, delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.agent.loop import AgentCandidate
 from src.agent.run import AgentRunSummary, run_agent
 from src.agent.store import select_agent_candidates
 from src.agent.trace import AGENT_VERSION, AgentTrace, DraftFailure, StepStatus
-from src.db.models import DatasetSplit, EndState, LlmProvider
+from src.db.models import AgentRun, DatasetSplit, EndState, LlmProvider
 from src.db.session import session_scope
 from src.drafting.run import (
     BUDGET_REACHED,
@@ -20,6 +20,7 @@ from src.drafting.run import (
     REQUEST_REFUSED,
     SEARCH_ANSWER_NOT_USABLE,
 )
+from src.drafting.schemas import AppealLetter
 from src.extraction.prompts import EXTRACTION_PROMPT_VERSION
 from src.extraction.store import text_sha256
 from src.llm.gateway import LlmRequest, ProviderRejectedError, ProviderUnavailableError
@@ -247,6 +248,36 @@ def test_a_claim_whose_draft_failed_is_taken_again_and_its_trace_replaced(
         CLAIM_2: EndState.NEEDS_REVIEW,
     }
     assert set(stored_drafts(factory)) == {CLAIM_1, CLAIM_2}
+
+
+def _forget_traces(factory: sessionmaker[Session]) -> None:
+    """Remove the stored traces, so the next run takes every claim again."""
+    with session_scope(factory) as session:
+        session.execute(delete(AgentRun))
+
+
+def test_a_new_draft_replaces_the_one_the_claim_had(factory: sessionmaker[Session]) -> None:
+    _run(factory, StubProvider(good_answer))
+    _forget_traces(factory)
+
+    summary = _run(factory, StubProvider(uncited_answer))
+
+    assert summary.end_states == _counts(needs_review=2)
+    letter = AppealLetter.model_validate(stored_drafts(factory)[CLAIM_1].letter)
+    assert [paragraph.text for paragraph in letter.paragraphs] == [OPENING_TEXT]
+
+
+def test_a_failed_draft_leaves_the_stored_draft_as_it_was(
+    factory: sessionmaker[Session],
+) -> None:
+    _run(factory, StubProvider(good_answer))
+    _forget_traces(factory)
+
+    summary = _run(factory, StubProvider(absent_quote_answer))
+
+    assert summary.end_states == _counts(draft_failed=2)
+    letter = AppealLetter.model_validate(stored_drafts(factory)[CLAIM_1].letter)
+    assert letter.paragraphs[1].citations
 
 
 def test_a_claim_refused_for_placeholder_text_is_counted_and_taken_again_by_the_next_run(

@@ -1,12 +1,20 @@
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from src.db.models import DenialReasonCategory
-from src.ml.features import FEATURE_VERSION, ClaimFeatures, build_claim_features
+from src.extraction.schemas import DenialLetterExtraction
+from src.ml.features import (
+    FEATURE_VERSION,
+    ClaimFeatures,
+    build_claim_features,
+    build_letter_features,
+)
 from src.ml.labels import appeal_success_chance, claim_appeal_success_chance, label_claim
+from tests.extraction.helpers import LETTER, fields_json
 
 
 @dataclass(frozen=True)
@@ -143,3 +151,38 @@ def test_a_negative_total_allowed_charge_is_rejected() -> None:
             total_allowed_charge=Decimal("-0.01"),
             fully_denied=True,
         )
+
+
+def _letter(**changed: Any) -> DenialLetterExtraction:
+    """The made-up letter (noncovered, 130.10 allowed, 0.00 paid) with `changed` swapped in."""
+    return DenialLetterExtraction.model_validate(fields_json(LETTER, **changed))
+
+
+def test_a_letters_features_come_from_its_reason_and_totals() -> None:
+    assert build_letter_features(_letter()) == ClaimFeatures(
+        denial_reason_category=DenialReasonCategory.NONCOVERED,
+        total_allowed_charge=Decimal("130.10"),
+        fully_denied=True,
+    )
+
+
+def test_a_letter_with_a_payment_is_partly_denied() -> None:
+    features = build_letter_features(
+        _letter(total_payment_amount="40.00", denial_reason_category="medical_necessity")
+    )
+
+    assert features is not None
+    assert features.fully_denied is False
+    assert features.denial_reason_category is DenialReasonCategory.MEDICAL_NECESSITY
+
+
+@pytest.mark.parametrize(
+    "name", ["denial_reason_category", "total_allowed_charge_amount", "total_payment_amount"]
+)
+def test_a_letter_missing_a_value_the_model_needs_has_no_features(name: str) -> None:
+    assert build_letter_features(_letter(**{name: None})) is None
+
+
+@pytest.mark.parametrize("name", ["total_allowed_charge_amount", "total_payment_amount"])
+def test_a_letter_with_an_amount_below_zero_has_no_features(name: str) -> None:
+    assert build_letter_features(_letter(**{name: "-0.01"})) is None

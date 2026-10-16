@@ -45,12 +45,19 @@ from src.db.models import (
 )
 from src.rules.verdict import RULES_VERSION, RuleOutcome, RuleReason
 
+# Not a real hash of any password; the column only stores text.
+MADE_UP_HASH = "$argon2id$v=19$m=65536,t=3,p=4$bWFkZS11cA$bWFkZS11cC1oYXNo"
+
 
 def _account(session: Session, name: str) -> Account:
     account = Account(name=name)
     session.add(account)
     session.flush()
     return account
+
+
+def _user(account: Account, email: str) -> User:
+    return User(account_id=account.id, email=email, password_hash=MADE_UP_HASH)
 
 
 def _claim(session: Session, account: Account, number: str = "C-1") -> Claim:
@@ -103,7 +110,7 @@ def test_sets_timestamps_on_insert(session: Session) -> None:
 
 def test_applies_default_role_and_status(session: Session) -> None:
     account = _account(session, "a")
-    user = User(account_id=account.id, email="a@example.com")
+    user = User(account_id=account.id, email="a@example.com", password_hash=MADE_UP_HASH)
     denial = Denial(
         account_id=account.id,
         claim_id=_claim(session, account).id,
@@ -131,7 +138,33 @@ def test_allows_same_claim_number_in_different_accounts(session: Session) -> Non
 
 
 def test_rejects_row_without_account(session: Session) -> None:
-    session.add(User(email="orphan@example.com", role=UserRole.ADMIN))
+    session.add(User(email="orphan@example.com", password_hash=MADE_UP_HASH, role=UserRole.ADMIN))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_rejects_the_same_email_in_two_accounts(session: Session) -> None:
+    session.add(_user(_account(session, "a"), "same@example.com"))
+    session.flush()
+    session.add(_user(_account(session, "b"), "same@example.com"))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_rejects_a_user_without_a_password_hash(session: Session) -> None:
+    session.add(User(account_id=_account(session, "a").id, email="a@example.com"))
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    "email", ["A@example.com", " a@example.com", "a@example.com\t", "\na@example.com"]
+)
+def test_rejects_an_email_that_is_not_trimmed_and_lowercased(session: Session, email: str) -> None:
+    session.add(_user(_account(session, "a"), email))
 
     with pytest.raises(IntegrityError):
         session.flush()

@@ -10,8 +10,14 @@ from src.config.settings import get_settings
 
 
 def create_db_engine(url: str | None = None) -> Engine:
-    """Create an engine for `url`, or for the configured database."""
-    return create_engine(url or get_settings().database_url, pool_pre_ping=True)
+    """Create an engine for `url`, or for the configured database.
+
+    `hide_parameters` keeps the values of a query (an email, a password hash) out of the text of
+    a database error, so a logged traceback never carries them.
+    """
+    return create_engine(
+        url or get_settings().database_url, pool_pre_ping=True, hide_parameters=True
+    )
 
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:

@@ -6,7 +6,7 @@
                  ┌──────────────────────────┐
   Browser  ─────▶│  React dashboard (Vite)  │
                  └────────────┬─────────────┘
-                              │ HTTPS + JWT
+                              │ HTTPS + JWT cookie
                  ┌────────────▼─────────────┐
                  │      FastAPI backend     │
                  │  auth · uploads · jobs   │
@@ -42,7 +42,7 @@
 | `drafting` | Write an appeal letter from the letter's fields and the evidence found; block a draft with a bad citation (see 3.15) | The model writes labels and quotes; a pure function checks them |
 | `agent` | Walk one claim through extraction, rules, scoring, retrieval and drafting, then stop for a person (see 3.16) | Fixed order in code, each step once, a stored trace |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
-| `api` | HTTP surface, auth, per-account isolation | FastAPI, JWT, role checks |
+| `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
 | `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
@@ -62,7 +62,8 @@ Everything after step 1 is asynchronous. The UI polls job status.
 This is the flow of the finished product. What exists today is steps 2 to 6 for the made-up
 claims of the synthetic sample, run by a command and not by an upload: the agent loop reads
 a stored extraction, runs the rules, scores the claim, retrieves evidence, drafts a letter
-and stores a trace that ends in a stop for a person (see 3.16). The upload, the background
+and stores a trace that ends in a stop for a person (see 3.16). Sign-up, login and the
+logged-in user's own record work through the API (see 3.18). The upload, the background
 job, the dashboard, the review actions and the audit log are not built yet.
 
 ## 3.4 Data model (core tables)
@@ -70,7 +71,7 @@ job, the dashboard, the review actions and the audit log are not built yet.
 | Table | Holds |
 |---|---|
 | `accounts` | Tenants |
-| `users` | Login, role, account link |
+| `users` | Login (email unique across all accounts, Argon2id password hash), role, account link |
 | `claims` | Claim header, payer, amounts |
 | `denials` | Denial record, reason codes, source file |
 | `extractions` | Fields pulled from a document, with confidence and model version |
@@ -90,6 +91,11 @@ single most important rule in the codebase.
 Two kinds of table hold no customer data and have no `account_id`: public reference tables
 loaded from public sources, and operational tables such as `llm_calls` (see 3.8). The rule
 is in [conventions 6.4](06-conventions.md#64-database).
+
+`accounts` and `users` are the first business tables the product uses: sign-up writes one
+row to each, and every API request reads the logged-in user (see 3.18). Since migration 0015
+an email belongs to one user of one account, so login can find the account from the email.
+That lookup is the one query on `users` without an `account_id` filter.
 
 The business table `extractions` does not exist yet: it is built when customer uploads
 exist. Until then, what a model reads from the generated documents is stored in the public
@@ -3750,3 +3756,169 @@ About the rubric:
   it.
 - A draft gets one reject reason. A draft with two faults shows only the one the reviewer
   picked.
+
+## 3.18 API and auth
+
+The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
+logout, the logged-in user's own record, one admin route and a health check. Uploads, jobs
+and the draft review come in later Stage 5 branches.
+
+Three things hold for every route:
+
+- **The login token is only ever in a cookie.** It is an HttpOnly cookie, so page scripts
+  cannot read it, and no response body carries it.
+- **The account comes from the logged-in user.** Every query takes its `account_id` from
+  `current_user`, never from the path, the query string or the body
+  ([conventions 6.4](06-conventions.md#64-database)).
+- **Another account's row is "not found".** A row of another account is answered with `404`,
+  the same as a row that does not exist, so the answer does not say that the row exists.
+
+No route calls a model and no route spends money.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/api/app.py` | `create_app(api_settings=None, session_factory=None)`, the app factory; it puts the settings and the session factory on `app.state` and answers a `422` with `answer_validation_error` |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
+| `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
+| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
+| `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
+| `src/api/login.py` | `authenticate`, the login lookup by email |
+| `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
+| `src/api/routes/` | `auth.py`, `me.py`, `users.py`, `health.py`: one router each |
+| `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
+| `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
+
+### The routes
+
+| Method and path | Who may call it | Answers |
+|---|---|---|
+| `POST /auth/signup` | anyone | `201` with the new user and the login cookie; `409` when the account name or the email is taken; `422` for a body that does not fit |
+| `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `422` for a body that does not fit |
+| `POST /auth/logout` | anyone | `204`; the cookie is cleared |
+| `GET /me` | a logged-in user | `200` with the user and their account's name; `401` when not logged in |
+| `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
+| `GET /health` | anyone | `200` with `{"status": "ok"}`; it touches no database |
+
+`GET /users/{user_id}` exists mainly to prove the isolation: its tests sign up two accounts
+and show that the admin of one gets `404` for the user of the other.
+
+The roles are `viewer`, `reviewer` and `admin` (the enum `user_role` since migration 0001).
+Only `admin` is checked so far.
+
+### Sign-up, step by step
+
+1. The body is checked: the account name is trimmed and 1 to 200 characters; the email is
+   trimmed, lowercased and must look like an email (one `@`, text on both sides, no
+   whitespace, at most 320 characters); the password is 12 to 128 characters and is not
+   trimmed. Only the length is checked, following NIST SP 800-63B.
+2. The password is hashed with Argon2id (`argon2-cffi`). The hash is salted, so two users
+   with the same password get different hashes.
+3. The account and its first user, an `admin`, are written inside one savepoint. When the
+   name or the email is taken, the database's unique key refuses the row
+   (`accounts_name_key` or `uq_users_email`), both rows are rolled back and the answer is
+   `409`. Sign-up never searches other accounts' rows to find out.
+4. The user is logged in: the login cookie is set in the same answer.
+
+### Login, step by step
+
+1. The email is trimmed and lowercased, as at sign-up. The password length is not checked
+   against 12-128, so a password of the wrong length gets the same `401` as a wrong one. A
+   password over 1,024 characters (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401`
+   without being hashed, so a huge body costs no Argon2 work.
+2. The user is looked up by email alone. This is the one query on `users` without an
+   `account_id` filter: before login the account is not known. It is safe because an email
+   belongs to exactly one account (`uq_users_email`) and nothing is returned unless the
+   password matches.
+3. For an unknown email the password is still checked against a fixed dummy hash, so that
+   case takes about as long as a wrong password and the time does not tell which emails exist.
+4. A match sets the login cookie; anything else is `401` with the message "email or password
+   is wrong".
+
+Hashing and checking take tens of milliseconds on purpose: that is what makes a stolen hash
+slow to guess.
+
+### The login token
+
+| Part | Value |
+|---|---|
+| Format | JWT signed with HS256 (`PyJWT`); a token of any other algorithm is refused |
+| Claims | `sub` (the user id, as text), `acct` (the account id), `iat`, `exp`; all four are required |
+| Lifetime | `AUTH_TOKEN_TTL_MINUTES`, 60 by default; there is no refresh token |
+| Cookie | `access_token`, HttpOnly, SameSite=Strict, path `/`, `max_age` equal to the lifetime, `Secure` unless `AUTH_COOKIE_SECURE` is false |
+
+A missing, damaged, expired or wrongly signed token, or one whose claims have the wrong type,
+raises one `InvalidTokenError`, and the route answers `401` "not logged in". The answer does
+not say which check failed. The error message never repeats the token.
+
+SameSite=Strict means the browser does not send the cookie with a request started from
+another site, which is what stops a forged cross-site request.
+
+### How one account is kept apart from another
+
+`current_user` runs on every route that needs a login:
+
+1. It reads the cookie and checks the token.
+2. It looks the user up with `for_account(User, acct).where(User.id == sub)`: the user is
+   searched only inside the token's account. A token whose user and account do not belong
+   together finds nobody and gets `401`, like a missing token.
+3. It returns `CurrentUser` (user id, account id, email, role), read from the database on
+   every request, so a deleted user is logged out at once.
+
+A route then passes `user.account_id` to every query. `require_role(...)` wraps
+`current_user` and answers `403` when the user's role is not one of the allowed ones.
+
+### Settings
+
+| Key | Required | Meaning |
+|---|---|---|
+| `AUTH_TOKEN_SECRET` | yes | The key that signs the tokens; at least 32 characters after trimming; hidden in error messages |
+| `AUTH_TOKEN_TTL_MINUTES` | no (default 60) | How long one token stays valid, at least 1 |
+| `AUTH_COOKIE_SECURE` | no (default true) | Whether the cookie is sent only over HTTPS; set false only for local development over plain HTTP |
+
+The keys are in `ApiSettings`, not in `Settings`, and are loaded only when the app is built.
+The pipelines and their tests need no token secret. A missing or short secret fails when the
+app starts, with a message that names the key. The database URL is read through the main
+`Settings` (`DATABASE_URL`), so a missing required key there fails at the start too.
+
+### Starting it
+
+```
+uvicorn src.api.app:create_app --factory
+```
+
+`--factory` makes uvicorn call `create_app()`, which reads the settings and the database URL
+from the environment. Tests call `create_app(api_settings, session_factory)` with their own
+values instead. The route tests run the real app against `app_test` on a connection that is
+rolled back after each test.
+
+Every route takes its session through `DbSession`, which closes the session (and commits)
+when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
+closes it after the answer, so a client could be told `201` for a sign-up whose commit then
+failed. A failed commit is now a `500` with no login cookie (tested).
+
+### Logging
+
+Sign-up and login log the account id and the user id. A failed login logs only that it
+failed. The email, the password, its hash and the token are never logged, and no response
+carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
+never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
+password would be the password, so `create_app` replaces it with `answer_validation_error`.
+A database error never shows the values of its query either: the engine is created with
+`hide_parameters=True` (`create_db_engine`), so a logged traceback of a failed sign-up does
+not carry the email or the hash. This holds for the pipelines too.
+
+### Known limits
+
+- **No server-side logout.** `POST /auth/logout` clears the cookie, but a copied token stays
+  valid until it expires (at most `AUTH_TOKEN_TTL_MINUTES`).
+- **No rate limit on login.** Argon2id makes each guess slow, but nothing stops many
+  guesses. Planned with the deployment (Stage 6).
+- **One email, one account.** A person who works for two accounts needs two emails.
+- **No invite and no role change yet.** Every signed-up user is the `admin` of a new
+  account; adding users to an account is a later branch.
+- **Isolation is enforced in the API code, not by the database.** A query that forgets the
+  `account_id` filter is not stopped by Postgres. Row-level security would stop it, at the
+  cost of much more setup.

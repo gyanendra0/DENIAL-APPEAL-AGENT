@@ -125,3 +125,42 @@ class LlmGatewaySettings(BaseSettings):
 def load_llm_gateway_settings(env_file: str | None = ".env") -> LlmGatewaySettings:
     """Build the gateway settings from the environment, optionally reading an env file."""
     return LlmGatewaySettings(_env_file=env_file)  # type: ignore[call-arg]
+
+
+MIN_TOKEN_SECRET_CHARACTERS = 32
+
+
+class ApiSettings(BaseSettings):
+    """Configuration of the web API's login. Loaded only when the API app is built.
+
+    It is separate from `Settings` so that the pipelines and their tests need no token secret.
+    The secret signs the login tokens; the lifetime is how long one token stays valid; the
+    cookie flag is set false only for local development over plain HTTP.
+    """
+
+    # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
+    model_config = SettingsConfigDict(
+        env_file_encoding="utf-8",
+        extra="ignore",
+        env_ignore_empty=True,
+        str_strip_whitespace=True,
+        hide_input_in_errors=True,
+    )
+
+    auth_token_secret: SecretStr
+    auth_token_ttl_minutes: int = Field(default=60, ge=1)
+    auth_cookie_secure: bool = True
+
+    @field_validator("auth_token_secret")
+    @classmethod
+    def _secret_must_be_long_enough(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value().strip()) < MIN_TOKEN_SECRET_CHARACTERS:
+            raise ValueError(
+                f"the token secret must have at least {MIN_TOKEN_SECRET_CHARACTERS} characters"
+            )
+        return value
+
+
+def load_api_settings(env_file: str | None = ".env") -> ApiSettings:
+    """Build the API settings from the environment, optionally reading an env file."""
+    return ApiSettings(_env_file=env_file)  # type: ignore[call-arg]

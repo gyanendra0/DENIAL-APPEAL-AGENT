@@ -41,7 +41,7 @@ from tests.evaluation.review_helpers import (
 )
 from tests.extraction.helpers import CLAIM_1, CLAIM_2, CLAIM_3, LETTER, PATIENT_NAME, document_text
 
-HEADLINE = "drafts that can be reviewed (seed 42, agent v4, drafting prompt v3)"
+HEADLINE = "drafts that can be reviewed (seed 42, agent v5, drafting prompt v3)"
 HIDDEN_NOTE = "a made-up note nobody may print"
 
 

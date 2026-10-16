@@ -1,6 +1,6 @@
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -44,6 +44,7 @@ from src.extraction.store import text_sha256
 from src.llm.gateway import (
     EmbeddingAnswerError,
     LlmBudgetExceededError,
+    LlmRequest,
     LlmUnavailableError,
     ProviderRejectedError,
     ProviderUnavailableError,
@@ -242,6 +243,7 @@ def test_the_trace_records_the_facts_of_every_step(factory: sessionmaker[Session
         provider=LlmProvider.PRIMARY,
         model_name=MODEL_NAME,
         cited_paragraphs=1,
+        attempts=1,
     )
 
 
@@ -401,12 +403,18 @@ def test_a_threshold_outside_0_to_1_is_refused_before_any_step(
     assert primary.requests == []
 
 
-def test_a_blocked_draft_fails_names_its_kinds_of_problem_and_stores_nothing(
+def test_a_draft_blocked_twice_fails_names_its_kinds_of_problem_and_stores_nothing(
     factory: sessionmaker[Session],
 ) -> None:
-    trace = _run(factory, StubProvider(two_problem_answer))
+    primary = StubProvider(two_problem_answer)
+    embedder = StubEmbedder()
+
+    trace = _run(factory, primary, embedder=embedder)
 
     assert trace.end_state is EndState.DRAFT_FAILED
+    # One more drafting call with the same search result: no second embedding call.
+    assert (len(embedder.requests), len(primary.requests)) == (1, 2)
+    assert primary.requests[0] == primary.requests[1]
     assert trace.retrieval.status is StepStatus.DONE
     assert trace.drafting == DraftingStep(
         status=StepStatus.FAILED,
@@ -417,6 +425,7 @@ def test_a_blocked_draft_fails_names_its_kinds_of_problem_and_stores_nothing(
             CitationProblemKind.POLICY_WITHOUT_CITATION,
             CitationProblemKind.QUOTE_NOT_IN_EVIDENCE,
         ),
+        attempts=2,
     )
     assert stored_drafts(factory) == {}
 
@@ -424,26 +433,35 @@ def test_a_blocked_draft_fails_names_its_kinds_of_problem_and_stores_nothing(
 def test_a_cut_off_answer_fails_the_draft_and_stores_nothing(
     factory: sessionmaker[Session],
 ) -> None:
-    trace = _run(factory, StubProvider(good_answer, stop_reason=lambda request: "length"))
+    primary = StubProvider(good_answer, stop_reason=lambda request: "length")
+
+    trace = _run(factory, primary)
 
     assert trace.end_state is EndState.DRAFT_FAILED
-    assert (trace.drafting.status, trace.drafting.failure, trace.drafting.problem_kinds) == (
-        StepStatus.FAILED,
-        DraftFailure.CUT_OFF,
-        (),
-    )
+    # A longer answer would be cut off again: no second attempt.
+    assert len(primary.requests) == 1
+    assert (
+        trace.drafting.status,
+        trace.drafting.failure,
+        trace.drafting.problem_kinds,
+        trace.drafting.attempts,
+    ) == (StepStatus.FAILED, DraftFailure.CUT_OFF, (), 1)
     assert stored_drafts(factory) == {}
 
 
-def test_an_answer_that_cannot_be_parsed_fails_the_draft_and_stores_nothing(
+def test_an_answer_that_cannot_be_parsed_twice_fails_the_draft_and_stores_nothing(
     factory: sessionmaker[Session],
 ) -> None:
-    trace = _run(factory, StubProvider(lambda request: "not JSON"))
+    primary = StubProvider(lambda request: "not JSON")
+
+    trace = _run(factory, primary)
 
     assert trace.end_state is EndState.DRAFT_FAILED
-    assert (trace.drafting.status, trace.drafting.failure) == (
+    assert len(primary.requests) == 2
+    assert (trace.drafting.status, trace.drafting.failure, trace.drafting.attempts) == (
         StepStatus.FAILED,
         DraftFailure.NOT_PARSEABLE,
+        2,
     )
     assert stored_drafts(factory) == {}
 
@@ -459,6 +477,7 @@ def test_a_draft_with_placeholder_text_fails_with_its_own_value_and_stores_nothi
         status=StepStatus.FAILED,
         prompt_version=PROMPT_VERSION,
         failure=DraftFailure.PLACEHOLDER_TEXT,
+        attempts=1,
     )
     assert stored_drafts(factory) == {}
 
@@ -474,8 +493,50 @@ def test_a_draft_refused_by_the_fact_check_fails_with_its_own_value_and_stores_n
         status=StepStatus.FAILED,
         prompt_version=PROMPT_VERSION,
         failure=DraftFailure.FACT_CHECK,
+        attempts=1,
     )
     assert stored_drafts(factory) == {}
+
+
+def _one_after_another(*answers: Callable[[LlmRequest], str]) -> Callable[[LlmRequest], str]:
+    """Answer the first call with the first answer, the second with the second, and so on."""
+    left = list(answers)
+
+    def answer(request: LlmRequest) -> str:
+        return left.pop(0)(request)
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    "first_answer",
+    [two_problem_answer, lambda request: "not JSON"],
+    ids=["blocked", "not_parseable"],
+)
+def test_a_first_draft_that_is_blocked_or_not_parseable_is_drafted_once_more(
+    factory: sessionmaker[Session], first_answer: Callable[[LlmRequest], str]
+) -> None:
+    primary = StubProvider(_one_after_another(first_answer, good_answer))
+    embedder = StubEmbedder()
+
+    outcome = _outcome(factory, primary, embedder=embedder)
+
+    assert outcome.trace.end_state is EndState.NEEDS_REVIEW
+    assert (outcome.trace.drafting.status, outcome.trace.drafting.failure) == (
+        StepStatus.DONE,
+        None,
+    )
+    assert outcome.trace.drafting.attempts == 2
+    assert (len(embedder.requests), len(primary.requests)) == (1, 2)
+    assert outcome.draft is not None
+
+
+def test_the_last_attempts_failure_is_recorded(factory: sessionmaker[Session]) -> None:
+    primary = StubProvider(_one_after_another(lambda request: "not JSON", two_problem_answer))
+
+    trace = _run(factory, primary)
+
+    assert (trace.drafting.failure, trace.drafting.attempts) == (DraftFailure.BLOCKED, 2)
 
 
 def test_a_failed_draft_returns_no_letter(factory: sessionmaker[Session]) -> None:

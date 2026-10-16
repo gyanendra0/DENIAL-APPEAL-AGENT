@@ -68,7 +68,7 @@ LLM_FALLBACK_KEYS = (
 BEFORE_THE_DEADLINE = ["--rules-today", "2008-06-01"]
 AFTER_THE_DEADLINE = ["--rules-today", "2009-01-01"]
 VALIDATION = ["--split", "validation", "--prompt-version", PROMPT_VERSION, *BEFORE_THE_DEADLINE]
-HEADLINE = "selected claims (validation split, agent v4, drafting prompt v999)"
+HEADLINE = "selected claims (validation split, agent v5, drafting prompt v999)"
 SETTINGS_LINE = "  rules today 2008-06-01, amount floor $25, score threshold 0.30"
 
 

@@ -1,3 +1,4 @@
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -19,6 +20,7 @@ from src.db.migrations.versions import rev_0012_appeal_drafts as migration_0012
 from src.db.migrations.versions import rev_0013_agent_runs as migration_0013
 from src.db.migrations.versions import rev_0014_evidence_source_cms_manual as migration_0014
 from src.db.migrations.versions import rev_0015_users_password_and_global_email as migration_0015
+from src.db.migrations.versions import rev_0016_uploads_and_jobs as migration_0016
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -32,12 +34,17 @@ from src.db.models import (
     EndState,
     EvidenceSource,
     ExchangeType,
+    JobFailure,
+    JobStatus,
     LlmProvider,
     MetalLevel,
     PlanType,
+    UploadFileType,
 )
 
-BUSINESS_TABLES = {"accounts", "users", "claims", "denials"}
+# The upload tables, children before parents (the order a downgrade drops them).
+UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jobs", "uploads")
+BUSINESS_TABLES = {"accounts", "users", "claims", "denials", *UPLOAD_TABLES}
 REFERENCE_TABLES = {
     "issuer_denial_stats",
     "plan_denial_stats",
@@ -616,9 +623,165 @@ def test_migration_0015_has_the_same_check_rule_as_the_model() -> None:
 def test_users_has_the_global_email_key_and_the_normalized_check(engine: Engine) -> None:
     inspector = inspect(engine)
 
-    assert {key["name"] for key in inspector.get_unique_constraints("users")} == {"uq_users_email"}
+    assert {key["name"] for key in inspector.get_unique_constraints("users")} == {
+        "uq_users_email",
+        "uq_users_account_id",
+    }
     assert {check["name"] for check in inspector.get_check_constraints("users")} == {
         "ck_users_email_normalized"
+    }
+
+
+# Names are `str | None` to the inspector; every constraint read here has a name.
+KeysLinksChecks = tuple[
+    dict[str | None, list[str]],
+    dict[str | None, tuple[list[str], str, list[str], str | None]],
+    set[str | None],
+]
+
+
+def _keys_links_and_checks(engine: Engine, table: str) -> KeysLinksChecks:
+    inspector = inspect(engine)
+    unique = {u["name"]: u["column_names"] for u in inspector.get_unique_constraints(table)}
+    # Named links only: the unnamed `account_id` link to `accounts` is checked for every
+    # business table by the `account_id` test above.
+    foreign = {
+        f["name"]: (
+            f["constrained_columns"],
+            f["referred_table"],
+            f["referred_columns"],
+            f["options"].get("ondelete"),
+        )
+        for f in inspector.get_foreign_keys(table)
+        if (f["name"] or "").startswith("fk_")
+    }
+    checks = {c["name"] for c in inspector.get_check_constraints(table)}
+    return unique, foreign, checks
+
+
+def test_uploads_has_its_keys_the_user_link_without_cascade_and_its_checks(
+    engine: Engine,
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, "uploads")
+
+    assert unique == {"uq_uploads_account_id": ["account_id", "id"]}
+    assert foreign == {
+        "fk_uploads_user": (["account_id", "user_id"], "users", ["account_id", "id"], None)
+    }
+    assert checks == {
+        "ck_uploads_file_name_not_empty",
+        "ck_uploads_byte_size_positive",
+        "ck_uploads_text_not_empty",
+        "ck_uploads_text_sha256_format",
+    }
+
+
+def test_jobs_has_its_keys_the_upload_link_carrying_the_account_and_its_checks(
+    engine: Engine,
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, "jobs")
+
+    assert unique == {
+        "uq_jobs_account_id": ["account_id", "id"],
+        "uq_jobs_upload_id": ["upload_id"],
+    }
+    assert foreign == {
+        "fk_jobs_upload": (
+            ["account_id", "upload_id"],
+            "uploads",
+            ["account_id", "id"],
+            "CASCADE",
+        )
+    }
+    assert checks == {
+        "ck_jobs_failure_only_when_failed",
+        "ck_jobs_end_state_only_when_done",
+        "ck_jobs_times_match_status",
+        "ck_jobs_finished_not_before_started",
+    }
+
+
+@pytest.mark.parametrize(
+    ("table", "expected_checks"),
+    [
+        (
+            "upload_extractions",
+            {
+                "ck_upload_extractions_prompt_version_not_empty",
+                "ck_upload_extractions_model_name_not_empty",
+                "ck_upload_extractions_text_sha256_format",
+            },
+        ),
+        (
+            "upload_agent_runs",
+            {
+                "ck_upload_agent_runs_agent_version_not_empty",
+                "ck_upload_agent_runs_text_sha256_format",
+                "ck_upload_agent_runs_trace_end_state_matches",
+                "ck_upload_agent_runs_trace_agent_version_matches",
+            },
+        ),
+        (
+            "upload_drafts",
+            {
+                "ck_upload_drafts_prompt_version_not_empty",
+                "ck_upload_drafts_search_question_version_not_empty",
+                "ck_upload_drafts_model_name_not_empty",
+                "ck_upload_drafts_text_sha256_format",
+            },
+        ),
+    ],
+)
+def test_job_result_tables_have_one_row_per_job_a_link_carrying_the_account_and_checks(
+    engine: Engine, table: str, expected_checks: set[str]
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, table)
+
+    assert unique == {f"uq_{table}_job_id": ["job_id"]}
+    assert foreign == {
+        f"fk_{table}_job": (["account_id", "job_id"], "jobs", ["account_id", "id"], "CASCADE")
+    }
+    assert checks == expected_checks
+
+
+def test_migration_0016_lists_the_same_values_as_the_models() -> None:
+    assert tuple(member.value for member in UploadFileType) == migration_0016.UPLOAD_FILE_TYPE
+    assert tuple(member.value for member in JobStatus) == migration_0016.JOB_STATUS
+    assert tuple(member.value for member in JobFailure) == migration_0016.JOB_FAILURE
+
+
+def test_migration_0016_has_the_same_check_rules_as_the_models() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for table in UPLOAD_TABLES
+        for constraint in Base.metadata.tables[table].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {
+        "ck_uploads_file_name_not_empty": migration_0016.FILE_NAME_NOT_EMPTY,
+        "ck_uploads_byte_size_positive": migration_0016.BYTE_SIZE_POSITIVE,
+        "ck_uploads_text_not_empty": migration_0016.TEXT_NOT_EMPTY,
+        "ck_uploads_text_sha256_format": migration_0016.TEXT_SHA256_FORMAT,
+        "ck_jobs_failure_only_when_failed": migration_0016.FAILURE_ONLY_WHEN_FAILED,
+        "ck_jobs_end_state_only_when_done": migration_0016.END_STATE_ONLY_WHEN_DONE,
+        "ck_jobs_times_match_status": migration_0016.TIMES_MATCH_STATUS,
+        "ck_jobs_finished_not_before_started": migration_0016.FINISHED_NOT_BEFORE_STARTED,
+        "ck_upload_extractions_prompt_version_not_empty": migration_0016.PROMPT_VERSION_NOT_EMPTY,
+        "ck_upload_extractions_model_name_not_empty": migration_0016.MODEL_NAME_NOT_EMPTY,
+        "ck_upload_extractions_text_sha256_format": migration_0016.TEXT_SHA256_FORMAT,
+        "ck_upload_agent_runs_agent_version_not_empty": migration_0016.AGENT_VERSION_NOT_EMPTY,
+        "ck_upload_agent_runs_text_sha256_format": migration_0016.TEXT_SHA256_FORMAT,
+        "ck_upload_agent_runs_trace_end_state_matches": migration_0016.TRACE_END_STATE_MATCHES,
+        "ck_upload_agent_runs_trace_agent_version_matches": (
+            migration_0016.TRACE_AGENT_VERSION_MATCHES
+        ),
+        "ck_upload_drafts_prompt_version_not_empty": migration_0016.PROMPT_VERSION_NOT_EMPTY,
+        "ck_upload_drafts_search_question_version_not_empty": (
+            migration_0016.SEARCH_QUESTION_VERSION_NOT_EMPTY
+        ),
+        "ck_upload_drafts_model_name_not_empty": migration_0016.MODEL_NAME_NOT_EMPTY,
+        "ck_upload_drafts_text_sha256_format": migration_0016.TEXT_SHA256_FORMAT,
     }
 
 
@@ -632,6 +795,39 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def _type_names(engine: Engine, names: tuple[str, ...]) -> set[str]:
+    with engine.connect() as conn:
+        return set(
+            conn.scalars(
+                text("SELECT typname FROM pg_type WHERE typname = ANY(:names)"),
+                {"names": list(names)},
+            )
+        )
+
+
+def test_downgrade_to_0015_removes_the_upload_tables_and_enums_and_keeps_the_shared_enums(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0015")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert tables.isdisjoint(UPLOAD_TABLES)
+        assert {AGENT_RUN_TABLE, DRAFT_TABLE, "users"} <= tables
+        assert _type_names(engine, migration_0016.NEW_ENUMS) == set()
+        # Made by 0008 and 0013, used by 0016: the downgrade must not drop them.
+        assert _type_names(engine, ("agent_end_state", "llm_provider")) == {
+            "agent_end_state",
+            "llm_provider",
+        }
+        assert {key["name"] for key in inspect(engine).get_unique_constraints("users")} == {
+            "uq_users_email"
+        }
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert set(UPLOAD_TABLES) <= set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0014_removes_the_password_hash_and_allows_one_email_per_account(

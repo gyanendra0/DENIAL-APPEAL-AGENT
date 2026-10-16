@@ -1,6 +1,6 @@
-"""Core tables (accounts, users, claims, denials), public reference tables and `llm_calls`."""
+"""Core tables, uploads and jobs (business), public reference tables and `llm_calls`."""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -103,6 +104,29 @@ class EndState(StrEnum):
     DRAFT_FAILED = "draft_failed"  # a step failed for this claim; no draft
 
 
+class UploadFileType(StrEnum):
+    TEXT = "text"
+    PDF = "pdf"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class JobFailure(StrEnum):
+    """Why a job failed. A fixed code only: never document text or an exception message."""
+
+    EXTRACTION_FAILED = "extraction_failed"  # the answer was cut off or not parseable
+    BUDGET_EXCEEDED = "budget_exceeded"
+    LLM_UNAVAILABLE = "llm_unavailable"
+    EVIDENCE_NOT_READY = "evidence_not_ready"  # no evidence vector stored
+    INTERRUPTED = "interrupted"  # the process stopped while the job was queued or running
+    INTERNAL_ERROR = "internal_error"
+
+
 def _values(enum_cls: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_cls]
 
@@ -122,6 +146,8 @@ class User(AccountScopedMixin, TimestampMixin, Base):
     # stored trimmed and lowercased; the check stops `A@x.com` passing the key beside `a@x.com`.
     __table_args__ = (
         UniqueConstraint("email", name="uq_users_email"),
+        # The target of links that carry `account_id`, so a row never names another account's user.
+        UniqueConstraint("account_id", "id", name="uq_users_account_id"),
         # `\s` and not `btrim`: btrim removes spaces only, a tab or a newline would pass.
         CheckConstraint(
             "email = lower(email) AND email !~ '^\\s|\\s$'", name="ck_users_email_normalized"
@@ -803,3 +829,206 @@ class AgentRun(TimestampMixin, Base):
     )
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     trace: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class Upload(AccountScopedMixin, TimestampMixin, Base):
+    """One denial letter a user uploaded: the text read from the file, never the file itself.
+
+    Business table. `file_type` is decided from the file's first bytes, not from its name.
+    `text_sha256` is the SHA-256 of `text` (UTF-8, lowercase hex). The link to the user
+    carries `account_id`, so an upload never names another account's user, and it has no
+    cascade: a user who still has uploads cannot be deleted by accident.
+    """
+
+    __tablename__ = "uploads"
+    __table_args__ = (
+        UniqueConstraint("account_id", "id", name="uq_uploads_account_id"),
+        ForeignKeyConstraint(
+            ["account_id", "user_id"], ["users.account_id", "users.id"], name="fk_uploads_user"
+        ),
+        CheckConstraint("file_name <> ''", name="ck_uploads_file_name_not_empty"),
+        CheckConstraint("byte_size > 0", name="ck_uploads_byte_size_positive"),
+        CheckConstraint("text <> ''", name="ck_uploads_text_not_empty"),
+        CheckConstraint("text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_uploads_text_sha256_format"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_type: Mapped[UploadFileType] = mapped_column(
+        Enum(UploadFileType, name="upload_file_type", values_callable=_values), nullable=False
+    )
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class Job(AccountScopedMixin, TimestampMixin, Base):
+    """The background run that turns one upload into a draft: `queued` -> `running` -> end.
+
+    Business table, one job per upload. A `failed` job has a fixed `failure` code and nothing
+    else about the error; a `done` job has the loop's `end_state` (a job the rules stopped is
+    `done`, not `failed`). A job marked `interrupted` while still queued never started, so
+    a failed job may have no `started_at`. The link to the upload carries `account_id`.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("account_id", "id", name="uq_jobs_account_id"),
+        UniqueConstraint("upload_id", name="uq_jobs_upload_id"),
+        ForeignKeyConstraint(
+            ["account_id", "upload_id"],
+            ["uploads.account_id", "uploads.id"],
+            name="fk_jobs_upload",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "(status = 'failed') = (failure IS NOT NULL)", name="ck_jobs_failure_only_when_failed"
+        ),
+        CheckConstraint(
+            "(status = 'done') = (end_state IS NOT NULL)", name="ck_jobs_end_state_only_when_done"
+        ),
+        CheckConstraint(
+            "(status = 'queued' AND started_at IS NULL AND finished_at IS NULL)"
+            " OR (status = 'running' AND started_at IS NOT NULL AND finished_at IS NULL)"
+            " OR (status = 'done' AND started_at IS NOT NULL AND finished_at IS NOT NULL)"
+            " OR (status = 'failed' AND finished_at IS NOT NULL)",
+            name="ck_jobs_times_match_status",
+        ),
+        CheckConstraint("finished_at >= started_at", name="ck_jobs_finished_not_before_started"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    upload_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        Enum(JobStatus, name="job_status", values_callable=_values),
+        nullable=False,
+        default=JobStatus.QUEUED,
+    )
+    failure: Mapped[JobFailure | None] = mapped_column(
+        Enum(JobFailure, name="job_failure", values_callable=_values), nullable=True
+    )
+    end_state: Mapped[EndState | None] = mapped_column(
+        Enum(EndState, name="agent_end_state", values_callable=_values), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UploadExtraction(AccountScopedMixin, TimestampMixin, Base):
+    """The denial-letter fields a model read from one job's upload, with a confidence each.
+
+    Business table, one row per job; the account version of `document_extractions`.
+    `fields` holds the validated `DenialLetterExtraction`; its contents are not checked by
+    the table. `text_sha256` is the hash of the upload text the model read.
+    """
+
+    __tablename__ = "upload_extractions"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_upload_extractions_job_id"),
+        ForeignKeyConstraint(
+            ["account_id", "job_id"],
+            ["jobs.account_id", "jobs.id"],
+            name="fk_upload_extractions_job",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "prompt_version <> ''", name="ck_upload_extractions_prompt_version_not_empty"
+        ),
+        CheckConstraint("model_name <> ''", name="ck_upload_extractions_model_name_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_upload_extractions_text_sha256_format"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[LlmProvider] = mapped_column(
+        Enum(LlmProvider, name="llm_provider", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    fields: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class UploadAgentRun(AccountScopedMixin, TimestampMixin, Base):
+    """What the agent loop did with one job's upload; the account version of `agent_runs`.
+
+    Business table, one row per job. `trace` holds the `AgentTrace`: statuses, versions,
+    outcomes and a score, never document text or an extracted value. As in `agent_runs`, the
+    table checks that the end state and the agent version inside `trace` equal the columns.
+    """
+
+    __tablename__ = "upload_agent_runs"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_upload_agent_runs_job_id"),
+        ForeignKeyConstraint(
+            ["account_id", "job_id"],
+            ["jobs.account_id", "jobs.id"],
+            name="fk_upload_agent_runs_job",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("agent_version <> ''", name="ck_upload_agent_runs_agent_version_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_upload_agent_runs_text_sha256_format"
+        ),
+        # IS NOT DISTINCT FROM, so a trace without the key is refused too (`=` would give NULL).
+        CheckConstraint(
+            "(trace ->> 'end_state') IS NOT DISTINCT FROM end_state::text",
+            name="ck_upload_agent_runs_trace_end_state_matches",
+        ),
+        CheckConstraint(
+            "(trace ->> 'agent_version') IS NOT DISTINCT FROM agent_version",
+            name="ck_upload_agent_runs_trace_agent_version_matches",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    end_state: Mapped[EndState] = mapped_column(
+        Enum(EndState, name="agent_end_state", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    trace: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class UploadDraft(AccountScopedMixin, TimestampMixin, Base):
+    """A checked appeal draft for one job's upload; the account version of `appeal_drafts`.
+
+    Business table, one row per job. `letter` holds the validated `AppealLetter`; a citation
+    inside it names its chunk by value, never by a row id, so no link points at the evidence
+    tables. Nothing here is ever sent to an insurer.
+    """
+
+    __tablename__ = "upload_drafts"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_upload_drafts_job_id"),
+        ForeignKeyConstraint(
+            ["account_id", "job_id"],
+            ["jobs.account_id", "jobs.id"],
+            name="fk_upload_drafts_job",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("prompt_version <> ''", name="ck_upload_drafts_prompt_version_not_empty"),
+        CheckConstraint(
+            "search_question_version <> ''",
+            name="ck_upload_drafts_search_question_version_not_empty",
+        ),
+        CheckConstraint("model_name <> ''", name="ck_upload_drafts_model_name_not_empty"),
+        CheckConstraint(
+            "text_sha256 ~ '^[0-9a-f]{64}$'", name="ck_upload_drafts_text_sha256_format"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    search_question_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider: Mapped[LlmProvider] = mapped_column(
+        Enum(LlmProvider, name="llm_provider", values_callable=_values), nullable=False
+    )
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    letter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

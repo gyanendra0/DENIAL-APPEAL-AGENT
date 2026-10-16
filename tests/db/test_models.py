@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -34,12 +34,20 @@ from src.db.models import (
     ExchangeType,
     GeneratedDocument,
     IssuerDenialStats,
+    Job,
+    JobFailure,
+    JobStatus,
     LlmCall,
     LlmProvider,
     MetalLevel,
     PlanDenialStats,
     PlanType,
     StoredAppealDraft,
+    Upload,
+    UploadAgentRun,
+    UploadDraft,
+    UploadExtraction,
+    UploadFileType,
     User,
     UserRole,
 )
@@ -1622,3 +1630,387 @@ def test_agent_run_stays_when_the_evidence_and_the_draft_are_removed(session: Se
     session.expire_all()
 
     assert session.get(AgentRun, run.id) is not None
+
+
+UPLOAD_TEXT = "Made-up denial letter for a made-up patient."
+STARTED_AT = datetime(2026, 10, 16, 9, 0, tzinfo=UTC)
+FINISHED_AT = STARTED_AT + timedelta(seconds=30)
+
+
+def _upload(session: Session, account: Account, **overrides: Any) -> Upload:
+    """Store an upload by a new reviewer of `account`."""
+    user = _user(account, f"reviewer-{account.id}@example.com")
+    session.add(user)
+    session.flush()
+    fields: dict[str, Any] = {
+        "account_id": account.id,
+        "user_id": user.id,
+        "file_name": "letter.txt",
+        "file_type": UploadFileType.TEXT,
+        "byte_size": len(UPLOAD_TEXT.encode()),
+        "text": UPLOAD_TEXT,
+        "text_sha256": TEXT_SHA256,
+    }
+    upload = Upload(**(fields | overrides))
+    session.add(upload)
+    session.flush()
+    return upload
+
+
+def _job(session: Session, upload: Upload, **overrides: Any) -> Job:
+    job = Job(**({"account_id": upload.account_id, "upload_id": upload.id} | overrides))
+    session.add(job)
+    session.flush()
+    return job
+
+
+def _done_job(session: Session, upload: Upload) -> Job:
+    return _job(
+        session,
+        upload,
+        status=JobStatus.DONE,
+        end_state=EndState.STOPPED_BY_RULES,
+        started_at=STARTED_AT,
+        finished_at=FINISHED_AT,
+    )
+
+
+def _upload_extraction(session: Session, job: Job, **overrides: Any) -> UploadExtraction:
+    fields: dict[str, Any] = {
+        "account_id": job.account_id,
+        "job_id": job.id,
+        "prompt_version": "v2",
+        "model_name": "example-small-model",
+        "provider": LlmProvider.PRIMARY,
+        "text_sha256": TEXT_SHA256,
+        "fields": EXTRACTED_FIELDS,
+    }
+    row = UploadExtraction(**(fields | overrides))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _upload_agent_run(session: Session, job: Job, **overrides: Any) -> UploadAgentRun:
+    fields: dict[str, Any] = {
+        "account_id": job.account_id,
+        "job_id": job.id,
+        "agent_version": AGENT_VERSION,
+        "end_state": EndState.STOPPED_BY_RULES,
+        "text_sha256": TEXT_SHA256,
+        "trace": _agent_trace(TEXT_SHA256),
+    }
+    row = UploadAgentRun(**(fields | overrides))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _upload_draft(session: Session, job: Job, **overrides: Any) -> UploadDraft:
+    fields: dict[str, Any] = {
+        "account_id": job.account_id,
+        "job_id": job.id,
+        "prompt_version": "v3",
+        "search_question_version": "v3",
+        "model_name": "example-small-model",
+        "provider": LlmProvider.PRIMARY,
+        "text_sha256": TEXT_SHA256,
+        "letter": DRAFT_LETTER,
+    }
+    row = UploadDraft(**(fields | overrides))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def test_stores_an_upload_with_its_job_and_the_three_results_that_read_back(
+    session: Session,
+) -> None:
+    upload = _upload(session, _account(session, "a"))
+    job = _done_job(session, upload)
+    extraction = _upload_extraction(session, job)
+    run = _upload_agent_run(session, job)
+    draft = _upload_draft(session, job)
+    session.expire_all()
+
+    stored_upload = session.get(Upload, upload.id)
+    stored_job = session.get(Job, job.id)
+    assert stored_upload is not None and stored_job is not None
+    assert stored_upload.file_type is UploadFileType.TEXT
+    assert stored_upload.text == UPLOAD_TEXT
+    assert stored_job.status is JobStatus.DONE
+    assert stored_job.end_state is EndState.STOPPED_BY_RULES
+    assert stored_job.failure is None
+    assert stored_job.finished_at == FINISHED_AT
+    assert session.get(UploadExtraction, extraction.id).fields == EXTRACTED_FIELDS  # type: ignore[union-attr]
+    assert session.get(UploadAgentRun, run.id).trace == _agent_trace(TEXT_SHA256)  # type: ignore[union-attr]
+    assert session.get(UploadDraft, draft.id).letter == DRAFT_LETTER  # type: ignore[union-attr]
+
+
+def test_a_new_job_is_queued_with_no_times(session: Session) -> None:
+    job = _job(session, _upload(session, _account(session, "a")))
+    session.expire_all()
+
+    stored = session.get(Job, job.id)
+    assert stored is not None
+    assert stored.status is JobStatus.QUEUED
+    assert (stored.started_at, stored.finished_at, stored.end_state) == (None, None, None)
+
+
+def test_rejects_an_upload_naming_a_user_of_another_account(session: Session) -> None:
+    other_user = _user(_account(session, "other"), "someone@example.com")
+    session.add(other_user)
+    session.flush()
+
+    with pytest.raises(IntegrityError, match="fk_uploads_user"):
+        _upload(session, _account(session, "a"), user_id=other_user.id)
+
+
+def test_rejects_a_job_naming_an_upload_of_another_account(session: Session) -> None:
+    other_upload = _upload(session, _account(session, "other"))
+    account = _account(session, "a")
+
+    with pytest.raises(IntegrityError, match="fk_jobs_upload"):
+        _job(session, other_upload, account_id=account.id)
+
+
+@pytest.mark.parametrize(
+    ("make_row", "constraint"),
+    [
+        (_upload_extraction, "fk_upload_extractions_job"),
+        (_upload_agent_run, "fk_upload_agent_runs_job"),
+        (_upload_draft, "fk_upload_drafts_job"),
+    ],
+)
+def test_rejects_a_result_naming_a_job_of_another_account(
+    session: Session, make_row: Any, constraint: str
+) -> None:
+    other_job = _done_job(session, _upload(session, _account(session, "other")))
+    account = _account(session, "a")
+
+    with pytest.raises(IntegrityError, match=constraint):
+        make_row(session, other_job, account_id=account.id)
+
+
+def test_rejects_a_second_job_for_one_upload(session: Session) -> None:
+    upload = _upload(session, _account(session, "a"))
+    _job(session, upload)
+
+    with pytest.raises(IntegrityError, match="uq_jobs_upload_id"):
+        _job(session, upload)
+
+
+@pytest.mark.parametrize(
+    ("make_row", "constraint"),
+    [
+        (_upload_extraction, "uq_upload_extractions_job_id"),
+        (_upload_agent_run, "uq_upload_agent_runs_job_id"),
+        (_upload_draft, "uq_upload_drafts_job_id"),
+    ],
+)
+def test_rejects_a_second_result_of_one_kind_for_one_job(
+    session: Session, make_row: Any, constraint: str
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    make_row(session, job)
+
+    with pytest.raises(IntegrityError, match=constraint):
+        make_row(session, job)
+
+
+@pytest.mark.parametrize(
+    ("bad", "constraint"),
+    [
+        ({"file_name": ""}, "ck_uploads_file_name_not_empty"),
+        ({"byte_size": 0}, "ck_uploads_byte_size_positive"),
+        ({"text": ""}, "ck_uploads_text_not_empty"),
+        ({"text_sha256": TEXT_SHA256.upper()}, "ck_uploads_text_sha256_format"),
+    ],
+)
+def test_rejects_an_upload_with_an_empty_name_or_text_no_bytes_or_a_bad_hash(
+    session: Session, bad: dict[str, Any], constraint: str
+) -> None:
+    with pytest.raises(IntegrityError, match=constraint):
+        _upload(session, _account(session, "a"), **bad)
+
+
+def test_rejects_an_upload_of_an_unknown_file_type(session: Session) -> None:
+    upload = _upload(session, _account(session, "a"))
+
+    with pytest.raises(DataError, match="upload_file_type"):
+        session.execute(
+            text("UPDATE uploads SET file_type = 'image' WHERE id = :id"), {"id": upload.id}
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"status": JobStatus.RUNNING, "started_at": STARTED_AT},
+        {
+            "status": JobStatus.FAILED,
+            "failure": JobFailure.EXTRACTION_FAILED,
+            "started_at": STARTED_AT,
+            "finished_at": FINISHED_AT,
+        },
+        # Interrupted while still queued: it never started.
+        {"status": JobStatus.FAILED, "failure": JobFailure.INTERRUPTED, "finished_at": FINISHED_AT},
+        {
+            "status": JobStatus.DONE,
+            "end_state": EndState.NEEDS_REVIEW,
+            "started_at": STARTED_AT,
+            "finished_at": STARTED_AT,
+        },
+    ],
+)
+def test_stores_a_job_whose_status_failure_end_state_and_times_fit(
+    session: Session, fields: dict[str, Any]
+) -> None:
+    job = _job(session, _upload(session, _account(session, "a")), **fields)
+
+    assert job.id is not None
+
+
+@pytest.mark.parametrize(
+    ("fields", "constraint"),
+    [
+        ({"failure": JobFailure.INTERNAL_ERROR}, "ck_jobs_failure_only_when_failed"),
+        (
+            {"status": JobStatus.FAILED, "finished_at": FINISHED_AT},
+            "ck_jobs_failure_only_when_failed",
+        ),
+        ({"end_state": EndState.NEEDS_REVIEW}, "ck_jobs_end_state_only_when_done"),
+        (
+            {"status": JobStatus.DONE, "started_at": STARTED_AT, "finished_at": FINISHED_AT},
+            "ck_jobs_end_state_only_when_done",
+        ),
+        (
+            {
+                "status": JobStatus.FAILED,
+                "failure": JobFailure.INTERRUPTED,
+                "end_state": EndState.NEEDS_REVIEW,
+                "finished_at": FINISHED_AT,
+            },
+            "ck_jobs_end_state_only_when_done",
+        ),
+        ({"started_at": STARTED_AT}, "ck_jobs_times_match_status"),
+        ({"status": JobStatus.RUNNING}, "ck_jobs_times_match_status"),
+        (
+            {"status": JobStatus.RUNNING, "started_at": STARTED_AT, "finished_at": FINISHED_AT},
+            "ck_jobs_times_match_status",
+        ),
+        (
+            {
+                "status": JobStatus.DONE,
+                "end_state": EndState.NEEDS_REVIEW,
+                "finished_at": FINISHED_AT,
+            },
+            "ck_jobs_times_match_status",
+        ),
+        (
+            {"status": JobStatus.FAILED, "failure": JobFailure.INTERRUPTED},
+            "ck_jobs_times_match_status",
+        ),
+        (
+            {
+                "status": JobStatus.DONE,
+                "end_state": EndState.NEEDS_REVIEW,
+                "started_at": FINISHED_AT,
+                "finished_at": STARTED_AT,
+            },
+            "ck_jobs_finished_not_before_started",
+        ),
+    ],
+)
+def test_rejects_a_job_whose_status_failure_end_state_or_times_do_not_fit(
+    session: Session, fields: dict[str, Any], constraint: str
+) -> None:
+    upload = _upload(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _job(session, upload, **fields)
+
+
+@pytest.mark.parametrize(
+    ("make_row", "bad", "constraint"),
+    [
+        (
+            _upload_extraction,
+            {"prompt_version": ""},
+            "ck_upload_extractions_prompt_version_not_empty",
+        ),
+        (_upload_extraction, {"model_name": ""}, "ck_upload_extractions_model_name_not_empty"),
+        (_upload_extraction, {"text_sha256": "abc"}, "ck_upload_extractions_text_sha256_format"),
+        (_upload_agent_run, {"agent_version": ""}, "ck_upload_agent_runs_agent_version_not_empty"),
+        (_upload_agent_run, {"text_sha256": "g" * 64}, "ck_upload_agent_runs_text_sha256_format"),
+        (
+            _upload_agent_run,
+            {"end_state": EndState.NEEDS_REVIEW},
+            "ck_upload_agent_runs_trace_end_state_matches",
+        ),
+        (
+            _upload_agent_run,
+            {"trace": _agent_trace(TEXT_SHA256) | {"agent_version": OTHER_AGENT_VERSION}},
+            "ck_upload_agent_runs_trace_agent_version_matches",
+        ),
+        (_upload_draft, {"prompt_version": ""}, "ck_upload_drafts_prompt_version_not_empty"),
+        (
+            _upload_draft,
+            {"search_question_version": ""},
+            "ck_upload_drafts_search_question_version_not_empty",
+        ),
+        (_upload_draft, {"model_name": ""}, "ck_upload_drafts_model_name_not_empty"),
+        (
+            _upload_draft,
+            {"text_sha256": TEXT_SHA256.upper()},
+            "ck_upload_drafts_text_sha256_format",
+        ),
+    ],
+)
+def test_rejects_a_job_result_with_an_empty_version_or_name_a_bad_hash_or_a_mismatched_trace(
+    session: Session, make_row: Any, bad: dict[str, Any], constraint: str
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+
+    with pytest.raises(IntegrityError, match=constraint):
+        make_row(session, job, **bad)
+
+
+def test_deleting_an_upload_removes_its_job_and_the_three_results(session: Session) -> None:
+    upload = _upload(session, _account(session, "a"))
+    job = _done_job(session, upload)
+    _upload_extraction(session, job)
+    _upload_agent_run(session, job)
+    _upload_draft(session, job)
+
+    session.delete(upload)
+    session.flush()
+
+    for model in (Job, UploadExtraction, UploadAgentRun, UploadDraft):
+        assert session.scalars(select(model)).all() == [], model
+
+
+def test_rejects_deleting_a_user_who_still_has_an_upload(session: Session) -> None:
+    upload = _upload(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="fk_uploads_user"):
+        session.execute(text("DELETE FROM users WHERE id = :id"), {"id": upload.user_id})
+
+
+def test_deleting_an_account_removes_its_users_uploads_jobs_and_results(session: Session) -> None:
+    account = _account(session, "a")
+    account_id = account.id  # read before the delete; the expired object cannot be refreshed
+    kept = _done_job(session, _upload(session, _account(session, "kept")))
+    job = _done_job(session, _upload(session, account))
+    _upload_extraction(session, job)
+    _upload_agent_run(session, job)
+    _upload_draft(session, job)
+
+    # One statement: the user and the upload go together, so the user link does not refuse it.
+    session.execute(text("DELETE FROM accounts WHERE id = :id"), {"id": account_id})
+    session.expire_all()
+
+    assert [row.id for row in session.scalars(select(Job))] == [kept.id]
+    assert session.scalars(select(Upload).where(Upload.account_id == account_id)).all() == []
+    for model in (UploadExtraction, UploadAgentRun, UploadDraft):
+        assert session.scalars(select(model)).all() == [], model

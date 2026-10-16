@@ -10,6 +10,7 @@ from src.drafting.citation_validator import (
     CitationCheck,
     CitationProblem,
     CitationProblemKind,
+    quote_is_in_evidence,
     validate_citations,
 )
 from src.drafting.schemas import AppealDraft, DraftCitation, DraftParagraph, ParagraphKind
@@ -381,3 +382,26 @@ def test_the_validator_reads_no_model_no_database_no_settings_and_no_clock() -> 
     code = source.split('"""', 2)[2]
 
     assert FORBIDDEN_IN_THE_VALIDATOR.search(code) is None
+
+
+@pytest.mark.parametrize(
+    ("quote", "found"),
+    [
+        ("Blue widgets are covered when a doctor orders them.", True),
+        # Whitespace differences are allowed, also across a line break.
+        ("orders   them. Green widgets are never", True),
+        # Too short, although it is in the text.
+        ("are covered", False),
+        # Cuts a word in two at its start.
+        ("lue widgets are covered when a doctor", False),
+        # Upper and lower case differ.
+        ("blue widgets are covered when a doctor", False),
+        ("Purple widgets are covered when a doctor orders them.", False),
+    ],
+)
+def test_quote_is_in_evidence_applies_the_validator_rules(quote: str, found: bool) -> None:
+    assert quote_is_in_evidence(FIRST_TEXT, quote) is found
+
+
+def test_quote_is_in_evidence_collapses_whitespace_in_the_evidence_too() -> None:
+    assert quote_is_in_evidence(SECOND_TEXT, "A home visit is covered once")

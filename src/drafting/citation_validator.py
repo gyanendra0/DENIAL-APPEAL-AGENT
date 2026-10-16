@@ -119,6 +119,19 @@ def _citation_problem_kinds(
     return kinds
 
 
+def quote_is_in_evidence(evidence_text: str, quote: str) -> bool:
+    """True when `quote` is long enough and found in `evidence_text` under the validator's rules.
+
+    The same rules as `validate_citations`: whitespace collapsed, at least
+    `MIN_QUOTE_CHARACTERS` characters, and found where it cuts no word in two. Used to check
+    a stored letter again, whose citations name their chunk by value instead of by label.
+    """
+    collapsed = _collapse_whitespace(quote)
+    if len(collapsed) < MIN_QUOTE_CHARACTERS:
+        return False
+    return _holds_whole_words(_collapse_whitespace(evidence_text), collapsed)
+
+
 def _holds_whole_words(evidence_text: str, quote: str) -> bool:
     """True when `quote` is in `evidence_text` at a place where it cuts no word in two.
 

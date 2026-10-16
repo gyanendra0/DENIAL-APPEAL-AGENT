@@ -20,7 +20,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.drafting.schemas import AppealDraft
+from src.drafting.schemas import AppealDraft, AppealLetter, DraftParagraph, LetterParagraph
 from src.extraction.schemas import DenialLetterExtraction
 
 # A dollar sign and everything written as one number after it: `$70`, `$70.00`, `$1,250.00`,
@@ -63,10 +63,11 @@ class FactProblem(BaseModel):
 
 
 def find_fact_problems(
-    draft: AppealDraft, letter: DenialLetterExtraction
+    draft: AppealDraft | AppealLetter, letter: DenialLetterExtraction
 ) -> tuple[FactProblem, ...]:
     """Return the wrong facts in `draft`, in paragraph order; an empty tuple means none.
 
+    `draft` is the model's answer or a checked letter (also one a person edited).
     `letter` is the denial letter the draft was written from. A dollar amount must equal the
     allowed or the paid amount of one of its denied lines, by value: `$70` equals `70.00`.
     A number written another way (`$70,50`, `$70k`) is no line's amount.
@@ -74,7 +75,8 @@ def find_fact_problems(
     """
     line_amounts = _denied_line_amounts(letter)
     problems: list[FactProblem] = []
-    for paragraph_index, paragraph in enumerate(draft.paragraphs):
+    paragraphs: tuple[DraftParagraph | LetterParagraph, ...] = draft.paragraphs
+    for paragraph_index, paragraph in enumerate(paragraphs):
         if any(amount not in line_amounts for amount in _dollar_amounts(paragraph.text)):
             problems.append(
                 FactProblem(

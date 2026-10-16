@@ -10,16 +10,20 @@ validator already compares it with its chunk.
 
 import re
 
-from src.drafting.schemas import AppealDraft
+from src.drafting.schemas import AppealDraft, AppealLetter, DraftParagraph, LetterParagraph
 
 # An opening bracket with a closing one after it, whatever is between them, also nothing.
 PLACEHOLDER_PATTERN = re.compile(r"\[[^\]]*\]")
 
 
-def find_placeholder_paragraphs(draft: AppealDraft) -> tuple[int, ...]:
-    """Return the positions, counted from 0, of the paragraphs with text in square brackets."""
+def find_placeholder_paragraphs(draft: AppealDraft | AppealLetter) -> tuple[int, ...]:
+    """Return the positions, counted from 0, of the paragraphs with text in square brackets.
+
+    `draft` is the model's answer or a checked letter (also one a person edited).
+    """
+    paragraphs: tuple[DraftParagraph | LetterParagraph, ...] = draft.paragraphs
     return tuple(
         index
-        for index, paragraph in enumerate(draft.paragraphs)
+        for index, paragraph in enumerate(paragraphs)
         if PLACEHOLDER_PATTERN.search(paragraph.text) is not None
     )

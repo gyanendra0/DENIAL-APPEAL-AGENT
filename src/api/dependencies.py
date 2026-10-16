@@ -41,16 +41,25 @@ def get_api_settings(request: Request) -> ApiSettings:
 
 
 def get_db_session(request: Request) -> Iterator[Session]:
-    """Yield a session that commits when the route succeeds and rolls back on any error."""
+    """Yield a session that commits when the route succeeds and rolls back on any error.
+
+    Use it through `DbSession`, so the commit runs before the answer is sent.
+    """
     factory: sessionmaker[Session] = request.app.state.session_factory
     with session_scope(factory) as session:
         yield session
 
 
+# `scope="function"` closes the session (and commits) when the route returns, before the answer
+# is sent. The default closes it after the answer, so a client could hear 201 for a write that
+# then fails to commit.
+DbSession = Annotated[Session, Depends(get_db_session, scope="function")]
+
+
 def current_user(
     request: Request,
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
-    session: Annotated[Session, Depends(get_db_session)],
+    session: DbSession,
 ) -> CurrentUser:
     """Return the user named by the login cookie, or answer 401.
 

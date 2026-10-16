@@ -7,9 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
-from src.api.dependencies import AUTH_COOKIE_NAME, get_api_settings, get_db_session
+from src.api.dependencies import AUTH_COOKIE_NAME, DbSession, get_api_settings
 from src.api.login import authenticate
-from src.api.schemas import LoginRequest, SignupRequest, UserResponse
+from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS, LoginRequest, SignupRequest, UserResponse
 from src.api.signup import AccountNameTakenError, EmailTakenError, create_account_with_admin
 from src.api.tokens import issue_token
 from src.api.user_lookup import find_user_response
@@ -25,7 +25,6 @@ ACCOUNT_NAME_TAKEN = "the account name is taken"
 EMAIL_TAKEN = "the email is taken"
 
 Settings = Annotated[ApiSettings, Depends(get_api_settings)]
-DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 def _set_login_cookie(
@@ -80,7 +79,10 @@ def login(
     body: LoginRequest, response: Response, settings: Settings, session: DbSession
 ) -> UserResponse:
     """Check email and password and set the login cookie, or answer 401."""
-    user = authenticate(session, email=body.email, password=body.password)
+    # A password longer than any sign-up allows can never match; refusing it here keeps a huge
+    # body from being hashed. The length does not depend on the email, so this says nothing.
+    too_long = len(body.password) > MAX_LOGIN_PASSWORD_CHARACTERS
+    user = None if too_long else authenticate(session, email=body.email, password=body.password)
     if user is None:
         logger.info("login failed")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)

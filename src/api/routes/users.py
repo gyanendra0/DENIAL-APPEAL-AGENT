@@ -7,9 +7,8 @@ is answered with 404, the same as an id that does not exist.
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 
-from src.api.dependencies import CurrentUser, get_db_session, require_role
+from src.api.dependencies import CurrentUser, DbSession, require_role
 from src.api.schemas import UserResponse
 from src.api.user_lookup import find_user_response
 from src.db.models import UserRole
@@ -23,7 +22,7 @@ USER_NOT_FOUND = "user not found"
 def get_user(
     user_id: int,
     admin: Annotated[CurrentUser, Depends(require_role(UserRole.ADMIN))],
-    session: Annotated[Session, Depends(get_db_session)],
+    session: DbSession,
 ) -> UserResponse:
     """Return one user of the admin's account, or answer 404."""
     found = find_user_response(session, account_id=admin.account_id, user_id=user_id)

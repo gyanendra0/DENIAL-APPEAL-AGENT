@@ -1,12 +1,14 @@
 """The app factory: settings and database from the environment, a bad secret fails at startup."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
+from fastapi import Request
 from pydantic import SecretStr, ValidationError
 from sqlalchemy.orm import sessionmaker
 
-from src.api.app import create_app
+from src.api.app import answer_validation_error, create_app
 from src.config.settings import ApiSettings, get_settings
 
 URL = "postgresql+psycopg://made:up@localhost:5433/none"
@@ -63,3 +65,8 @@ def test_routes_are_registered() -> None:
         "/me",
         "/users/{user_id}",
     }
+
+
+def test_the_validation_answer_handles_another_error_as_empty() -> None:
+    response = asyncio.run(answer_validation_error(Request({"type": "http"}), ValueError("x")))
+    assert (response.status_code, response.body) == (422, b'{"detail":[]}')

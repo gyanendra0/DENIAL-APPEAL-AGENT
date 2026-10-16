@@ -21,6 +21,15 @@ API_TTL_MINUTES = 60
 BASE_URL = "https://testserver"
 
 
+def api_settings() -> ApiSettings:
+    """Made-up settings for an app built by a test."""
+    return ApiSettings(  # type: ignore[call-arg]
+        auth_token_secret=SecretStr(API_SECRET),
+        auth_token_ttl_minutes=API_TTL_MINUTES,
+        _env_file=None,
+    )
+
+
 @pytest.fixture
 def api_connection(engine: Engine) -> Iterator[Connection]:
     with engine.connect() as connection:
@@ -42,11 +51,6 @@ def api_client(api_connection: Connection) -> Iterator[TestClient]:
     factory = sessionmaker(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
-    settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(API_SECRET),
-        auth_token_ttl_minutes=API_TTL_MINUTES,
-        _env_file=None,
-    )
-    app = create_app(api_settings=settings, session_factory=factory)
+    app = create_app(api_settings=api_settings(), session_factory=factory)
     with TestClient(app, base_url=BASE_URL) as client:
         yield client

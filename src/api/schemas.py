@@ -12,6 +12,8 @@ from src.db.models import UserRole
 
 MAX_ACCOUNT_NAME_CHARACTERS = 200  # the length of `accounts.name`
 MAX_EMAIL_CHARACTERS = 320  # the length of `users.email`
+# Far above any sign-up password, so it only stops a huge body from being hashed at login.
+MAX_LOGIN_PASSWORD_CHARACTERS = 1024
 
 
 def normalize_email(value: str) -> str:
@@ -58,7 +60,10 @@ class SignupRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """Email and password. The password length is not checked here, so a wrong length is a 401."""
+    """Email and password. The password length is not checked here, so a wrong length is a 401.
+
+    The login route refuses a password over `MAX_LOGIN_PASSWORD_CHARACTERS` with that same 401.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

@@ -3779,11 +3779,11 @@ No route calls a model and no route spends money.
 
 | File | Holds |
 |---|---|
-| `src/api/app.py` | `create_app(api_settings=None, session_factory=None)`, the app factory; it puts the settings and the session factory on `app.state` |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` (commits when the route succeeds, rolls back on any error), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/app.py` | `create_app(api_settings=None, session_factory=None)`, the app factory; it puts the settings and the session factory on `app.state` and answers a `422` with `answer_validation_error` |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
-| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email` |
+| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
 | `src/api/login.py` | `authenticate`, the login lookup by email |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
@@ -3824,8 +3824,10 @@ Only `admin` is checked so far.
 
 ### Login, step by step
 
-1. The email is trimmed and lowercased, as at sign-up. The password length is not checked,
-   so a password of the wrong length gets the same `401` as a wrong one.
+1. The email is trimmed and lowercased, as at sign-up. The password length is not checked
+   against 12-128, so a password of the wrong length gets the same `401` as a wrong one. A
+   password over 1,024 characters (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401`
+   without being hashed, so a huge body costs no Argon2 work.
 2. The user is looked up by email alone. This is the one query on `users` without an
    `account_id` filter: before login the account is not known. It is safe because an email
    belongs to exactly one account (`uq_users_email`) and nothing is returned unless the
@@ -3892,11 +3894,18 @@ from the environment. Tests call `create_app(api_settings, session_factory)` wit
 values instead. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
+Every route takes its session through `DbSession`, which closes the session (and commits)
+when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
+closes it after the answer, so a client could be told `201` for a sign-up whose commit then
+failed. A failed commit is now a `500` with no login cookie (tested).
+
 ### Logging
 
 Sign-up and login log the account id and the user id. A failed login logs only that it
 failed. The email, the password, its hash and the token are never logged, and no response
-carries the password or the hash.
+carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
+never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
+password would be the password, so `create_app` replaces it with `answer_validation_error`.
 
 ### Known limits
 

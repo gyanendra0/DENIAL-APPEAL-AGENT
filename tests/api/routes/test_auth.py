@@ -2,15 +2,18 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Connection, func, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.api import login as login_module
+from src.api.app import create_app
 from src.api.dependencies import AUTH_COOKIE_NAME
 from src.api.routes import auth as auth_module
 from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN, LOGIN_FAILED
+from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
 from src.db.models import Account, User, UserRole
-from tests.api.conftest import API_TTL_MINUTES
+from tests.api.conftest import API_TTL_MINUTES, BASE_URL, api_settings
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 
@@ -150,3 +153,68 @@ def test_signup_raises_when_the_new_user_cannot_be_read_back(
     monkeypatch.setattr(auth_module, "find_user_response", lambda *_, **__: None)
     with pytest.raises(RuntimeError, match="vanished"):
         _signup(api_client)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"account_name": "c", "email": "a@x.org", "password": "short-pw"},
+        {"account_name": "c", "email": "a@x.org", "password": "short-pw" * 17},
+        ["short-pw"],
+        {"account_name": "c", "email": "a@x.org", "password": "short-pw", "extra": "short-pw"},
+    ],
+)
+def test_a_422_names_the_field_but_never_repeats_what_was_sent(
+    api_client: TestClient, body: object
+) -> None:
+    response = api_client.post("/auth/signup", json=body)
+    assert response.status_code == 422
+    assert "short-pw" not in response.text
+    for error in response.json()["detail"]:
+        assert set(error) == {"loc", "type", "msg"}
+
+
+def test_login_with_a_password_over_the_cap_is_the_same_401_without_hashing(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _signup(api_client)
+    api_client.cookies.clear()
+    checked: list[str] = []
+    monkeypatch.setattr(login_module, "verify_password", lambda *args: checked.append("x"))
+    monkeypatch.setattr(login_module, "verify_dummy_password", checked.append)
+    too_long = "p" * (MAX_LOGIN_PASSWORD_CHARACTERS + 1)
+    response = api_client.post("/auth/login", json={"email": "ann@x.org", "password": too_long})
+    assert (response.status_code, response.json()) == (401, {"detail": LOGIN_FAILED})
+    assert checked == []
+
+
+def test_login_at_the_cap_is_still_checked(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+    monkeypatch.setattr(login_module, "verify_dummy_password", checked.append)
+    at_cap = "p" * MAX_LOGIN_PASSWORD_CHARACTERS
+    api_client.post("/auth/login", json={"email": "nobody@x.org", "password": at_cap})
+    assert checked == [at_cap]
+
+
+class _CommitFailsSession(Session):
+    def commit(self) -> None:
+        raise OperationalError("COMMIT", None, Exception("made-up commit failure"))
+
+
+def test_signup_whose_commit_fails_is_not_answered_201(api_connection: Connection) -> None:
+    factory: sessionmaker[Session] = sessionmaker(
+        bind=api_connection,
+        class_=_CommitFailsSession,
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    app = create_app(api_settings=api_settings(), session_factory=factory)
+    with TestClient(app, base_url=BASE_URL, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/auth/signup",
+            json={"account_name": "c", "email": "a@x.org", "password": PASSWORD},
+        )
+    assert response.status_code == 500
+    assert "set-cookie" not in response.headers

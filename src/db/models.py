@@ -118,10 +118,19 @@ class Account(TimestampMixin, Base):
 
 class User(AccountScopedMixin, TimestampMixin, Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("account_id", "email", name="uq_users_account_email"),)
+    # One email belongs to one account, so login needs only email + password. The email is
+    # stored trimmed and lowercased; the check stops `A@x.com` passing the key beside `a@x.com`.
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_users_email"),
+        # `\s` and not `btrim`: btrim removes spaces only, a tab or a newline would pass.
+        CheckConstraint(
+            "email = lower(email) AND email !~ '^\\s|\\s$'", name="ck_users_email_normalized"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", values_callable=_values),
         nullable=False,

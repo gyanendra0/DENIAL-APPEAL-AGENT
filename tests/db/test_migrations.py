@@ -18,6 +18,7 @@ from src.db.migrations.versions import rev_0011_evidence_chunk_embeddings as mig
 from src.db.migrations.versions import rev_0012_appeal_drafts as migration_0012
 from src.db.migrations.versions import rev_0013_agent_runs as migration_0013
 from src.db.migrations.versions import rev_0014_evidence_source_cms_manual as migration_0014
+from src.db.migrations.versions import rev_0015_users_password_and_global_email as migration_0015
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -602,6 +603,25 @@ def test_migration_0013_has_the_same_check_rules_as_the_model() -> None:
     }
 
 
+def test_migration_0015_has_the_same_check_rule_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables["users"].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert model_checks == {"ck_users_email_normalized": migration_0015.EMAIL_NORMALIZED}
+
+
+def test_users_has_the_global_email_key_and_the_normalized_check(engine: Engine) -> None:
+    inspector = inspect(engine)
+
+    assert {key["name"] for key in inspector.get_unique_constraints("users")} == {"uq_users_email"}
+    assert {check["name"] for check in inspector.get_check_constraints("users")} == {
+        "ck_users_email_normalized"
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -612,6 +632,41 @@ def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_downgrade_to_0014_removes_the_password_hash_and_allows_one_email_per_account(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        command.downgrade(alembic_config, "0014")
+
+        inspector = inspect(engine)
+        assert "password_hash" not in {column["name"] for column in inspector.get_columns("users")}
+        assert {key["name"] for key in inspector.get_unique_constraints("users")} == {
+            "uq_users_account_email"
+        }
+        assert inspector.get_check_constraints("users") == []
+        with engine.begin() as conn:
+            account_ids = list(
+                conn.scalars(text("INSERT INTO accounts (name) VALUES ('a'), ('b') RETURNING id"))
+            )
+            for account_id in account_ids:
+                conn.execute(
+                    text(
+                        "INSERT INTO users (account_id, email, role)"
+                        " VALUES (:account_id, 'Same@example.com', 'viewer')"
+                    ),
+                    {"account_id": account_id},
+                )
+            stored = conn.scalar(text("SELECT count(*) FROM users"))
+        assert stored == 2
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
+
+    columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    assert "password_hash" in columns
 
 
 def test_downgrade_to_0013_removes_the_manual_source_and_its_rows_and_keeps_the_rest(

@@ -32,6 +32,7 @@ src/
   evaluation/   measured results against the stage targets
   extraction/   document → structured fields
   ingest/       loaders and file handling
+  jobs/         background jobs: one upload through extraction and the agent loop
   llm/          provider gateway, prompts, budget guard
   ml/           features, training, inference
   rag/          chunking, embedding, retrieval

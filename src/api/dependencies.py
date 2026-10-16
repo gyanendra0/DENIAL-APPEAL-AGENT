@@ -1,7 +1,9 @@
-"""FastAPI dependencies: settings, the database session, the logged-in user and role checks.
+"""FastAPI dependencies: settings, the database session, the job runner, the logged-in user and
+role checks.
 
 Every route takes the `account_id` it queries with from `current_user`, never from the path,
-query or body. The app factory puts `api_settings` and `session_factory` on `app.state`.
+query or body. The app factory puts `api_settings`, `session_factory` and `job_runner` on
+`app.state`.
 """
 
 from collections.abc import Callable, Iterator
@@ -23,6 +25,10 @@ AUTH_COOKIE_NAME = "access_token"
 NOT_LOGGED_IN = "not logged in"
 NOT_ALLOWED = "not allowed for this role"
 
+# Runs one queued upload job, given its account id and job id. Called in the background,
+# after the upload was answered.
+JobRunner = Callable[[int, int], None]
+
 
 class CurrentUser(BaseModel):
     """The logged-in user, read from the database on every request."""
@@ -38,6 +44,11 @@ class CurrentUser(BaseModel):
 def get_api_settings(request: Request) -> ApiSettings:
     settings: ApiSettings = request.app.state.api_settings
     return settings
+
+
+def get_job_runner(request: Request) -> JobRunner:
+    runner: JobRunner = request.app.state.job_runner
+    return runner
 
 
 def get_db_session(request: Request) -> Iterator[Session]:

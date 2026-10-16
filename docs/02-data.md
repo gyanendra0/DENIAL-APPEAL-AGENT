@@ -1199,6 +1199,11 @@ No real patient data ever enters this project. The generated documents are ficti
 so, treat uploads as sensitive: encrypt at rest, restrict by account, and keep an access
 log.
 
+Today an upload is restricted by account: its text and everything read from it are in
+business tables with `account_id` ([03-architecture.md 3.19](03-architecture.md#319-uploads-and-jobs)).
+Only the text is stored, not the file. It is not yet encrypted at rest and there is no access
+log; both come with the deployment (Stage 6). The letters uploaded so far are made up.
+
 ## 2.8 Layout on disk
 
 ```text

@@ -6,12 +6,16 @@ Only a `pass` verdict and a score at or above the threshold reach the two paid s
 claim costs at most one embedding call and one model call.
 
 The loop always ends in a stop for a person. Nothing here sends a letter anywhere, and
-nothing reads the clock: "today", the amount floor and the threshold are passed in.
+nothing reads the clock: "today", the amount floor and the threshold are passed in. The loop
+stores nothing either: it returns the trace and the checked letter, and the caller decides
+where they go (`appeal_drafts` for a sample claim, the account's tables for an upload).
 """
 
 from datetime import date
 from decimal import Decimal
+from typing import Protocol
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.agent.trace import (
@@ -33,6 +37,7 @@ from src.drafting.drafter import (
     DraftFactError,
     DraftingError,
     DraftPlaceholderError,
+    DraftResult,
     DraftTruncatedError,
     draft_appeal,
 )
@@ -42,7 +47,7 @@ from src.drafting.search_question import (
     SEARCH_QUESTION_VERSION,
     build_search_question,
 )
-from src.drafting.store import DraftCandidate, build_appeal_draft_row, save_appeal_draft
+from src.drafting.store import DraftCandidate
 from src.extraction.schemas import DenialLetterExtraction
 from src.llm.gateway import LlmGateway
 from src.ml.features import FEATURE_VERSION, ClaimFeatures
@@ -57,6 +62,37 @@ RULES_END_STATES = {
     RuleOutcome.MUST_REVIEW: EndState.NEEDS_REVIEW_NO_DRAFT,
     RuleOutcome.HARD_FAIL: EndState.STOPPED_BY_RULES,
 }
+
+
+class LoopInput(Protocol):
+    """What the loop reads about one denied letter.
+
+    `text_sha256` is the hash of the letter text, `letter` its extracted fields and
+    `extraction_prompt_version` the version they were read with. `features` are the model
+    inputs, or None when they could not be built; the loop then stops before the score.
+    """
+
+    @property
+    def text_sha256(self) -> str: ...
+
+    @property
+    def letter(self) -> DenialLetterExtraction: ...
+
+    @property
+    def extraction_prompt_version(self) -> str: ...
+
+    @property
+    def features(self) -> ClaimFeatures | None: ...
+
+
+class AgentOutcome(BaseModel):
+    """What the loop did with one letter, and the checked letter when it drafted one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    trace: AgentTrace
+    # Left out of the repr: letter text must never reach a log.
+    draft: DraftResult | None = Field(default=None, repr=False)
 
 
 class AgentCandidate(DraftCandidate):
@@ -75,14 +111,14 @@ def run_agent_for_claim(
     gateway: LlmGateway,
     prompt: DraftingPrompt,
     model: WinModel,
-    candidate: AgentCandidate,
+    candidate: LoopInput,
     *,
     today: date,
     amount_floor: Decimal,
     win_threshold: float,
     embedding_model: str,
-) -> AgentTrace:
-    """Run the loop for `candidate` and return its trace.
+) -> AgentOutcome:
+    """Run the loop for `candidate` and return its trace, with the checked letter if any.
 
     Spends money and can take several seconds when the claim reaches the last two steps: one
     embedding call and one model call through `gateway`. A claim the rules or the threshold
@@ -91,10 +127,10 @@ def run_agent_for_claim(
     A chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown
     to the drafting model. A claim with no chunk left is still drafted, with no evidence.
 
-    A checked letter is stored in `appeal_drafts`, in its own commit, replacing the draft the
-    claim had for the prompt version. The trace is returned, not stored. A draft that is
-    blocked, cut off, not parseable, holds placeholder text or states a wrong fact ends as
-    `draft_failed` and stores nothing.
+    A claim without `features` stops before the score as `needs_review_no_draft`, like a
+    `must_review` verdict, with no model call. Nothing is stored: `session_factory` is only
+    read by the evidence search. A draft that is blocked, cut off, not parseable, holds
+    placeholder text or states a wrong fact ends as `draft_failed`, with no letter.
 
     Errors that say nothing about the claim pass through, with no trace: the gateway's
     (`LlmBudgetExceededError`, `LlmUnavailableError`, `ProviderRejectedError`,
@@ -115,8 +151,20 @@ def run_agent_for_claim(
         end_state = (
             EndState.DRAFT_FAILED if rules.outcome is None else RULES_END_STATES[rules.outcome]
         )
-        return AgentTrace(end_state=end_state, extraction=extraction, rules=rules)
+        return AgentOutcome(
+            trace=AgentTrace(end_state=end_state, extraction=extraction, rules=rules)
+        )
 
+    if candidate.features is None:
+        # A value the model needs is missing from the letter: a person decides instead.
+        return AgentOutcome(
+            trace=AgentTrace(
+                end_state=EndState.NEEDS_REVIEW_NO_DRAFT,
+                extraction=extraction,
+                rules=rules,
+                scoring=ScoringStep(status=StepStatus.STOPPED, threshold=win_threshold),
+            )
+        )
     score = predict_win_probability(model, candidate.features)
     scoring = ScoringStep(
         status=StepStatus.DONE if score >= win_threshold else StepStatus.STOPPED,
@@ -126,8 +174,13 @@ def run_agent_for_claim(
         threshold=win_threshold,
     )
     if scoring.status is StepStatus.STOPPED:
-        return AgentTrace(
-            end_state=EndState.BELOW_THRESHOLD, extraction=extraction, rules=rules, scoring=scoring
+        return AgentOutcome(
+            trace=AgentTrace(
+                end_state=EndState.BELOW_THRESHOLD,
+                extraction=extraction,
+                rules=rules,
+                scoring=scoring,
+            )
         )
 
     question = build_search_question(letter.denial_reason_category.value)
@@ -159,31 +212,34 @@ def run_agent_for_claim(
     try:
         result = draft_appeal(gateway, prompt, letter, matches)
     except DraftingError as error:
-        return AgentTrace(
-            end_state=EndState.DRAFT_FAILED,
+        return AgentOutcome(
+            trace=AgentTrace(
+                end_state=EndState.DRAFT_FAILED,
+                extraction=extraction,
+                rules=rules,
+                scoring=scoring,
+                retrieval=retrieval,
+                drafting=_failed_drafting_step(prompt, error),
+            )
+        )
+    return AgentOutcome(
+        trace=AgentTrace(
+            end_state=EndState.NEEDS_REVIEW,
             extraction=extraction,
             rules=rules,
             scoring=scoring,
             retrieval=retrieval,
-            drafting=_failed_drafting_step(prompt, error),
-        )
-    with session_scope(session_factory) as session:
-        save_appeal_draft(session, build_appeal_draft_row(candidate, result))
-    return AgentTrace(
-        end_state=EndState.NEEDS_REVIEW,
-        extraction=extraction,
-        rules=rules,
-        scoring=scoring,
-        retrieval=retrieval,
-        drafting=DraftingStep(
-            status=StepStatus.DONE,
-            prompt_version=result.prompt_version,
-            provider=result.provider,
-            model_name=result.model_name,
-            cited_paragraphs=sum(
-                1 for paragraph in result.letter.paragraphs if paragraph.citations
+            drafting=DraftingStep(
+                status=StepStatus.DONE,
+                prompt_version=result.prompt_version,
+                provider=result.provider,
+                model_name=result.model_name,
+                cited_paragraphs=sum(
+                    1 for paragraph in result.letter.paragraphs if paragraph.citations
+                ),
             ),
         ),
+        draft=result,
     )
 
 

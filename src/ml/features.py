@@ -5,6 +5,10 @@ hash draw (`src/ml/labels.py`). The features are those three inputs and nothing 
 proxy, the claim id, the split and the rule's own chance are never features: the function
 below takes no label and no claim id, so none of them can reach a feature row.
 
+A sample claim's features come from its stored lines. An uploaded letter has no lines, so its
+features come from the letter's extracted totals instead; the two can disagree when the
+extraction is wrong.
+
 Any change to a field or to how it is computed needs a new `FEATURE_VERSION`.
 """
 
@@ -14,6 +18,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.db.models import DenialReasonCategory
+from src.extraction.schemas import DenialLetterExtraction
 from src.ml.labels import LabelLine, is_denied_line
 
 FEATURE_VERSION = "v1"
@@ -47,4 +52,21 @@ def build_claim_features(
         denial_reason_category=category,
         total_allowed_charge=sum((line.allowed_charge_amount for line in lines), Decimal(0)),
         fully_denied=denied_count == len(lines),
+    )
+
+
+def build_letter_features(letter: DenialLetterExtraction) -> ClaimFeatures | None:
+    """Build the feature row of one denied claim from its letter's extracted fields.
+
+    The total allowed charge is the letter's `total_allowed_charge_amount`, and the claim is
+    fully denied when its `total_payment_amount` is zero. Returns None when the reason, either
+    amount is missing, or an amount is below zero: the model is then not asked.
+    """
+    category = letter.denial_reason_category.value
+    allowed = letter.total_allowed_charge_amount.value
+    paid = letter.total_payment_amount.value
+    if category is None or allowed is None or paid is None or allowed < 0 or paid < 0:
+        return None
+    return ClaimFeatures(
+        denial_reason_category=category, total_allowed_charge=allowed, fully_denied=paid == 0
     )

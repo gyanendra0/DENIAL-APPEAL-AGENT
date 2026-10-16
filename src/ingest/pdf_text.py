@@ -5,6 +5,7 @@ about what the file holds. A file that cannot be read, is encrypted or has no te
 extracted (a scan, for example) is rejected outright.
 """
 
+from io import BytesIO
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -32,18 +33,31 @@ def read_pdf_pages(path: Path) -> list[str]:
     no text, and for a path that cannot be opened (a folder, a file with no read permission).
     A missing file raises `FileNotFoundError`.
     """
+    return _read_pages(path, path.name)
+
+
+def read_pdf_bytes(data: bytes, name: str) -> list[str]:
+    """Return the text of every page of the PDF held in `data`, in page order.
+
+    Raises `BatchRejectedError`, its problem naming `name`, for data that is not a readable
+    PDF, is encrypted, or holds no text.
+    """
+    return _read_pages(BytesIO(data), name)
+
+
+def _read_pages(source: Path | BytesIO, name: str) -> list[str]:
     try:
-        reader = PdfReader(path)
+        reader = PdfReader(source)
         encrypted = reader.is_encrypted
         pages = [] if encrypted else [page.extract_text() for page in reader.pages]
     except FileNotFoundError:
         raise
     except OSError as exc:
-        raise BatchRejectedError([f"{path.name}: the file cannot be opened"]) from exc
+        raise BatchRejectedError([f"{name}: the file cannot be opened"]) from exc
     except DAMAGED_FILE_ERRORS as exc:
-        raise BatchRejectedError([f"{path.name}: not a readable PDF file"]) from exc
+        raise BatchRejectedError([f"{name}: not a readable PDF file"]) from exc
     if encrypted:
-        raise BatchRejectedError([f"{path.name}: the PDF is encrypted"])
+        raise BatchRejectedError([f"{name}: the PDF is encrypted"])
     if not any(page.strip() for page in pages):
-        raise BatchRejectedError([f"{path.name}: the PDF holds no text that can be extracted"])
+        raise BatchRejectedError([f"{name}: the PDF holds no text that can be extracted"])
     return pages

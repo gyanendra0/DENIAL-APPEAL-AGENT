@@ -6,7 +6,7 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 
 from src.ingest.marketplace_denials import BatchRejectedError
-from src.ingest.pdf_text import read_pdf_pages
+from src.ingest.pdf_text import read_pdf_bytes, read_pdf_pages
 from tests.ingest.helpers import MANUAL_FIXTURE, MANUAL_PAGES, write_text_pdf
 
 
@@ -96,3 +96,28 @@ def test_rejects_an_encrypted_pdf(tmp_path: Path) -> None:
 def test_a_missing_file_is_not_a_rejected_batch(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         read_pdf_pages(tmp_path / "missing.pdf")
+
+
+def test_reads_the_same_pages_from_bytes_as_from_the_file(tmp_path: Path) -> None:
+    path = write_text_pdf(tmp_path / "two.pdf", [["first page"], ["second page"]])
+    assert read_pdf_bytes(path.read_bytes(), "upload") == read_pdf_pages(path)
+
+
+@pytest.mark.parametrize(
+    ("content", "problem"),
+    [
+        (b"not a pdf at all", "upload: not a readable PDF file"),
+        (b"", "upload: not a readable PDF file"),
+    ],
+)
+def test_rejects_bytes_that_are_not_a_readable_pdf(content: bytes, problem: str) -> None:
+    with pytest.raises(BatchRejectedError) as excinfo:
+        read_pdf_bytes(content, "upload")
+    assert excinfo.value.problems == [problem]
+
+
+def test_rejects_bytes_of_a_pdf_with_no_text(tmp_path: Path) -> None:
+    data = write_text_pdf(tmp_path / "empty.pdf", [[]]).read_bytes()
+    with pytest.raises(BatchRejectedError) as excinfo:
+        read_pdf_bytes(data, "upload")
+    assert excinfo.value.problems == ["upload: the PDF holds no text that can be extracted"]

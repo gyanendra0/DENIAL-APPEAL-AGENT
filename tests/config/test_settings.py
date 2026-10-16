@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from src.config.settings import get_settings, load_llm_gateway_settings, load_settings
+from src.config.settings import (
+    get_settings,
+    load_api_settings,
+    load_llm_gateway_settings,
+    load_settings,
+)
 
 URL = "postgresql+psycopg://user:pw@localhost:5432/app"
 
@@ -424,3 +429,116 @@ def test_env_example_lists_every_gateway_key(monkeypatch: pytest.MonkeyPatch) ->
 
 def _is_placeholder(key: SecretStr) -> bool:
     return key.get_secret_value().startswith("replace-with-")
+
+
+# A made-up value of exactly 32 characters. No real secret ever appears in a test.
+TOKEN_SECRET = "test-token-secret-not-real-32chr"  # noqa: S105  (made up, not a real secret)
+API_KEYS = ("AUTH_TOKEN_SECRET", "AUTH_TOKEN_TTL_MINUTES", "AUTH_COOKIE_SECURE")
+
+
+@pytest.fixture
+def api_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Set the token secret and clear the optional API keys."""
+    for key in API_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AUTH_TOKEN_SECRET", TOKEN_SECRET)
+    return monkeypatch
+
+
+def test_api_settings_read_the_secret_and_use_the_defaults(api_env: pytest.MonkeyPatch) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert len(TOKEN_SECRET) == 32
+    assert settings.auth_token_secret.get_secret_value() == TOKEN_SECRET
+    assert settings.auth_token_ttl_minutes == 60
+    assert settings.auth_cookie_secure is True
+
+
+def test_api_settings_read_the_lifetime_and_cookie_flag(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("AUTH_TOKEN_TTL_MINUTES", "15")
+    api_env.setenv("AUTH_COOKIE_SECURE", "false")
+
+    settings = load_api_settings(env_file=None)
+
+    assert settings.auth_token_ttl_minutes == 15
+    assert settings.auth_cookie_secure is False
+
+
+@pytest.mark.parametrize("value", [None, "", "   "], ids=["missing", "empty", "blank"])
+def test_missing_token_secret_fails_naming_the_key(
+    api_env: pytest.MonkeyPatch, value: str | None
+) -> None:
+    if value is None:
+        api_env.delenv("AUTH_TOKEN_SECRET")
+    else:
+        api_env.setenv("AUTH_TOKEN_SECRET", value)
+
+    with pytest.raises(ValidationError, match="auth_token_secret"):
+        load_api_settings(env_file=None)
+
+
+def test_rejects_a_token_secret_under_32_characters_without_showing_it(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    short = TOKEN_SECRET[:31]
+    api_env.setenv("AUTH_TOKEN_SECRET", short)
+
+    with pytest.raises(ValidationError, match="(?s)auth_token_secret.*32 characters") as caught:
+        load_api_settings(env_file=None)
+
+    assert short not in str(caught.value)
+    assert short not in repr(caught.value)
+
+
+def test_spaces_around_a_short_token_secret_do_not_count(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("AUTH_TOKEN_SECRET", f"  {TOKEN_SECRET[:30]}  ")
+
+    with pytest.raises(ValidationError, match="auth_token_secret"):
+        load_api_settings(env_file=None)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "soon"])
+def test_rejects_a_token_lifetime_that_is_not_a_whole_number_of_at_least_1(
+    api_env: pytest.MonkeyPatch, value: str
+) -> None:
+    api_env.setenv("AUTH_TOKEN_TTL_MINUTES", value)
+
+    with pytest.raises(ValidationError, match="auth_token_ttl_minutes"):
+        load_api_settings(env_file=None)
+
+
+def test_rejects_a_cookie_flag_that_is_not_true_or_false(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("AUTH_COOKIE_SECURE", "sometimes")
+
+    with pytest.raises(ValidationError, match="auth_cookie_secure"):
+        load_api_settings(env_file=None)
+
+
+def test_token_secret_is_not_shown_when_settings_are_printed(api_env: pytest.MonkeyPatch) -> None:
+    settings = load_api_settings(env_file=None)
+
+    for shown in (repr(settings), str(settings), settings.model_dump_json()):
+        assert TOKEN_SECRET not in shown
+
+
+def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatch) -> None:
+    gateway_env.setenv("DATABASE_URL", URL)
+    for key in API_KEYS:
+        gateway_env.delenv(key, raising=False)
+
+    assert load_settings(env_file=None).database_url == URL
+    assert load_llm_gateway_settings(env_file=None).llm_primary_model == "made-up-small-model"
+
+
+def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in API_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    example = Path(__file__).parents[2] / ".env.example"
+    listed = {line.split("=", 1)[0] for line in example.read_text().splitlines() if "=" in line}
+
+    settings = load_api_settings(env_file=str(example))
+
+    assert set(API_KEYS) <= listed
+    # Worked out before the assert, so a failure never prints the value of a real secret.
+    secret_is_placeholder = _is_placeholder(settings.auth_token_secret)
+    assert secret_is_placeholder, "AUTH_TOKEN_SECRET in .env.example is not a placeholder"

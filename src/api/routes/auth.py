@@ -14,6 +14,8 @@ from src.api.signup import AccountNameTakenError, EmailTakenError, create_accoun
 from src.api.tokens import issue_token
 from src.api.user_lookup import find_user_response
 from src.config.settings import ApiSettings
+from src.db.models import AuditAction
+from src.review.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ def _user_response(session: Session, *, account_id: int, user_id: int) -> UserRe
 def signup(
     body: SignupRequest, response: Response, settings: Settings, session: DbSession
 ) -> UserResponse:
-    """Create a new account and its first user (an admin), and log that user in."""
+    """Create a new account and its first user (an admin), audit it, and log that user in."""
     try:
         user = create_account_with_admin(
             session, account_name=body.account_name, email=body.email, password=body.password
@@ -69,6 +71,7 @@ def signup(
         raise HTTPException(status.HTTP_409_CONFLICT, ACCOUNT_NAME_TAKEN) from None
     except EmailTakenError:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from None
+    record_audit_event(session, user.account_id, user.id, AuditAction.ACCOUNT_CREATED, None)
     _set_login_cookie(response, settings, user_id=user.id, account_id=user.account_id)
     logger.info("signup: account %d, user %d", user.account_id, user.id)
     return _user_response(session, account_id=user.account_id, user_id=user.id)

@@ -5,22 +5,35 @@ cites two made-up chunks that are stored too. No real letter and no real model i
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from src.agent.trace import (
+    AgentTrace,
+    ExtractionStep,
+    RulesStep,
+    ScoringStep,
+    StepStatus,
+)
 from src.db.models import (
     AuditEvent,
+    EndState,
     EvidenceChunk,
     EvidenceDocument,
     EvidenceSource,
+    Job,
+    JobStatus,
     LlmProvider,
+    UploadAgentRun,
     UploadDraft,
     UploadExtraction,
 )
 from src.drafting.schemas import AppealLetter
 from src.jobs.store import create_upload_job
+from src.rules.verdict import RuleOutcome
 from tests.drafting.letter_helpers import (
     CHUNK_TEXT,
     OTHER_CHUNK_TEXT,
@@ -121,3 +134,72 @@ def audit_events(session: Session, account_id: int) -> list[AuditEvent]:
             select(AuditEvent).where(AuditEvent.account_id == account_id).order_by(AuditEvent.id)
         )
     )
+
+
+def made_up_trace(end_state: EndState = EndState.NEEDS_REVIEW, score: float = 0.62) -> AgentTrace:
+    """A trace that passed the rules and was scored `score`; the later steps are left out."""
+    return AgentTrace(
+        end_state=end_state,
+        extraction=ExtractionStep(
+            status=StepStatus.DONE, prompt_version="v2", text_sha256="a" * 64
+        ),
+        rules=RulesStep(
+            status=StepStatus.DONE,
+            rules_version="v1",
+            today=date(2008, 4, 1),
+            amount_floor=Decimal("25"),
+            outcome=RuleOutcome.PASS,
+        ),
+        scoring=ScoringStep(
+            status=StepStatus.DONE,
+            feature_version="v1",
+            model_version="v1",
+            score=score,
+            threshold=0.30,
+        ),
+    )
+
+
+def finish_job(
+    session: Session,
+    account_id: int,
+    job_id: int,
+    *,
+    trace: AgentTrace | None = None,
+    seconds: int = 30,
+    cost_usd: str = "0.001000",
+) -> None:
+    """Move a queued job to `done`, `seconds` after its upload, with `trace` stored."""
+    trace = trace or made_up_trace()
+    session.execute(
+        update(Job)
+        .where(Job.account_id == account_id, Job.id == job_id)
+        .values(
+            status=JobStatus.DONE,
+            end_state=trace.end_state,
+            started_at=Job.created_at,
+            finished_at=Job.created_at + timedelta(seconds=seconds),
+            cost_usd=Decimal(cost_usd),
+        )
+    )
+    session.add(
+        UploadAgentRun(
+            account_id=account_id,
+            job_id=job_id,
+            agent_version=trace.agent_version,
+            end_state=trace.end_state,
+            text_sha256="a" * 64,
+            trace=trace.model_dump(mode="json"),
+        )
+    )
+    session.flush()
+
+
+def move_job_back(session: Session, account_id: int, job_id: int, days: int) -> None:
+    """Move a job's upload time `days` back, as if it had been uploaded then."""
+    session.execute(
+        update(Job)
+        .where(Job.account_id == account_id, Job.id == job_id)
+        .values(created_at=Job.created_at - timedelta(days=days))
+    )
+    session.flush()

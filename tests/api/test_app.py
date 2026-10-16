@@ -142,6 +142,13 @@ def test_routes_are_registered() -> None:
         "/users/{user_id}",
         "/uploads",
         "/jobs/{job_id}",
+        "/worklist",
+        "/jobs/{job_id}/detail",
+        "/jobs/{job_id}/draft",
+        "/jobs/{job_id}/draft/approve",
+        "/jobs/{job_id}/draft/reject",
+        "/overview",
+        "/audit",
     }
 
 

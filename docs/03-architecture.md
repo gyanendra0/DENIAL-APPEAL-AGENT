@@ -43,6 +43,7 @@
 | `agent` | Walk one claim through extraction, rules, scoring, retrieval and drafting, then stop for a person (see 3.16) | Fixed order in code, each step once, a stored trace |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
+| `jobs` | Turn one uploaded denial letter into a draft in the background: extraction, then the agent loop, then the stored result (see 3.19) | A `jobs` table, run by FastAPI background tasks in the API process |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
 | `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
@@ -59,12 +60,15 @@
 
 Everything after step 1 is asynchronous. The UI polls job status.
 
-This is the flow of the finished product. What exists today is steps 2 to 6 for the made-up
-claims of the synthetic sample, run by a command and not by an upload: the agent loop reads
-a stored extraction, runs the rules, scores the claim, retrieves evidence, drafts a letter
-and stores a trace that ends in a stop for a person (see 3.16). Sign-up, login and the
-logged-in user's own record work through the API (see 3.18). The upload, the background
-job, the dashboard, the review actions and the audit log are not built yet.
+This is the flow of the finished product. What exists today is steps 1 to 5, in two ways.
+For the made-up claims of the synthetic sample, a command runs the agent loop on a stored
+extraction: rules, score, evidence, draft and a trace that ends in a stop for a person
+(see 3.16). For an uploaded denial letter, `POST /uploads` stores the letter's text (not the
+file, and not in object storage) and queues a background job that extracts the fields, runs
+the same loop and stores the result in the account's own tables; `GET /jobs/{id}` gives its
+status (see 3.19). Sign-up, login and the logged-in user's own record work through the API
+(see 3.18). The dashboard, reading a draft through the API, the review actions and the audit
+log are not built yet.
 
 ## 3.4 Data model (core tables)
 
@@ -81,6 +85,11 @@ job, the dashboard, the review actions and the audit log are not built yet.
 | `evidence_chunk_embeddings` | The vector an embedding model gave for one chunk, used by the search |
 | `appeal_drafts` | A drafted appeal letter that passed the citation validator, for one claim of the synthetic sample |
 | `agent_runs` | What the agent loop did with one claim of the synthetic sample: the end state and the trace of the five steps |
+| `uploads` | One denial letter a user uploaded: the file name, its type (`text` / `pdf`), its size and the text read from it; the file itself is not kept |
+| `jobs` | The background job of one upload: status, failure code, the loop's end state and the times |
+| `upload_extractions` | The letter fields a model read from one upload, with the prompt version and the model |
+| `upload_agent_runs` | What the agent loop did with one upload: the end state and the trace |
+| `upload_drafts` | The checked appeal letter of one upload, when the loop drafted one |
 | `drafts` | Generated letter, citations, status |
 | `reviews` | Who approved or rejected, when, why |
 | `audit_log` | Every automated decision, immutable |
@@ -97,13 +106,18 @@ row to each, and every API request reads the logged-in user (see 3.18). Since mi
 an email belongs to one user of one account, so login can find the account from the email.
 That lookup is the one query on `users` without an `account_id` filter.
 
-The business table `extractions` does not exist yet: it is built when customer uploads
-exist. Until then, what a model reads from the generated documents is stored in the public
-reference table `document_extractions` (see 3.9).
+The five upload tables (`uploads`, `jobs`, `upload_extractions`, `upload_agent_runs`,
+`upload_drafts`, migration 0016) are the first business tables that hold a customer's
+documents. Each carries `account_id`, and every link between them carries it too, so a row
+of one account cannot point at a row of another (see 3.19). They take the place of the
+planned `denials`, `extractions` and `drafts` for an uploaded letter: what a model reads from
+an upload is in `upload_extractions`, the checked letter in `upload_drafts`. What a model
+reads from the generated documents stays in the public reference table
+`document_extractions` (see 3.9).
 
-The business table `predictions` does not exist yet either. The win-probability model is
-trained and saved as files (see 3.10). The only place a score is stored is the agent's
-trace, for a claim of the synthetic sample (see 3.16).
+The business table `predictions` does not exist. The win-probability model is trained and
+saved as files (see 3.10). A score is stored only in the agent's trace: in `agent_runs` for
+a claim of the synthetic sample (see 3.16), in `upload_agent_runs` for an upload (see 3.19).
 
 A rule verdict has no table of its own either. The rules are a function that is called when
 a verdict is needed (see 3.11). The agent's trace is the one place a verdict is written
@@ -117,8 +131,9 @@ writes nothing (see 3.12). The verdicts of a draft review are a local file, not 
 text is public and shared by every account (see 3.13). The vectors of the chunks are in a
 table of their own, `evidence_chunk_embeddings`, also a public reference table (see 3.14).
 
-The business table `drafts` does not exist yet either. A drafted letter for a claim of the
-synthetic sample is stored in the public reference table `appeal_drafts` (see 3.15).
+The business table `drafts` does not exist. A drafted letter for a claim of the synthetic
+sample is stored in the public reference table `appeal_drafts` (see 3.15); one for an upload
+in the business table `upload_drafts` (see 3.19).
 
 ## 3.5 Tech stack
 
@@ -128,7 +143,7 @@ synthetic sample is stored in the public reference table `appeal_drafts` (see 3.
 | API | FastAPI + Pydantic | Typed, fast, auto docs |
 | ORM / migrations | SQLAlchemy 2 + Alembic | Standard, testable |
 | Database | PostgreSQL + pgvector | One store for rows *and* vectors — keeps cost near zero |
-| Jobs | Postgres-backed queue | No extra broker to pay for or run |
+| Jobs | A `jobs` table in Postgres, run by FastAPI background tasks in the API process (see 3.19) | No extra broker or worker to pay for or run |
 | ML | scikit-learn | Strong on tabular, cheap to train |
 | LLM | Hosted API primary, open-weight fallback | Quality with a cost escape hatch |
 | Frontend | React + Vite + TypeScript | Fast build, typed |
@@ -149,6 +164,7 @@ denial-appeal-agent/
 │  ├─ evaluation/   measured results against the stage targets
 │  ├─ extraction/   document → fields
 │  ├─ ingest/       loaders, file handling
+│  ├─ jobs/         background jobs: one upload through extraction and the agent loop
 │  ├─ llm/          provider gateway, prompts, budget guard
 │  ├─ ml/           features, training, inference
 │  ├─ rag/          chunking, embedding, retrieval
@@ -396,8 +412,10 @@ guess.
 
 Today the input is the stored text of a generated document
 ([02-data.md 2.4](02-data.md#24-layer-c--generated-documents)). The document type is
-stored with the document and is given to the extractor; it is not guessed. OCR, PDFs and
-customer uploads are not built yet.
+stored with the document and is given to the extractor; it is not guessed. An uploaded
+denial letter (a text file or a PDF with text) is read by the same extractor with the same
+letter prompt, inside its job (see 3.19). OCR is not built: a scanned PDF is refused at
+upload.
 
 ### Where the code is
 
@@ -637,7 +655,7 @@ Training writes two files into the folder named by the setting `MODEL_DIR` (defa
 | `win_model.json` | The facts: feature, model and label rule versions, the scikit-learn version, the split seed, the training seed, per split the rows, the true proxies and the AUC, and the SHA-256 of the model file |
 
 A new run replaces both files. There is no predictions table and no migration: the
-business table `predictions` (3.4) is built when customer uploads exist.
+score of an upload is stored in its trace (3.19), not in a table of its own.
 
 `load_win_model(folder)` checks before it opens the model file:
 
@@ -2410,23 +2428,24 @@ Three things hold for every run:
   budget check (3.8). A claim that stops earlier costs nothing.
 
 The claims are the made-up claims of the synthetic sample, so no real patient data is
-involved.
+involved. An uploaded letter goes through the same loop inside its job (see 3.19).
 
 ### Where the code is
 
 | File | Holds |
 |---|---|
 | `src/agent/trace.py` | The trace types: `AgentTrace`, the five step models, `StepStatus`, `DraftFailure`, `EvidenceReference` and `AGENT_VERSION` |
-| `src/agent/loop.py` | `run_agent_for_claim(...)`, the loop for one claim, and `AgentCandidate`, the claim it takes |
+| `src/agent/loop.py` | `run_agent_for_claim(...)`, the loop for one letter; `LoopInput`, what it reads; `AgentOutcome`, what it returns; `AgentCandidate`, a claim of the sample |
 | `src/agent/store.py` | `select_agent_candidates` (the claims that can be taken), `read_finished_claim_ids`, `save_agent_run` and `ClaimRowsError` |
-| `src/agent/run.py` | `run_agent(...)`: many claims, one at a time, each trace saved as it arrives; its answer `AgentRunSummary` |
+| `src/agent/run.py` | `run_agent(...)`: many claims, one at a time, each trace and its checked letter saved as they arrive; its answer `AgentRunSummary` |
 | `src/db/models.py` | `AgentRun`, the table `agent_runs`, and `EndState`, the five end states |
 | `src/db/migrations/versions/rev_0013_agent_runs.py` | Migration 0013: the table and the type `agent_end_state`; the downgrade drops both |
 | `pipelines/run_agent.py` | The command ([02-data.md 2.9](02-data.md#29-running-the-whole-pipeline)) |
 
 `src/agent/` calls only the public functions of the other packages: `evaluate_rules`
 (3.11), `predict_win_probability` (3.10), `build_search_question`, `draft_appeal` and
-`save_appeal_draft` (3.15) and `search_evidence` (3.14). It changes none of them.
+`save_appeal_draft` (3.15) and `search_evidence` (3.14). It changes none of them. The loop
+itself stores nothing; `save_appeal_draft` is called by `run_agent`.
 
 `EndState` is in the models file and not beside the trace types, because the table stores
 it as a column.
@@ -2437,13 +2456,17 @@ it as a column.
 |---|---|---|
 | 1. Extraction | Reads the claim's stored letter extraction (the `document_extractions` row of extraction prompt `v2`, 3.9). It makes **no** extraction call | no |
 | 2. Rules | Calls `evaluate_rules` with the letter date, the appeal deadline and the total allowed charge from the extraction, and with "today" and the amount floor passed in | no |
-| 3. Scoring | Scores the claim with the saved win model. The three features come from the claim's stored rows through `build_claim_features` (`FEATURE_VERSION` `v1`), not from the letter | no |
+| 3. Scoring | Scores the claim with the saved win model. For a claim of the sample the three features come from its stored rows through `build_claim_features` (`FEATURE_VERSION` `v1`), not from the letter; for an upload they come from the letter (3.19). Without features the loop stops here as `needs_review_no_draft`, with no score | no |
 | 4. Retrieval | Builds the search question with `build_search_question` (the fixed phrase of the letter's denial reason, no procedure codes) and calls `search_evidence` with `min_similarity=MIN_EVIDENCE_SIMILARITY` (0.55, see 3.15): at most 5 results, possibly none | one small embedding call |
-| 5. Drafting | Calls `draft_appeal` with the letter's values and the results. A checked letter is stored in `appeal_drafts` | one model call |
+| 5. Drafting | Calls `draft_appeal` with the letter's values and the results. A checked letter is returned with the trace | one model call |
 
-`run_agent_for_claim` takes a ready `AgentCandidate`: the claim id, the extracted letter,
-the hash of the letter document, the extraction prompt version and the features. It returns
-the trace and does not store it. The caller stores it.
+`run_agent_for_claim` takes anything that fits `LoopInput`: the extracted letter, the hash of
+the letter text, the extraction prompt version and the features (or None). An
+`AgentCandidate` of the sample fits it, and so does the `UploadLetter` of a job (3.19). It
+returns an `AgentOutcome`, the trace and the checked letter (None when there is none), and
+stores neither. The caller stores both: `run_agent` puts the letter in `appeal_drafts` and the
+trace in `agent_runs`, in one commit; a job puts them in `upload_drafts` and
+`upload_agent_runs`.
 
 "Today", the amount floor and the threshold are arguments. Nothing in `src/agent/` reads
 the clock or the settings.
@@ -2464,6 +2487,7 @@ with no citation ends as `needs_review`. There is no status and no end state of 
 | Rules | The verdict is `hard_fail` | `stopped_by_rules` | The trace |
 | Rules | The verdict is `must_review` | `needs_review_no_draft` | The trace |
 | Rules | The rules give no verdict (the extracted amount is below zero) | `draft_failed` | The trace |
+| Scoring | There are no features (an upload whose letter lacks a value the model needs, 3.19) | `needs_review_no_draft` | The trace; scoring `stopped` with no score |
 | Scoring | The score is below the threshold | `below_threshold` | The trace |
 | Drafting | The draft is blocked by the validator, cut off at the output limit, cannot be parsed, holds text in square brackets, or is refused by the fact check | `draft_failed` | The trace; no draft |
 | Drafting | The letter passed the validator and the two checks after it | `needs_review` | The trace and the draft |
@@ -2681,9 +2705,9 @@ here. It is measured by the draft acceptance review (see 3.17).
 
 About scoring:
 
-- An uploaded letter has no claim rows. The features come from the stored rows of the
-  synthetic sample, so scoring a real letter needs a feature definition that reads the
-  letter. That is Stage 5 work.
+- An uploaded letter has no claim rows, so its features come from the letter's extracted
+  totals (`build_letter_features`, 3.19). The same three features, read two ways, can disagree
+  when the extraction is wrong; the model was trained only on features from claim rows.
 - The score estimates a made-up label (the proxy of
   [02-data.md 2.2.3](02-data.md#223-labels-rule-v2)). It says nothing about real appeals,
   and so neither does the threshold.
@@ -3760,8 +3784,8 @@ About the rubric:
 ## 3.18 API and auth
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
-logout, the logged-in user's own record, one admin route and a health check. Uploads, jobs
-and the draft review come in later Stage 5 branches.
+logout, the logged-in user's own record, one admin route and a health check. The upload and
+job routes are in 3.19. The draft review comes in a later Stage 5 branch.
 
 Three things hold for every route:
 
@@ -3773,13 +3797,15 @@ Three things hold for every route:
 - **Another account's row is "not found".** A row of another account is answered with `404`,
   the same as a row that does not exist, so the answer does not say that the row exists.
 
-No route calls a model and no route spends money.
+No route calls a model and no route spends money while the request is answered. The one
+place money is spent is the background job an upload queues, after its answer is sent
+(3.19).
 
 ### Where the code is
 
 | File | Holds |
 |---|---|
-| `src/api/app.py` | `create_app(api_settings=None, session_factory=None)`, the app factory; it puts the settings and the session factory on `app.state` and answers a `422` with `answer_validation_error` |
+| `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
 | `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
@@ -3806,7 +3832,8 @@ No route calls a model and no route spends money.
 and show that the admin of one gets `404` for the user of the other.
 
 The roles are `viewer`, `reviewer` and `admin` (the enum `user_role` since migration 0001).
-Only `admin` is checked so far.
+`GET /users/{user_id}` checks for `admin`; `POST /uploads` (3.19) lets `reviewer` and `admin`
+in and answers `403` to a `viewer`.
 
 ### Sign-up, step by step
 
@@ -3890,8 +3917,9 @@ uvicorn src.api.app:create_app --factory
 ```
 
 `--factory` makes uvicorn call `create_app()`, which reads the settings and the database URL
-from the environment. Tests call `create_app(api_settings, session_factory)` with their own
-values instead. The route tests run the real app against `app_test` on a connection that is
+from the environment and builds the job runner (3.19), so the LLM keys, the prompt files and
+the model file must be there too. Tests call `create_app(api_settings, session_factory,
+job_runner)` with their own values instead, the runner a stub. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
 Every route takes its session through `DbSession`, which closes the session (and commits)
@@ -3922,3 +3950,181 @@ not carry the email or the hash. This holds for the pipelines too.
 - **Isolation is enforced in the API code, not by the database.** A query that forgets the
   `account_id` filter is not stopped by Postgres. Row-level security would stop it, at the
   cost of much more setup.
+
+## 3.19 Uploads and jobs
+
+A user uploads one denial letter. The API stores its text, answers at once with a job id, and
+a background job turns the letter into a draft: it extracts the fields (3.9), runs the agent
+loop (3.16) and stores the result in the account's own tables. The user reads the job's
+status with `GET /jobs/{id}`.
+
+Three things hold for every upload:
+
+- **The account comes from the logged-in user.** Both routes and every query of the job take
+  `account_id` from `current_user`, and a job of another account is answered with `404`
+  (3.18, [conventions 6.4](06-conventions.md#64-database)).
+- **No document text reaches a job row, an answer or a log.** A failure is stored as one of
+  six fixed codes; a log line gives the job id, the account id and an error's class name,
+  never its message, the file name or an extracted value.
+- **Every job ends in a stop for a person.** A finished job holds the loop's end state; none
+  of them means "approved" or "sent" ([conventions 6.8](06-conventions.md#68-hard-rules)).
+
+The letters used so far are made up, so no real patient data is involved.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/api/routes/jobs.py` | `POST /uploads` and `GET /jobs/{job_id}`; the answers `UploadAccepted` and `JobResponse` |
+| `src/api/upload_file.py` | `read_uploaded_letter(data)`: the file type from the first bytes and the text, or `UploadFileError` with a fixed message |
+| `src/ingest/pdf_text.py` | `read_pdf_bytes(data, name)`: the text of every page of a PDF held in memory (the reader of 2.3.2, for bytes) |
+| `src/jobs/store.py` | `NewUpload`, `create_upload_job`, `find_job`, `start_job`, `read_upload_text`, `save_upload_extraction`, `finish_job_done`, `finish_job_failed`, `mark_interrupted_jobs`; `JobNotFoundError`, `JobStateError` |
+| `src/jobs/run.py` | `run_upload_job(...)`, one job from `queued` to its end; `JobContext`, what every job runs with; `UploadLetter`, the letter as the loop reads it |
+| `src/jobs/context.py` | `build_job_context(...)`: the gateway, the default letter extraction and drafting prompts and the win model, loaded once |
+| `src/ml/features.py` | `build_letter_features(letter)`: the three model features from the letter's extracted fields |
+| `src/api/app.py` | `build_job_runner`, and the startup step that marks unfinished jobs `interrupted` |
+| `src/db/models.py` | `Upload`, `Job`, `UploadExtraction`, `UploadAgentRun`, `UploadDraft` and the enums `UploadFileType`, `JobStatus`, `JobFailure` |
+| `src/db/migrations/versions/rev_0016_uploads_and_jobs.py` | Migration 0016: the five tables and the types `upload_file_type`, `job_status`, `job_failure`; the downgrade drops them and keeps `agent_end_state` and `llm_provider`, which older tables use |
+
+`src/jobs/` calls only public functions of the other packages: `extract_document` (3.9),
+`run_agent_for_claim` (3.16) and `build_letter_features` (3.10).
+
+### The routes
+
+| Method and path | Who may call it | Answers |
+|---|---|---|
+| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `413` for a file over `UPLOAD_MAX_BYTES`; `422` for a file that cannot be read as a letter (one fixed message per case, below) |
+| `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account or no job at all |
+
+The upload is a form field `file` (`multipart/form-data`, read by `python-multipart`).
+
+### An upload, step by step
+
+1. At most `UPLOAD_MAX_BYTES` + 1 bytes are read. More than the limit is `413`.
+2. The file name must be 1 to 255 characters after trimming, or `422`. It is stored, never
+   logged and never answered.
+3. The type is decided from the first bytes, never from the name or the browser's content
+   type: a file that starts with `%PDF-` is read as a PDF, any other as UTF-8 text.
+   - A PDF's pages are joined with a blank line. A PDF that cannot be opened, is encrypted or
+     holds no text (a scan) is `422`. There is no OCR.
+   - A text file that is not UTF-8 is `422`. A UTF-8 byte order mark is dropped.
+   - An empty file, text that is only whitespace, and text with a NUL character (Postgres
+     refuses one) are `422`.
+4. One `uploads` row (the name, the type, the size, the text and its SHA-256) and one `jobs`
+   row with status `queued` are written. The file itself is not kept: only its text.
+5. The job is handed to FastAPI's `BackgroundTasks`. It runs after the answer is sent, by
+   which time `DbSession` has committed the queued job (3.18). The answer is `202`.
+
+### A job, step by step
+
+`run_upload_job(session_factory, context, *, account_id, job_id, today)` runs one job. "Today"
+is the date the job runs on.
+
+| Step | What it does | Costs money |
+|---|---|---|
+| 1. Start | Moves the job from `queued` to `running`. A job that is not `queued` (already run, or of another account) is left alone and nothing is done | no |
+| 2. Extraction | Calls `extract_document` with the letter prompt of `EXTRACTION_PROMPT_VERSION` on the stored text. The fields are stored in `upload_extractions` at once, in their own commit | one model call |
+| 3. Features | `build_letter_features`: the denial reason, the total allowed charge, and "fully denied" when the total paid is $0. None when the reason or an amount is missing or an amount is below zero | no |
+| 4. The loop | `run_agent_for_claim` with an `UploadLetter`: rules, score, evidence, draft (3.16). No features means no score: the loop ends `needs_review_no_draft` | one embedding and one model call, only past the rules and the threshold |
+| 5. Finish | Moves the job from `running` to `done` with the loop's end state, and stores the trace in `upload_agent_runs` and the checked letter, if any, in `upload_drafts`, in one commit | no |
+
+A job is `done` whatever the loop's end state: a letter the rules stop is a finished job with
+end state `stopped_by_rules`. `failed` means the job itself could not finish.
+
+Each move happens only from the status before it (`queued` → `running` → `done` or `failed`),
+in one `UPDATE ... WHERE status = ...`, so a job never runs twice. The times come from the
+database clock. Checks in the table keep the columns consistent: a failure code only when
+`failed`, an end state only when `done`, the times set to match the status.
+
+### Job failures
+
+| Code | When |
+|---|---|
+| `extraction_failed` | The extraction answer was cut off or did not fit the schema |
+| `budget_exceeded` | The monthly LLM budget is reached (3.8) |
+| `llm_unavailable` | No provider could answer |
+| `evidence_not_ready` | The evidence has no stored vector (3.14) |
+| `interrupted` | The API process stopped while the job was `queued` or `running` |
+| `internal_error` | Any other error |
+
+A background job has no caller to raise to, so every error ends the job as `failed` with one
+of these codes. Only the code is stored: never the error's message, which can quote the
+document or the model's answer. The extraction of a job that failed later stays stored.
+
+**Unfinished jobs at startup.** A job runs inside the API process, so a stopped process
+leaves its jobs `queued` or `running` forever. Before the app takes its first request, the
+startup step (`mark_interrupted_jobs`) fails every such job with `interrupted`, account by
+account, so every query on `jobs` filters on `account_id`. The user uploads the letter again.
+
+### The tables
+
+All five are business tables with `account_id` (index, not null, foreign key to `accounts`).
+
+| Table | One row per | Holds |
+|---|---|---|
+| `uploads` | upload | the user, the file name, `file_type` (`text` / `pdf`), the size in bytes, the text and its SHA-256 |
+| `jobs` | upload (unique) | `status`, `failure`, `end_state`, `started_at`, `finished_at` |
+| `upload_extractions` | job (unique) | prompt version, model, provider, the hash of the text read, the fields as JSON |
+| `upload_agent_runs` | job (unique) | agent version, end state, the hash of the text, the trace as JSON |
+| `upload_drafts` | job (unique) | prompt version, search question version, model, provider, the hash of the text, the checked letter as JSON |
+
+**Every link carries `account_id`.** Each foreign key between these tables, and the one from
+`uploads` to `users`, is on the pair (`account_id`, id), backed by a unique key on that pair
+(`uq_users_account_id`, `uq_uploads_account_id`, `uq_jobs_account_id`). So a job cannot point at
+another account's upload, and an upload cannot name another account's user: the database
+refuses it (tested). The results hang off the job and are deleted with it; a job is deleted
+with its upload. The link from `uploads` to `users` has no cascade.
+
+The results take the place of the planned `extractions`, `predictions` and `drafts` (3.4) for
+an upload. The draft's citations name evidence the same way as in 3.15, never by row id.
+
+### Settings
+
+| Key | Required | Meaning |
+|---|---|---|
+| `UPLOAD_MAX_BYTES` | no (default 1,000,000) | The largest file one upload may send, in bytes, at least 1 |
+
+It is in `ApiSettings` (3.18). A job also uses the keys of the gateway (3.8), the prompt and
+model folders, `RULES_AMOUNT_FLOOR_USD` (3.11) and `AGENT_WIN_THRESHOLD` (3.16). `create_app()`
+builds the job runner when the app starts, so a missing LLM key, prompt file or model file
+fails there, with a message that names it, and not at the first upload.
+
+### Measured
+
+The first "upload to draft ready < 2 minutes" measurement (2026-10-16): `uvicorn` on the local
+machine, `app` at migration 0016, one made-up account, two made-up `medical_necessity` letters
+(appeal deadline in 2027), each uploaded as a text file. A free check first showed that a
+fully denied `noncovered` letter scores 0.17 and would stop at the threshold, so the letters
+are `medical_necessity` (0.71).
+
+| | Job 1 | Job 2 |
+|---|---|---|
+| `202` to `done` | 30.1 s | 29.7 s |
+| Of which | extraction 6.1 s, retrieval 6.2 s, drafting 17.8 s | |
+| End state | `draft_failed` (citation check `blocked`, a quote not in the evidence) | `draft_failed` (answer not parseable) |
+| Extraction | all 15 fields right | |
+| Evidence | 5 `cms_manual` matches, similarity 0.61 to 0.66 | |
+
+Six model calls cost $0.002186 in all (`llm_calls`).
+
+**The time target is met for the job (about 30 s of 120 s), but no draft came out.** Both
+jobs ended `draft_failed`, so "upload to draft ready" is not yet measured for a job that ends
+with a draft. Two letters are too few to say how often an upload is drafted.
+
+### Known limits
+
+- **A job runs in the API process.** A restart fails its jobs as `interrupted`, and the user
+  uploads again. There is no retry, no queue shared by several processes and no limit on how
+  many jobs run at once.
+- **No OCR.** A scanned PDF holds no text and is refused at upload.
+- **One letter per upload.** The clinical note and the prior-authorisation record are not
+  uploaded or read; the letter type is not checked, the file is read as a denial letter.
+- **The score of an upload comes from the letter alone** (step 3), while the model was
+  trained on features from claim rows (3.10). A wrong extracted amount changes the score.
+- **The raw file is not kept.** Only its text is stored, so a PDF cannot be shown again as
+  it was.
+- **The text is stored in plain form in Postgres.** Encryption at rest and an access log
+  ([02-data.md 2.7](02-data.md#27-privacy)) come with the deployment (Stage 6).
+- **The draft cannot be read through the API yet.** `GET /jobs/{id}` gives the status and the
+  end state; reading and reviewing the draft is the next branch.
+- **Nothing is sent to an insurer.** A finished job always stops for a person.

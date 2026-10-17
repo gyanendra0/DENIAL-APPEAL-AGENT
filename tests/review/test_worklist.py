@@ -78,6 +78,21 @@ def test_pages_newest_first_by_job_id(session: Session) -> None:
     assert second.next_before is None
 
 
+def test_paging_does_not_skip_or_repeat_when_a_job_is_added(session: Session) -> None:
+    setup = review_setup(session)
+    member = setup.member
+    older = [setup.job_id, *(add_job_with_draft(session, member) for _ in range(3))]
+
+    first = list_worklist(session, member.account_id, limit=2)
+    added = add_job_with_draft(session, member)
+    second = list_worklist(session, member.account_id, limit=2, before=first.next_before)
+
+    seen = [item.job_id for item in [*first.items, *second.items]]
+    assert [item.job_id for item in second.items] == [older[1], older[0]]
+    assert sorted(seen) == sorted(older)
+    assert added not in seen
+
+
 def test_filters_on_job_status(session: Session) -> None:
     setup = review_setup(session)
     member = setup.member

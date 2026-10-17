@@ -51,6 +51,27 @@ def test_pages_by_event_id(session: Session) -> None:
     assert second.items[0].event_id < first.items[-1].event_id
 
 
+def test_paging_does_not_skip_or_repeat_when_an_event_is_added(session: Session) -> None:
+    setup = review_setup(session)
+    member = setup.member
+
+    def record() -> None:
+        record_audit_event(
+            session, member.account_id, member.user_id, AuditAction.UPLOAD_CREATED, setup.job_id
+        )
+
+    for _ in range(3):
+        record()
+    older = [entry.event_id for entry in list_audit_events(session, member.account_id).items]
+
+    first = list_audit_events(session, member.account_id, limit=2)
+    record()
+    second = list_audit_events(session, member.account_id, limit=2, before=first.next_before)
+
+    seen = [entry.event_id for entry in [*first.items, *second.items]]
+    assert seen == older
+
+
 @pytest.mark.parametrize("limit", [0, MAX_PAGE_SIZE + 1])
 def test_refuses_a_page_size_out_of_range(session: Session, limit: int) -> None:
     with pytest.raises(ValueError, match="limit must be between 1"):

@@ -1,9 +1,14 @@
-// A placeholder until the screens come: it proves the build, the tests and the styles work.
-export function App() {
+import { QueryClientProvider } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { RouterProvider } from "react-router";
+import type { DataRouter } from "react-router";
+
+// The router and the query client come from outside, so a test can give a memory router at any
+// path and a fresh cache.
+export function App({ router, queryClient }: { router: DataRouter; queryClient: QueryClient }) {
   return (
-    <main className="page">
-      <h1>Denial appeal agent</h1>
-      <p>Drafts appeal letters for a person to review. Nothing is sent to an insurer.</p>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   );
 }

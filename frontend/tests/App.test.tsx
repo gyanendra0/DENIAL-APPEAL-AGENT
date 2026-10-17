@@ -1,13 +1,31 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { App } from "../src/App";
+import { createAppRouter } from "../src/router";
+import { ADMIN, jsonResponse, renderAt, stubApi } from "./helpers";
 
 describe("App", () => {
-  it("shows the product name and that nothing is sent to an insurer", () => {
-    render(<App />);
+  it("sends the root path through the worklist to login when there is no session", async () => {
+    stubApi({ "GET /me": () => jsonResponse(401, { detail: "not logged in" }) });
 
-    expect(screen.getByRole("heading", { name: "Denial appeal agent" })).toBeInTheDocument();
-    expect(screen.getByText(/Nothing is sent to an insurer/)).toBeInTheDocument();
+    const { router } = renderAt("/");
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(router.state.location.state).toEqual({ from: "/app/worklist" });
+  });
+
+  it.each(["/app", "/somewhere/else"])("sends %s to the worklist", async (path) => {
+    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+
+    const { router } = renderAt(path);
+
+    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/worklist");
+  });
+
+  it("builds a browser router at the page's own path", () => {
+    window.history.replaceState(null, "", "/app/login");
+
+    expect(createAppRouter().state.location.pathname).toBe("/app/login");
   });
 });

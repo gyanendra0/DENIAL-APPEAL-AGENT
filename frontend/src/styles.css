@@ -29,3 +29,61 @@ body {
   margin: 0 auto;
   padding: var(--space-4) var(--space-3);
 }
+
+.narrow {
+  max-width: 420px;
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+.error {
+  color: var(--color-error);
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header button {
+  margin-left: auto;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+input,
+button {
+  font: inherit;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+button {
+  background: var(--color-accent);
+  color: var(--color-background);
+  border-color: var(--color-accent);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

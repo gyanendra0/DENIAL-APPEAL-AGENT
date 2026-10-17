@@ -41,6 +41,7 @@ node_modules/
 frontend/dist/
 frontend/build/
 frontend/.vite/
+frontend/coverage/
 *.local
 npm-debug.log*
 yarn-error.log*

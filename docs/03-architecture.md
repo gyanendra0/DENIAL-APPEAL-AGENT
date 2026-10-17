@@ -45,6 +45,7 @@
 | `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
 | `review` | Worklist, denial detail, a person's edit, approve and reject of a draft, the audit log and the job costs (see 3.20) | Every edit and approve checked again; an audit event in the same transaction |
 | `jobs` | Turn one uploaded denial letter into a draft in the background: extraction, then the agent loop, then the stored result (see 3.19) | A `jobs` table, run by FastAPI background tasks in the API process |
+| `frontend` | The web dashboard in the browser: sign-up, login, upload, job status, worklist (see 3.21) | React + Vite + TypeScript; one site with the API through the dev proxy |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
 | `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
@@ -70,7 +71,8 @@ the same loop and stores the result in the account's own tables; `GET /jobs/{id}
 status (see 3.19). Sign-up, login and the logged-in user's own record work through the API
 (see 3.18). Step 7 works through the API: a reviewer reads the worklist and the denial
 detail, edits, approves or rejects the draft, and each action is written to the audit log
-(see 3.20). The dashboard is not built yet.
+(see 3.20). In the browser, the web dashboard covers sign-up, login, the upload with its job
+status and the worklist (see 3.21); the draft review in the browser comes next.
 
 ## 3.4 Data model (core tables)
 
@@ -151,8 +153,8 @@ in the business table `upload_drafts` (see 3.19).
 | ML | scikit-learn | Strong on tabular, cheap to train |
 | LLM | Hosted API primary, open-weight fallback | Quality with a cost escape hatch |
 | Frontend | React + Vite + TypeScript | Fast build, typed |
-| Tests | pytest, coverage | Standard, cheap |
-| Lint/format | ruff, black, mypy | One command |
+| Tests | pytest, coverage; Vitest + Testing Library for the frontend | Standard, cheap |
+| Lint/format | ruff, black, mypy; ESLint, Prettier, `tsc` for the frontend | One command each |
 | Checks | Automated check script | Lint, types and tests in one step |
 | Runtime | Containers on one small always-on machine | Under budget |
 
@@ -4363,5 +4365,199 @@ server log held no error and no personal field.
   or `DELETE` on `audit_events`.
 - **The cost of a month is by upload date.** A job uploaded just before midnight at the end
   of a month and finished after it counts in the month it was uploaded.
-- **No dashboard yet.** Everything here works through the API only; the browser comes in the
+- **No draft review in the browser yet.** The dashboard shows the worklist (3.21); the denial
+  detail, the edit, approve and reject and the overview work through the API only until the
   next Stage 5 branch.
+
+## 3.21 Web dashboard (part 1)
+
+A person uses the product in the browser: they sign up or log in, upload a denial letter,
+watch its job until it ends, and see the account's jobs in a worklist. This is the first
+half of the dashboard. Reading a denial, reviewing its draft and the overview come in the next
+Stage 5 branch.
+
+The app is React + TypeScript, built with Vite, in `frontend/`. Four things hold for every
+screen:
+
+- **The browser sees one site.** The Vite dev server serves the screens and forwards every
+  API path to `uvicorn`, so the login cookie (3.18) works as it is. The API has no CORS and
+  did not change for the dashboard.
+- **The API decides, the screens only hide.** The upload is hidden from a `viewer`, but the
+  API still answers `403` for one, and the screen shows that.
+- **No screen calls a model and none spends money.** Only the upload's job does (3.19).
+- **No input is echoed back.** An error message names the fields that were refused, never
+  what was typed into them.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `frontend/vite.config.ts` | The dev server and its proxy: `API_PATHS`, the nine top-level API paths, forwarded to `API_TARGET` (`http://127.0.0.1:8000`) |
+| `frontend/src/main.tsx`, `App.tsx`, `router.tsx` | The start of the app, the query client and the router; every screen is under `/app/...` |
+| `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session and empties the cache |
+| `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
+| `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
+| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `clearAccountData`; the session is the cache key `["me"]` |
+| `frontend/src/auth/RequireSession.tsx` | The login guard |
+| `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
+| `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
+| `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms) |
+| `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
+| `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `AppLayout` (account, email, role, menu, Log out), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/styles.css` | Plain CSS with variables |
+| `frontend/tests/` | The tests, mirroring `frontend/src/` |
+
+### The screens
+
+| Path | Who may see it | Calls |
+|---|---|---|
+| `/app/login` | anyone | `POST /auth/login` |
+| `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
+| `/app/worklist` | a logged-in user of any role | `GET /worklist` |
+| `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
+| any other path | | sends to `/app/worklist` |
+
+Every screen under `/app/` other than login and sign-up asks for the session first
+(`GET /me`) and shows the account, the user's email and role and a Log out button
+(`POST /auth/logout`).
+
+### How the browser reaches the API
+
+The login token is an HttpOnly cookie with SameSite=Strict (3.18): no script can read it, and
+the browser sends it only to the site that set it. So the screens and the API must be one
+site. In development the Vite dev server is that site: it serves the screens and forwards the
+paths in `API_PATHS` (`/auth`, `/me`, `/uploads`, `/jobs`, `/worklist`, `/overview`,
+`/audit`, `/users`, `/health`) to `uvicorn`. Every request is sent with
+`credentials: "same-origin"`, and no code handles the token.
+
+The screens live under `/app/...` so that a screen path can never be the same as an API
+path. **A new top-level API path must be added to `API_PATHS`**, or the dev server answers it
+with the app's page instead of forwarding it.
+
+### The session, step by step
+
+1. The first screen that needs the user calls `GET /me` once per page load and keeps the
+   answer under the cache key `["me"]`. A `401` there means "not logged in", and the session
+   is set to null.
+2. The guard (`RequireSession`) sends a user without a session to `/app/login` and remembers
+   the page they wanted.
+3. Login and sign-up empty the cache and write the user they get back into the session. The
+   app then goes back
+   to the remembered page, but only to a page under `/app/` that is not login or sign-up
+   (`afterLoginPath`); anything else goes to the worklist.
+4. A `401` from any later call means the session has ended (the token expired, say): the
+   session is set to null, everything else is removed from the cache, and the guard sends
+   the user to login.
+5. Logout sets the session to null and removes everything else from the cache.
+
+The cache keys of the worklist and the jobs do not name the account, so the cache is emptied
+at each of these changes (`clearAccountData`): a second user who logs in on the same browser
+never sees the first one's rows, even for a moment.
+
+The sign-up form checks the password length (12 to 128) in the browser too; the API checks
+it again.
+
+### An upload, step by step
+
+1. The user picks one file. The browser refuses it at once, without sending it, when its name
+   does not end in `.txt` or `.pdf` (any case), when it is empty, or when it is over
+   `UPLOAD_MAX_BYTES` (1,000,000 bytes, the default of the API's setting), in
+   `src/jobs/uploadCheck.ts`; the sentence never names the file. The API checks again and
+   decides: it reads the type from the content, not the name, and a server with a lower limit
+   still answers `413`.
+2. A file that passes is sent as the form field `file` (`POST /uploads`). The browser sets the
+   request's headers itself.
+3. On `202` the job id goes into the address (`/app/upload?job=12`), so a reload keeps
+   showing the same job.
+4. `GET /jobs/{id}` is asked every 2 seconds until the job is `done` or `failed`. Polling
+   stops at an error too; a `404` is shown, not asked again.
+5. The status is shown as a sentence per status, end state and failure (`jobText.ts`), for
+   example that a draft is ready for review or that the drafting failed.
+
+A file over the limit (`413`), a file the API refuses (`422`, one of the upload route's fixed
+sentences) and a `viewer` (`403`) each get their own message.
+
+### The worklist
+
+`/app/worklist` shows the account's jobs, newest first, in a table: job, file, uploaded,
+by, where the job is, review status, denial reason and win chance. It reads 50 jobs at a time
+with the API's keyset paging (3.20); "Load more" asks for the next page with `before`. If a
+later page fails, the rows already shown stay and the error is shown under them.
+
+The `status` and `review_status` filters are kept in the address (`?status=done`), so a
+reload or a shared link shows the same list; an unknown value is ignored. A review-status
+filter leaves out jobs that have no draft, and the screen says so. An empty list links to
+the upload only for a role that can upload.
+
+### Errors
+
+`apiRequest` turns every answer that is not a success into an `ApiError` with a kind:
+`unauthorized` (401), `forbidden` (403), `not_found` (404), `conflict` (409),
+`length_required` (411), `too_large` (413), `invalid` (422), `server` (any other answer, or a
+body that is not the API's JSON) and `network` (no answer). Of a `422` with field problems
+only the position and the kind of each problem are kept; the API's message and any input are
+dropped, so text the user typed never reaches the screen through an error (3.18 already
+answers a `422` without the input).
+
+### Checks and tests
+
+| Command (in `frontend/`) | Does |
+|---|---|
+| `npm ci` | Installs the exact versions in `package-lock.json` |
+| `npm run dev` | The dev server on `http://127.0.0.1:5173`, with the proxy |
+| `npm run build` | Checks the types, then builds the files into `frontend/dist/` |
+| `npm run check` | ESLint, Prettier, `tsc --noEmit`, then the tests with coverage |
+
+Every library has an exact version, and the Node major version is pinned in
+`frontend/.nvmrc` (26) and in `engines`. The tests run in Vitest with jsdom and Testing
+Library; `fetch` is stubbed, so no test reaches a server. Coverage on `frontend/src/` must be
+at least 70% (lines, functions, branches, statements), the same as `src/`. CI runs all of it
+as a second job, `frontend`, beside the Python job. At the end of this branch: 134 tests,
+99.60% of lines and 96.72% of branches.
+
+### Starting it
+
+Two processes, each in its own terminal:
+
+```
+uvicorn src.api.app:create_app --factory
+cd frontend && npm run dev
+```
+
+The API needs `AUTH_TOKEN_SECRET` (it does not start without it) and, on plain HTTP as here,
+`AUTH_COOKIE_SECURE=false`, or the browser never sends the cookie back. Then open
+`http://127.0.0.1:5173/app/`.
+
+### Measured
+
+The third "upload to draft ready" measurement (2026-10-17), the first in a real browser:
+`uvicorn` and the dev server on the local machine, `app` at migration 0017, agent `v5`. A new
+made-up account signed up, uploaded one made-up letter as a text file, followed its job, found
+it in the worklist, tried the filters and logged out.
+
+| | |
+|---|---|
+| Job end | `done`, `needs_review`, a draft of 5 paragraphs, review `pending` |
+| Upload to draft ready | 13.6 s (target under 120 s) |
+| Job polls | 8 `GET /jobs/{id}` |
+| `jobs.cost_usd` | $0.001141, the same as its 3 `llm_calls` rows |
+| Server log | 24 requests, all 2xx; no error, no email, no letter text |
+
+### Known limits
+
+- **It runs only on the dev server.** `npm run build` makes the files, but nothing serves
+  them beside the API yet; that is part of the deployment (Stage 6).
+- **No draft review in the browser yet.** Reading a denial, editing, approving or rejecting
+  its draft, and the overview are the next Stage 5 branch; until then they work through the
+  API only (3.20).
+- **Login and `GET /me` were not exercised live.** After logout the guard sent the user to
+  login from the session already in the cache, with no request. Both are covered by tests
+  with a stubbed `fetch`.
+- **The API types are written by hand.** A change to a Python schema must be made in
+  `frontend/src/api/types.ts` too; nothing checks that they match.
+- **One measurement.** One letter is too few to say how long an upload usually takes.
+- **The polling has no time limit.** A job that stays `queued` or `running` (a call that
+  hangs, say) is asked about every 2 seconds for as long as the page is open. If the API
+  itself stops, the next poll gets no answer and polling stops with a `network` error.

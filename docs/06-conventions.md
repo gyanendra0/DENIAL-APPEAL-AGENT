@@ -15,6 +15,9 @@ Rules every file in this repository follows. This document covers the code itsel
 | Database columns | singular `snake_case` | `account_id` |
 | Test files | `test_<module>.py` | `test_extractor.py` |
 | Test functions | `test_<behaviour>` | `test_rejects_upload_over_size_limit` |
+| Frontend components | `PascalCase.tsx` | `UploadScreen.tsx` |
+| Frontend modules, functions, variables | `camelCase` | `afterLoginPath` |
+| Frontend test files | `<module>.test.ts(x)` | `UploadScreen.test.tsx` |
 | Pipeline scripts | `<verb>_<noun>.py` | `load_claims.py` |
 | Environment variables | `UPPER_SNAKE_CASE` | `LLM_MONTHLY_BUDGET_USD` |
 
@@ -50,6 +53,8 @@ Rules:
 
 - `tests/` mirrors `src/`. `src/rag/retriever.py` is tested in
   `tests/rag/test_retriever.py`.
+- `frontend/tests/` mirrors `frontend/src/` the same way. `frontend/src/auth/redirect.ts` is
+  tested in `frontend/tests/auth/redirect.test.ts`.
 - One responsibility per module. If the filename needs "and", split it.
 - Component folders do not reach into each other's internals. They call a small public
   function, or they do not call at all.
@@ -70,6 +75,19 @@ Rules:
 - A function that spends money or takes more than a second says so in its docstring.
 - Formatting by `black`, linting by `ruff`, types checked by `mypy`. CI enforces all
   three.
+
+### Frontend (TypeScript)
+
+- TypeScript in strict mode. No `any`; data from the API is typed in `frontend/src/api/types.ts`.
+- Every API call goes through `apiRequest` in `frontend/src/api/client.ts`. No code reads or
+  stores the login token.
+- An error message never shows what the user typed or what a document says.
+- The UI may hide what a role cannot do, but the API decides. A screen never replaces an
+  API check.
+- Every library has an exact version and `package-lock.json` is committed; install with
+  `npm ci`. The Node major version is pinned in `frontend/.nvmrc` and `engines`.
+- Formatting by Prettier (width 100), linting by ESLint, types checked by `tsc`. CI enforces
+  all three, in the job `frontend`.
 
 ---
 
@@ -120,7 +138,8 @@ Rules:
   calls, no real LLM calls.
 - External services are replaced with stubs: LLM providers, HTTP sources, file storage.
 - Database tests use a throwaway schema and leave nothing behind.
-- Coverage on `src/` must stay at or above 70%. CI fails below that.
+- Coverage on `src/` and on `frontend/src/` must stay at or above 70%. CI fails below that.
+- Frontend tests stub `fetch`; none reaches a server.
 - Test names describe the behaviour, not the function: `test_rejects_expired_appeal`,
   not `test_check_deadline`.
 

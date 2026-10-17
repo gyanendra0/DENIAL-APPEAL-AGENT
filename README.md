@@ -64,8 +64,46 @@ Denial document
 
 ## Status
 
-**Design complete, implementation starting at Stage 0.** See the
+**Stages 0 to 4 are released (`v0.5.0`); Stage 5, the product, is in progress.** The API
+signs users up, takes an uploaded denial letter through extraction, rules, scoring, evidence
+and drafting, and lets a reviewer edit, approve or reject the draft. The web dashboard covers
+sign-up, login, the upload and the worklist so far. See the
 [build plan](docs/05-build-plan.md).
+
+## Running it locally
+
+You need Docker, Python 3.11 or later and Node 26 (the version in `frontend/.nvmrc`).
+Settings come from a `.env` file; `.env.example` lists every key.
+
+1. Start the database (PostgreSQL + pgvector on port 5433):
+   ```
+   docker compose up -d
+   ```
+2. Install the backend and bring the database to the newest migration:
+   ```
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -e ".[dev]"
+   alembic upgrade head
+   ```
+3. Start the API on `http://127.0.0.1:8000`. It needs `AUTH_TOKEN_SECRET` and, on plain HTTP
+   as here, `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
+   ```
+   uvicorn src.api.app:create_app --factory
+   ```
+4. In a second terminal, start the dashboard. Its dev server forwards the API paths to
+   `uvicorn`, so the browser sees one site:
+   ```
+   cd frontend
+   npm ci
+   npm run dev
+   ```
+5. Open `http://127.0.0.1:5173/app/` and sign up.
+
+Uploading a letter calls a model and spends money (within the monthly cap in the settings).
+
+Checks: `ruff check . && black --check . && mypy && pytest` for the backend (database tests
+need `TEST_DATABASE_URL`), and `npm run check` in `frontend/` for the dashboard. How the
+dashboard is built: [architecture 3.21](docs/03-architecture.md#321-web-dashboard-part-1).
 
 ## How work is split across machines
 

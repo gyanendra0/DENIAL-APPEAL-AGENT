@@ -1,0 +1,160 @@
+:root {
+  --color-text: #1f2328;
+  --color-muted: #59636e;
+  --color-background: #ffffff;
+  --color-surface: #f6f8fa;
+  --color-border: #d1d9e0;
+  --color-accent: #0969da;
+  --color-error: #cf222e;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-background);
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-3);
+}
+
+.narrow {
+  max-width: 420px;
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+.error {
+  color: var(--color-error);
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header button {
+  margin-left: auto;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+input,
+button {
+  font: inherit;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+button {
+  background: var(--color-accent);
+  color: var(--color-background);
+  border-color: var(--color-accent);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.app-nav {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.app-nav a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.app-nav a.active {
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.status-box {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.status-box h2 {
+  margin-top: 0;
+}
+
+select {
+  font: inherit;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.table-scroll {
+  overflow-x: auto;
+  margin-bottom: var(--space-3);
+}
+
+.worklist {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.worklist th,
+.worklist td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.worklist th {
+  background: var(--color-surface);
+}

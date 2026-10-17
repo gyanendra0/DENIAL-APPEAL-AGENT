@@ -4174,8 +4174,9 @@ Four things hold for every route here:
   with `404`, the same as a job that does not exist (3.18,
   [conventions 6.4](06-conventions.md#64-database)). For edit, approve and reject the `404`
   is decided before the role, so a `viewer` cannot probe for other accounts' jobs.
-- **No draft is approved without a valid citation for every policy statement.** Every edit
+- **No draft is approved unless every `policy` paragraph has a valid citation.** Every edit
   and every approve checks the letter again ([conventions 6.8](06-conventions.md#68-hard-rules)).
+  The check follows the paragraph kinds; see the known limits.
 - **No route calls a model and none spends money.**
 - **Nothing is sent to an insurer.** "Approved" is a status in the database. Nothing in the
   code sends a letter anywhere.
@@ -4350,6 +4351,13 @@ server log held no error and no personal field.
   letter has to be uploaded again.
 - **An edit cannot add evidence.** A citation can only be kept or removed; a new quote needs
   a new search and a new draft.
+- **The citation check follows paragraph kinds, not what edited text says.** An edit keeps
+  each paragraph's kind and citations but may change its text. A reviewer who writes a policy
+  claim into a paragraph that is not `policy` passes both checks without a citation; a person
+  wrote and approved that text.
+- **A job's cost can differ from `llm_calls`.** A job marked `interrupted` at startup keeps
+  `cost_usd` 0, even if it already paid for calls. The meter also counts a paid call whose
+  `llm_calls` row could not be saved, so a job's cost can be higher than its recorded calls.
 - **Approved means stored, not sent.** There is no export or letter file yet.
 - **The audit log is only append-only in the code.** The database does not stop an `UPDATE`
   or `DELETE` on `audit_events`.

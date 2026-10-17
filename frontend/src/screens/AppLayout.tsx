@@ -1,5 +1,6 @@
-import { Outlet, useNavigate } from "react-router";
+import { NavLink, Outlet, useNavigate } from "react-router";
 
+import { canUpload } from "../auth/roles";
 import { useLogout, useSession } from "../auth/session";
 import { describeError } from "./errorMessage";
 
@@ -20,6 +21,10 @@ export function AppLayout() {
     <>
       <header className="app-header">
         <strong>Denial appeal agent</strong>
+        <nav className="app-nav">
+          <NavLink to="/app/worklist">Worklist</NavLink>
+          {canUpload(user?.role) && <NavLink to="/app/upload">Upload</NavLink>}
+        </nav>
         {user && (
           <span className="muted">
             {user.account_name} · {user.email} ({user.role})

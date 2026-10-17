@@ -7,6 +7,7 @@ import { AppLayout } from "./screens/AppLayout";
 import { HomeScreen } from "./screens/HomeScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { SignupScreen } from "./screens/SignupScreen";
+import { UploadScreen } from "./screens/UploadScreen";
 
 // Every screen is under `/app/...`, so no screen path equals an API path the dev proxy forwards.
 export const routes: RouteObject[] = [
@@ -22,6 +23,7 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to={HOME_PATH} replace /> },
       { path: "worklist", element: <HomeScreen /> },
+      { path: "upload", element: <UploadScreen /> },
     ],
   },
   { path: "*", element: <Navigate to={HOME_PATH} replace /> },

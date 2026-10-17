@@ -40,6 +40,12 @@ describe("describeError", () => {
     expect(describeError(error)).toBe("Some fields are not valid.");
   });
 
+  it("shows the API's fixed sentence of a 422 as one sentence", () => {
+    const error = new ApiError(422, "invalid", "the file is empty");
+
+    expect(describeError(error)).toBe("The file is empty.");
+  });
+
   it("treats an error that is not from the API as a server error", () => {
     expect(describeError(new Error("boom"))).toBe(
       "Something went wrong on the server. Try again later.",

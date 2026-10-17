@@ -1,7 +1,8 @@
 // Turns an error into one sentence for the screen. A 422 names the fields the API refused, never
-// what was typed into them; any other API answer uses its kind, or its `detail` when given.
+// what was typed into them, and a 422 with a fixed sentence from the API shows that sentence. Any
+// other answer uses its kind, unless the caller gives its own line for the status.
 
-import { ApiError } from "../api/client";
+import { ApiError, INVALID_REQUEST } from "../api/client";
 import type { FieldProblem } from "../api/client";
 
 const MESSAGE_BY_KIND: Readonly<Record<ApiError["kind"], string>> = {
@@ -32,7 +33,13 @@ export function describeError(error: unknown, messages: Partial<Record<number, s
   }
   if (error.kind === "invalid") {
     const names = [...new Set(error.problems.map(fieldName).filter((name) => name !== null))];
-    return names.length > 0 ? `Check these fields: ${names.join(", ")}.` : MESSAGE_BY_KIND.invalid;
+    if (names.length > 0) {
+      return `Check these fields: ${names.join(", ")}.`;
+    }
+    if (error.message !== INVALID_REQUEST) {
+      return `${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`;
+    }
+    return MESSAGE_BY_KIND.invalid;
   }
   return MESSAGE_BY_KIND[error.kind];
 }

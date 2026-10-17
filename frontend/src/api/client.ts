@@ -18,6 +18,9 @@ export interface FieldProblem {
   type: string;
 }
 
+// The message of a 422 that carries a list of field problems.
+export const INVALID_REQUEST = "the request was not valid";
+
 const KIND_BY_STATUS: Readonly<Record<number, ApiErrorKind>> = {
   401: "unauthorized",
   403: "forbidden",
@@ -81,8 +84,10 @@ async function toApiError(response: Response): Promise<ApiError> {
   const kind = KIND_BY_STATUS[response.status] ?? "server";
   const body = await readJson(response);
   const detail = isRecord(body) ? body.detail : undefined;
-  if (kind === "invalid") {
-    return new ApiError(response.status, kind, "the request was not valid", readProblems(detail));
+  // A 422 whose detail is text is one of the API's fixed sentences (the upload route's, such as
+  // "the file is empty"), never input, so it is kept. A list keeps only `loc` and `type`.
+  if (kind === "invalid" && typeof detail !== "string") {
+    return new ApiError(response.status, kind, INVALID_REQUEST, readProblems(detail));
   }
   const message = typeof detail === "string" ? detail : `the API answered ${response.status}`;
   return new ApiError(response.status, kind, message);

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { SESSION_KEY } from "../../src/auth/session";
-import { ADMIN, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
 
 describe("AppLayout", () => {
   it("shows the account, the email and the role", async () => {
@@ -44,5 +44,26 @@ describe("AppLayout", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The API could not be reached");
     expect(router.state.location.pathname).toBe("/app/worklist");
+  });
+
+  it("links to the upload screen for a reviewer", async () => {
+    stubApi({ "GET /me": () => jsonResponse(200, REVIEWER) });
+
+    renderAt("/app/worklist");
+
+    expect(await screen.findByRole("link", { name: "Upload" })).toHaveAttribute(
+      "href",
+      "/app/upload",
+    );
+    expect(screen.getByRole("link", { name: "Worklist" })).toBeInTheDocument();
+  });
+
+  it("hides the upload link from a viewer", async () => {
+    stubApi({ "GET /me": () => jsonResponse(200, VIEWER) });
+
+    renderAt("/app/worklist");
+
+    expect(await screen.findByRole("link", { name: "Worklist" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Upload" })).not.toBeInTheDocument();
   });
 });

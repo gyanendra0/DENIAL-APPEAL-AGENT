@@ -18,6 +18,9 @@ export const ADMIN: UserResponse = {
   account_name: "Made-up Clinic",
 };
 
+export const REVIEWER: UserResponse = { ...ADMIN, user_id: 2, role: "reviewer" };
+export const VIEWER: UserResponse = { ...ADMIN, user_id: 3, role: "viewer" };
+
 export function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,

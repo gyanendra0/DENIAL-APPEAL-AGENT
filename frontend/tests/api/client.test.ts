@@ -125,12 +125,23 @@ describe("apiRequest", () => {
     expect(error.problems).toEqual([{ loc: ["body"], type: "x" }]);
   });
 
-  it("gives no problems for a 422 whose detail is not a list", async () => {
-    stubFetch(jsonResponse(422, { detail: "bad" }));
+  it("keeps the API's fixed sentence of a 422 whose detail is text", async () => {
+    stubFetch(jsonResponse(422, { detail: "the file is empty" }));
 
     const error = await caught(apiRequest("/uploads", { method: "POST" }));
 
     expect(error.kind).toBe("invalid");
+    expect(error.message).toBe("the file is empty");
+    expect(error.problems).toEqual([]);
+  });
+
+  it("gives no problems for a 422 whose detail is neither a list nor text", async () => {
+    stubFetch(jsonResponse(422, { detail: { nested: true } }));
+
+    const error = await caught(apiRequest("/uploads", { method: "POST" }));
+
+    expect(error.kind).toBe("invalid");
+    expect(error.message).toBe("the request was not valid");
     expect(error.problems).toEqual([]);
   });
 

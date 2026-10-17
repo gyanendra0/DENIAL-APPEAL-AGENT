@@ -2,6 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import { jobKey } from "../../src/jobs/useJob";
 import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
@@ -31,6 +32,21 @@ describe("LoginScreen", () => {
       email: ADMIN.email,
       password: "a long made-up password",
     });
+  });
+
+  it("drops data another user left in the cache", async () => {
+    stubApi({
+      ...EMPTY_WORKLIST,
+      "GET /me": NO_SESSION,
+      "POST /auth/login": () => jsonResponse(200, ADMIN),
+    });
+    const { queryClient } = renderAt("/app/login");
+    queryClient.setQueryData(jobKey(7), { job_id: 7 });
+
+    await fillAndSubmit(ADMIN.email, "a long made-up password");
+
+    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
   });
 
   it("goes back to the page the guard remembered", async () => {

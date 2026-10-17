@@ -4394,15 +4394,16 @@ screen:
 |---|---|
 | `frontend/vite.config.ts` | The dev server and its proxy: `API_PATHS`, the nine top-level API paths, forwarded to `API_TARGET` (`http://127.0.0.1:8000`) |
 | `frontend/src/main.tsx`, `App.tsx`, `router.tsx` | The start of the app, the query client and the router; every screen is under `/app/...` |
-| `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session |
+| `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session and empties the cache |
 | `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
 | `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
-| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`; the session is the cache key `["me"]` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `clearAccountData`; the session is the cache key `["me"]` |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms) |
+| `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
 | `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `AppLayout` (account, email, role, menu, Log out), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables |
@@ -4442,26 +4443,37 @@ with the app's page instead of forwarding it.
    is set to null.
 2. The guard (`RequireSession`) sends a user without a session to `/app/login` and remembers
    the page they wanted.
-3. Login and sign-up write the user they get back into the session. The app then goes back
+3. Login and sign-up empty the cache and write the user they get back into the session. The
+   app then goes back
    to the remembered page, but only to a page under `/app/` that is not login or sign-up
    (`afterLoginPath`); anything else goes to the worklist.
 4. A `401` from any later call means the session has ended (the token expired, say): the
-   session is set to null and the guard sends the user to login.
-5. Logout sets the session to null and removes everything else from the cache, so no screen
-   keeps the data of the user who left.
+   session is set to null, everything else is removed from the cache, and the guard sends
+   the user to login.
+5. Logout sets the session to null and removes everything else from the cache.
+
+The cache keys of the worklist and the jobs do not name the account, so the cache is emptied
+at each of these changes (`clearAccountData`): a second user who logs in on the same browser
+never sees the first one's rows, even for a moment.
 
 The sign-up form checks the password length (12 to 128) in the browser too; the API checks
 it again.
 
 ### An upload, step by step
 
-1. The user picks one file and sends it as the form field `file` (`POST /uploads`). The
-   browser sets the request's headers itself.
-2. On `202` the job id goes into the address (`/app/upload?job=12`), so a reload keeps
+1. The user picks one file. The browser refuses it at once, without sending it, when its name
+   does not end in `.txt` or `.pdf` (any case), when it is empty, or when it is over
+   `UPLOAD_MAX_BYTES` (1,000,000 bytes, the default of the API's setting), in
+   `src/jobs/uploadCheck.ts`; the sentence never names the file. The API checks again and
+   decides: it reads the type from the content, not the name, and a server with a lower limit
+   still answers `413`.
+2. A file that passes is sent as the form field `file` (`POST /uploads`). The browser sets the
+   request's headers itself.
+3. On `202` the job id goes into the address (`/app/upload?job=12`), so a reload keeps
    showing the same job.
-3. `GET /jobs/{id}` is asked every 2 seconds until the job is `done` or `failed`. Polling
+4. `GET /jobs/{id}` is asked every 2 seconds until the job is `done` or `failed`. Polling
    stops at an error too; a `404` is shown, not asked again.
-4. The status is shown as a sentence per status, end state and failure (`jobText.ts`), for
+5. The status is shown as a sentence per status, end state and failure (`jobText.ts`), for
    example that a draft is ready for review or that the drafting failed.
 
 A file over the limit (`413`), a file the API refuses (`422`, one of the upload route's fixed
@@ -4502,8 +4514,8 @@ Every library has an exact version, and the Node major version is pinned in
 `frontend/.nvmrc` (26) and in `engines`. The tests run in Vitest with jsdom and Testing
 Library; `fetch` is stubbed, so no test reaches a server. Coverage on `frontend/src/` must be
 at least 70% (lines, functions, branches, statements), the same as `src/`. CI runs all of it
-as a second job, `frontend`, beside the Python job. At the end of this branch: 114 tests,
-99.56% of lines and 97.07% of branches.
+as a second job, `frontend`, beside the Python job. At the end of this branch: 134 tests,
+99.60% of lines and 96.72% of branches.
 
 ### Starting it
 

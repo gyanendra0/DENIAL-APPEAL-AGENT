@@ -1,14 +1,21 @@
 // The session is the answer of `GET /me`, kept in the query cache under one key. Login and sign-up
-// write the user they get back into it; logout sets it to null and empties the rest of the cache,
-// so no screen keeps data of the user who left.
+// write the user they get back into it; logout sets it to null. Each of them, and a 401 from any
+// call, empties the rest of the cache, so no screen shows data of another user.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 
 import { fetchMe, login, logout, signup } from "../api/auth";
 import type { LoginInput, SignupInput } from "../api/auth";
 import type { UserResponse } from "../api/types";
 
 export const SESSION_KEY = ["me"] as const;
+
+// Removes every query but the session. The other keys do not name the account, so data kept
+// past a change of user would be shown to the next one.
+export function clearAccountData(queryClient: QueryClient): void {
+  queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
+}
 
 // Asked once per page load: only login, sign-up and logout change it, and they write it themselves.
 // Without `staleTime` each screen that reads the session would ask `/me` again when it mounts.
@@ -21,6 +28,7 @@ export function useLogin() {
   return useMutation({
     mutationFn: (input: LoginInput) => login(input),
     onSuccess: (user: UserResponse) => {
+      clearAccountData(queryClient);
       queryClient.setQueryData(SESSION_KEY, user);
     },
   });
@@ -31,6 +39,7 @@ export function useSignup() {
   return useMutation({
     mutationFn: (input: SignupInput) => signup(input),
     onSuccess: (user: UserResponse) => {
+      clearAccountData(queryClient);
       queryClient.setQueryData(SESSION_KEY, user);
     },
   });
@@ -44,7 +53,7 @@ export function useLogout() {
       // Known to be logged out: the guard sends the user to login without asking `/me` again.
       // Removing the session query instead would make the mounted screens fetch it at once.
       queryClient.setQueryData(SESSION_KEY, null);
-      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
+      clearAccountData(queryClient);
     },
   });
 }

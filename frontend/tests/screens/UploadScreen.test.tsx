@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { JobResponse } from "../../src/api/types";
+import { UPLOAD_MAX_BYTES } from "../../src/jobs/uploadCheck";
 import { JOB_POLL_MS } from "../../src/jobs/useJob";
 import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
 import type { Answer } from "../helpers";
@@ -138,6 +139,40 @@ describe("UploadScreen", () => {
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
+  it.each([
+    ["a wrong type", new File(["made-up"], "scan.png", { type: "image/png" }), "Only a .txt"],
+    [
+      "a file over the limit",
+      new File(["x".repeat(UPLOAD_MAX_BYTES + 1)], "letter.txt", { type: "text/plain" }),
+      "larger than the upload limit",
+    ],
+  ])("refuses %s before sending it", async (_label, file, message) => {
+    const fetchStub = stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    // As if "All files" were chosen in the file picker, past the `accept` hint.
+    const user = userEvent.setup({ applyAccept: false });
+    renderAt("/app/upload");
+
+    await user.upload(await screen.findByLabelText("Denial letter"), file);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+    expect(fetchStub.mock.calls.filter(([path]) => path === "/uploads")).toHaveLength(0);
+  });
+
+  it("clears the refusal when a good file is picked after a wrong one", async () => {
+    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    const user = userEvent.setup({ applyAccept: false });
+    renderAt("/app/upload");
+    const input = await screen.findByLabelText("Denial letter");
+
+    await user.upload(input, new File(["made-up"], "scan.png", { type: "image/png" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await user.upload(input, letter());
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
   });
 
   it("goes to login when the session ends while polling", async () => {

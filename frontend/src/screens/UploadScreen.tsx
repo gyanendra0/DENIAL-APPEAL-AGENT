@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router";
 
 import { canUpload } from "../auth/roles";
 import { useSession } from "../auth/session";
+import { checkUploadFile } from "../jobs/uploadCheck";
 import { isJobFinished, useJob, useUploadLetter } from "../jobs/useJob";
 import { describeError } from "./errorMessage";
 import { describeJob } from "./jobText";
@@ -49,7 +50,16 @@ export function UploadScreen() {
 
 function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
   const [file, setFile] = useState<File | null>(null);
+  const [fileProblem, setFileProblem] = useState<string | null>(null);
   const uploadMutation = useUploadLetter();
+
+  // A file the browser refuses is never kept, so it cannot be sent.
+  function onPick(picked: File | null) {
+    const problem = picked === null ? null : checkUploadFile(picked);
+    setFileProblem(problem);
+    setFile(problem === null ? picked : null);
+    uploadMutation.reset();
+  }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,9 +76,14 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
         <input
           type="file"
           accept=".txt,.pdf,text/plain,application/pdf"
-          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          onChange={(event) => onPick(event.target.files?.[0] ?? null)}
         />
       </label>
+      {fileProblem !== null && (
+        <p className="error" role="alert">
+          {fileProblem}
+        </p>
+      )}
       {uploadMutation.isError && (
         <p className="error" role="alert">
           {describeError(uploadMutation.error, {

@@ -2,6 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import { jobKey } from "../../src/jobs/useJob";
 import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
@@ -33,6 +34,21 @@ describe("SignupScreen", () => {
       email: ADMIN.email,
       password: PASSWORD,
     });
+  });
+
+  it("drops data another user left in the cache", async () => {
+    stubApi({
+      ...EMPTY_WORKLIST,
+      "GET /me": NO_SESSION,
+      "POST /auth/signup": () => jsonResponse(201, ADMIN),
+    });
+    const { queryClient } = renderAt("/app/signup");
+    queryClient.setQueryData(jobKey(7), { job_id: 7 });
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
   });
 
   it("asks the browser for the API's password length", async () => {

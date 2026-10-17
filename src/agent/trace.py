@@ -25,7 +25,12 @@ from src.rules.verdict import RuleOutcome, RuleReason
 # is refused.
 # `v4`: the drafting prompt `v3`, a message to the model without the claim totals, and a
 # draft with a wrong dollar amount or "other" given as the reason is refused.
-AGENT_VERSION = "v4"
+# `v5`: one more drafting attempt, with the same search result, when the first is blocked or
+# not parseable; the drafting step records the attempt count.
+AGENT_VERSION = "v5"
+
+# The most drafting calls the loop makes for one claim.
+MAX_DRAFT_ATTEMPTS = 2
 
 
 class StepStatus(StrEnum):
@@ -117,6 +122,9 @@ class DraftingStep(BaseModel):
 
     `cited_paragraphs` counts the paragraphs of a checked letter that carry a citation.
     `problem_kinds` lists, once each, the kinds of problem of a blocked draft.
+    `attempts` is how many drafting calls were made (1 or 2); `failure` and `problem_kinds`
+    are those of the last one. It is None when the step did not run and in a trace of agent
+    version `v1` to `v4`, which made one attempt.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -128,6 +136,7 @@ class DraftingStep(BaseModel):
     cited_paragraphs: int | None = Field(default=None, ge=0)
     failure: DraftFailure | None = None
     problem_kinds: tuple[CitationProblemKind, ...] = ()
+    attempts: int | None = Field(default=None, ge=1, le=MAX_DRAFT_ATTEMPTS)
 
 
 class AgentTrace(BaseModel):

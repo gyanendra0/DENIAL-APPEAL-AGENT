@@ -43,6 +43,7 @@
 | `agent` | Walk one claim through extraction, rules, scoring, retrieval and drafting, then stop for a person (see 3.16) | Fixed order in code, each step once, a stored trace |
 | `llm` | One gateway for all model calls (see 3.8) | Primary API, open-weight fallback, budget guard |
 | `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
+| `review` | Worklist, denial detail, a person's edit, approve and reject of a draft, the audit log and the job costs (see 3.20) | Every edit and approve checked again; an audit event in the same transaction |
 | `jobs` | Turn one uploaded denial letter into a draft in the background: extraction, then the agent loop, then the stored result (see 3.19) | A `jobs` table, run by FastAPI background tasks in the API process |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
@@ -67,8 +68,9 @@ extraction: rules, score, evidence, draft and a trace that ends in a stop for a 
 file, and not in object storage) and queues a background job that extracts the fields, runs
 the same loop and stores the result in the account's own tables; `GET /jobs/{id}` gives its
 status (see 3.19). Sign-up, login and the logged-in user's own record work through the API
-(see 3.18). The dashboard, reading a draft through the API, the review actions and the audit
-log are not built yet.
+(see 3.18). Step 7 works through the API: a reviewer reads the worklist and the denial
+detail, edits, approves or rejects the draft, and each action is written to the audit log
+(see 3.20). The dashboard is not built yet.
 
 ## 3.4 Data model (core tables)
 
@@ -89,10 +91,10 @@ log are not built yet.
 | `jobs` | The background job of one upload: status, failure code, the loop's end state and the times |
 | `upload_extractions` | The letter fields a model read from one upload, with the prompt version and the model |
 | `upload_agent_runs` | What the agent loop did with one upload: the end state and the trace |
-| `upload_drafts` | The checked appeal letter of one upload, when the loop drafted one |
+| `upload_drafts` | The checked appeal letter of one upload, when the loop drafted one, and its review: status, who, when, the reject reason, the approved version |
+| `draft_revisions` | One version of a draft a person edited; the model's draft stays in `upload_drafts` |
+| `audit_events` | One thing a person did: account created, upload, edit, approve, reject; who, when, which job, no text |
 | `drafts` | Generated letter, citations, status |
-| `reviews` | Who approved or rejected, when, why |
-| `audit_log` | Every automated decision, immutable |
 
 Every business table carries `account_id`, and every query filters on it. This is the
 single most important rule in the codebase.
@@ -125,7 +127,9 @@ down: the outcome and its reasons, in the public reference table `agent_runs` (s
 
 An evaluation result is not stored either. The evaluation harness prints its report and
 writes nothing (see 3.12). The verdicts of a draft review are a local file, not a table
-(see 3.17). The business table `reviews` does not exist yet.
+(see 3.17). A person's review of an upload's draft is in `upload_drafts` and
+`draft_revisions`, and the planned `reviews` and `audit_log` became those columns and the
+business table `audit_events` (migration 0017, see 3.20).
 
 `evidence_documents` and `evidence_chunks` exist and are public reference tables: the policy
 text is public and shared by every account (see 3.13). The vectors of the chunks are in a
@@ -168,6 +172,7 @@ denial-appeal-agent/
 │  ├─ llm/          provider gateway, prompts, budget guard
 │  ├─ ml/           features, training, inference
 │  ├─ rag/          chunking, embedding, retrieval
+│  ├─ review/       worklist, denial detail, draft review, audit log, costs
 │  ├─ rules/        deterministic policy checks
 │  └─ synth/        synthetic document generation
 ├─ tests/           mirrors src/
@@ -315,6 +320,12 @@ does (3.14).
 - Cost is an exact decimal, rounded up to a millionth of a dollar. Never a float.
 - The budget is `LLM_MONTHLY_BUDGET_USD`. A month is a calendar month in UTC. A call whose
   highest possible cost brings the spend exactly to the cap is allowed.
+- **A cost meter** adds up what the calls inside one block cost: `with gateway.meter() as
+  meter:` counts every call a provider answered, chat or embedding, also one whose spend row
+  could not be stored, since it was paid for. A refused call adds nothing. The meter is a
+  context variable, so two jobs running at once each see only their own; a meter opened
+  inside another adds to the outer one too. A job stores its total in `jobs.cost_usd`
+  (see 3.20).
 
 ### The spend table
 
@@ -2419,13 +2430,14 @@ a person can see why a claim got a draft or why it did not.
 Three things hold for every run:
 
 - **The order is fixed in code.** The five steps always run in the same order, each at most
-  once, with no retry. No model picks the next step and no model calls a tool.
+  once. Since agent `v5` the drafting step alone may ask the model a second time (below). No
+  model picks the next step and no model calls a tool.
 - **Every run ends in a stop for a person.** No end state means "approved" or "sent", and
   no code path sends anything outside the database. This is the hard rule "nothing sent to
   an insurer automatically" ([conventions 6.8](06-conventions.md#68-hard-rules)).
 - **Money is spent only after the rules and the score let a claim through.** One claim
-  makes at most one embedding call and one model call, both through the gateway and its
-  budget check (3.8). A claim that stops earlier costs nothing.
+  makes at most one embedding call and two drafting calls (`MAX_DRAFT_ATTEMPTS`), all
+  through the gateway and its budget check (3.8). A claim that stops earlier costs nothing.
 
 The claims are the made-up claims of the synthetic sample, so no real patient data is
 involved. An uploaded letter goes through the same loop inside its job (see 3.19).
@@ -2489,7 +2501,7 @@ with no citation ends as `needs_review`. There is no status and no end state of 
 | Rules | The rules give no verdict (the extracted amount is below zero) | `draft_failed` | The trace |
 | Scoring | There are no features (an upload whose letter lacks a value the model needs, 3.19) | `needs_review_no_draft` | The trace; scoring `stopped` with no score |
 | Scoring | The score is below the threshold | `below_threshold` | The trace |
-| Drafting | The draft is blocked by the validator, cut off at the output limit, cannot be parsed, holds text in square brackets, or is refused by the fact check | `draft_failed` | The trace; no draft |
+| Drafting | The draft is blocked by the validator, cut off at the output limit, cannot be parsed, holds text in square brackets, or is refused by the fact check (a blocked or unparseable draft only after its second attempt) | `draft_failed` | The trace; no draft |
 | Drafting | The letter passed the validator and the two checks after it | `needs_review` | The trace and the draft |
 
 Only a `pass` verdict goes on to scoring. A score **equal** to the threshold goes on. For
@@ -2529,7 +2541,7 @@ A step that did not run holds its status and nothing else. The facts each step r
 | `rules` | The rules version, "today", the amount floor, the outcome and every reason that fired |
 | `scoring` | The feature version, the model version, the score and the threshold |
 | `retrieval` | The search question version, the embedding model, the minimum similarity the search used (`min_similarity`), and per result the four citation fields (`source`, `source_document_id`, `chunk_index`, `text_sha256`, see 3.13) and its `similarity` |
-| `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`, `placeholder_text`, `fact_check`) and, when blocked, the kinds of problem the validator found |
+| `drafting` | The drafting prompt version, the provider role and the model name; for a checked letter the number of paragraphs with a citation; for a failure its kind (`blocked`, `cut_off`, `not_parseable`, `placeholder_text`, `fact_check`) and, when blocked, the kinds of problem the validator found; since `v5` the number of attempts (`attempts`, 1 or 2; the failure is the last attempt's) |
 
 **A trace never holds document text, an extracted value, the search question or letter
 text.** It holds versions, outcomes, numbers and the values that name a chunk. A test
@@ -2537,19 +2549,20 @@ guards this. The letter itself is in `appeal_drafts`; the trace names it by the 
 the drafting prompt version.
 
 Any change to a step, to what stops the loop or to an end state needs a new `AGENT_VERSION`
-(today `v4`).
+(today `v5`).
 
 | Version | Means |
 |---|---|
 | `v1` | The search had no minimum: the top 5 results whatever their score |
 | `v2` | The search drops a result below 0.55, and the trace records the minimum |
 | `v3` | Search question `v3` and drafting prompt `v2` (3.15); a draft with text in square brackets is refused, with the new failure kind `placeholder_text` |
-| `v4` | Drafting prompt `v3` with its new user message (no claim totals, the reasons in plain words, 3.15); a draft with a wrong dollar amount or "other" as the reason is refused, with the new failure kind `fact_check`. The search question stays `v3`. Today's version |
+| `v4` | Drafting prompt `v3` with its new user message (no claim totals, the reasons in plain words, 3.15); a draft with a wrong dollar amount or "other" as the reason is refused, with the new failure kind `fact_check`. The search question stays `v3` |
+| `v5` | When the validator blocks a draft or its answer cannot be parsed, the model is asked once more with the same search result (`MAX_DRAFT_ATTEMPTS` 2); a cut-off answer, placeholder text or a fact-check refusal is not tried again. The trace counts the `attempts`. Prompts and search question unchanged. Used by the batch command and the upload job. Today's version |
 
-**A stored `v1`, `v2` or `v3` trace still validates** as an `AgentTrace`; a test guards
+**A stored `v1` to `v4` trace still validates** as an `AgentTrace`; a test guards
 each. `min_similarity` is optional in the type: it is empty in a step that did not run and
-in a stored `v1` trace. `placeholder_text` and `fact_check` are two more values of the
-failure kind, and they are stored inside the `trace` JSON, so they needed no migration. For
+in a stored `v1` trace; `attempts` is empty in a trace before `v5`. `placeholder_text` and
+`fact_check` are two more values of the failure kind, and they are stored inside the `trace` JSON, so they needed no migration. For
 a `fact_check` failure the trace holds the value alone, not the kinds of wrong fact. A new agent version also means
 every claim is taken again, because a claim is skipped only for a trace of the same version
 (see "A run over many claims").
@@ -3785,7 +3798,8 @@ About the rubric:
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
 logout, the logged-in user's own record, one admin route and a health check. The upload and
-job routes are in 3.19. The draft review comes in a later Stage 5 branch.
+job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
+3.20.
 
 Three things hold for every route:
 
@@ -3832,8 +3846,9 @@ place money is spent is the background job an upload queues, after its answer is
 and show that the admin of one gets `404` for the user of the other.
 
 The roles are `viewer`, `reviewer` and `admin` (the enum `user_role` since migration 0001).
-`GET /users/{user_id}` checks for `admin`; `POST /uploads` (3.19) lets `reviewer` and `admin`
-in and answers `403` to a `viewer`.
+`GET /users/{user_id}` and `GET /audit` (3.20) check for `admin`; `POST /uploads` (3.19) and
+the edit, approve and reject of a draft (3.20) let `reviewer` and `admin` in and answer `403`
+to a `viewer`.
 
 ### Sign-up, step by step
 
@@ -4034,8 +4049,11 @@ is the date the job runs on.
 | 1. Start | Moves the job from `queued` to `running`. A job that is not `queued` (already run, or of another account) is left alone and nothing is done | no |
 | 2. Extraction | Calls `extract_document` with the letter prompt of `EXTRACTION_PROMPT_VERSION` on the stored text. The fields are stored in `upload_extractions` at once, in their own commit | one model call |
 | 3. Features | `build_letter_features`: the denial reason, the total allowed charge, and "fully denied" when the total paid is $0. None when the reason or an amount is missing or an amount is below zero | no |
-| 4. The loop | `run_agent_for_claim` with an `UploadLetter`: rules, score, evidence, draft (3.16). No features means no score: the loop ends `needs_review_no_draft` | one embedding and one model call, only past the rules and the threshold |
-| 5. Finish | Moves the job from `running` to `done` with the loop's end state, and stores the trace in `upload_agent_runs` and the checked letter, if any, in `upload_drafts`, in one commit | no |
+| 4. The loop | `run_agent_for_claim` with an `UploadLetter`: rules, score, evidence, draft (3.16). No features means no score: the loop ends `needs_review_no_draft` | one embedding and one or two drafting calls, only past the rules and the threshold |
+| 5. Finish | Moves the job from `running` to `done` with the loop's end state, and stores the trace in `upload_agent_runs` and the checked letter, if any, in `upload_drafts`, in one commit; stores the job's cost in `jobs.cost_usd` | no |
+
+The whole job runs inside the gateway's cost meter (3.8), so `jobs.cost_usd` is what its model
+calls cost. A `failed` job stores its cost too; an `interrupted` one keeps 0.
 
 A job is `done` whatever the loop's end state: a letter the rules stop is a finished job with
 end state `stopped_by_rules`. `failed` means the job itself could not finish.
@@ -4072,10 +4090,10 @@ All five are business tables with `account_id` (index, not null, foreign key to 
 | Table | One row per | Holds |
 |---|---|---|
 | `uploads` | upload | the user, the file name, `file_type` (`text` / `pdf`), the size in bytes, the text and its SHA-256 |
-| `jobs` | upload (unique) | `status`, `failure`, `end_state`, `started_at`, `finished_at` |
+| `jobs` | upload (unique) | `status`, `failure`, `end_state`, `started_at`, `finished_at`; since migration 0017 `cost_usd` (3.20) |
 | `upload_extractions` | job (unique) | prompt version, model, provider, the hash of the text read, the fields as JSON |
 | `upload_agent_runs` | job (unique) | agent version, end state, the hash of the text, the trace as JSON |
-| `upload_drafts` | job (unique) | prompt version, search question version, model, provider, the hash of the text, the checked letter as JSON |
+| `upload_drafts` | job (unique) | prompt version, search question version, model, provider, the hash of the text, the checked letter as JSON; since migration 0017 its review (3.20) |
 
 **Every link carries `account_id`.** Each foreign key between these tables, and the one from
 `uploads` to `users`, is on the pair (`account_id`, id), backed by a unique key on that pair
@@ -4118,7 +4136,8 @@ Six model calls cost $0.002186 in all (`llm_calls`).
 
 **The time target is met for the job (about 30 s of 120 s), but no draft came out.** Both
 jobs ended `draft_failed`, so "upload to draft ready" is not yet measured for a job that ends
-with a draft. Two letters are too few to say how often an upload is drafted.
+with a draft. Two letters are too few to say how often an upload is drafted. The second
+measurement, with a draft, is in 3.20.
 
 ### Known limits
 
@@ -4138,6 +4157,211 @@ with a draft. Two letters are too few to say how often an upload is drafted.
   it was.
 - **The text is stored in plain form in Postgres.** Encryption at rest and an access log
   ([02-data.md 2.7](02-data.md#27-privacy)) come with the deployment (Stage 6).
-- **The draft cannot be read through the API yet.** `GET /jobs/{id}` gives the status and the
-  end state; reading and reviewing the draft is the next branch.
+- **`GET /jobs/{id}` gives only the status and the end state.** The draft and everything
+  else of a job are read with `GET /jobs/{id}/detail` (3.20).
 - **Nothing is sent to an insurer.** A finished job always stops for a person.
+
+## 3.20 Draft review, audit log and costs
+
+A person reads the account's jobs in a worklist, opens one job to see the letter, what was
+read from it, the agent's trace and the draft, and then edits, approves or rejects the draft.
+Every action is written to an audit log. An overview gives the counts, what the jobs cost
+and how long they took.
+
+Four things hold for every route here:
+
+- **The account comes from the logged-in user**, and a job of another account is answered
+  with `404`, the same as a job that does not exist (3.18,
+  [conventions 6.4](06-conventions.md#64-database)). For edit, approve and reject the `404`
+  is decided before the role, so a `viewer` cannot probe for other accounts' jobs.
+- **No draft is approved unless every `policy` paragraph has a valid citation.** Every edit
+  and every approve checks the letter again ([conventions 6.8](06-conventions.md#68-hard-rules)).
+  The check follows the paragraph kinds; see the known limits.
+- **No route calls a model and none spends money.**
+- **Nothing is sent to an insurer.** "Approved" is a status in the database. Nothing in the
+  code sends a letter anywhere.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `src/api/routes/review.py` | `GET /worklist`, `GET /jobs/{job_id}/detail`, `PUT /jobs/{job_id}/draft`, `POST /jobs/{job_id}/draft/approve` and `/reject`; the bodies `EditDraftRequest`, `ApproveDraftRequest`, `RejectDraftRequest` and the refusal `LetterRefusal` |
+| `src/api/routes/audit.py` | `GET /audit` |
+| `src/api/routes/overview.py` | `GET /overview` |
+| `src/review/actions.py` | `edit_draft`, `approve_draft`, `reject_draft`, `read_latest_draft`; `DraftNotFoundError`, `DraftNotPendingError`, `StaleDraftVersionError`, `LetterCheckError`; `MODEL_DRAFT_VERSION` (0) |
+| `src/review/audit.py` | `record_audit_event` and `AuditDetail`, the only things an event may say |
+| `src/review/audit_log.py` | `list_audit_events`, `AuditEntry`, `AuditPage` |
+| `src/review/worklist.py` | `list_worklist`, `WorklistItem`, `WorklistPage` |
+| `src/review/detail.py` | `read_job_detail`, `JobDetail`, `DraftDetail` |
+| `src/review/overview.py` | `read_overview`, `Overview` |
+| `src/review/paging.py` | Keyset paging shared by the worklist and the audit log; `DEFAULT_PAGE_SIZE` 50, `MAX_PAGE_SIZE` 100 |
+| `src/drafting/letter_check.py` | `check_letter(letter, chunks, fields)`: a stored letter checked again; `LetterProblem`, `LetterProblemKind` |
+| `src/drafting/cited_chunks.py` | `read_cited_chunks(session, letter)`: the stored chunks a letter cites |
+| `src/drafting/edit_check.py` | `find_edit_problems(original, edited)`: only changes an edit may make |
+| `src/llm/gateway.py` | `LlmGateway.meter()` and `CostMeter` (3.8) |
+| `src/db/migrations/versions/rev_0017_draft_review_and_audit.py` | Migration 0017: the review columns of `upload_drafts`, `draft_revisions`, `audit_events`, `jobs.cost_usd` and the types `draft_review_status`, `draft_reject_reason`, `audit_action`; the downgrade removes all of it |
+
+### The routes
+
+| Method and path | Who may call it | Answers |
+|---|---|---|
+| `GET /worklist` | a logged-in user of any role | `200` with one page of the account's jobs, newest first; filters `status` and `review_status`; `before` + `limit` (1 to 100, default 50) |
+| `GET /jobs/{job_id}/detail` | any role | `200` with the upload text, the extracted fields with their confidence, the trace, the model's draft, the latest version and the review; `404` for a job of another account or no job |
+| `PUT /jobs/{job_id}/draft` | a `reviewer` or an `admin` | `200` with the new version; `404` (job, then draft); `403` for a `viewer`; `409` when the draft is decided or `based_on_version` is not the latest; `422` when the letter fails the checks |
+| `POST /jobs/{job_id}/draft/approve` | a `reviewer` or an `admin` | `200` with `approved`; the same `404` / `403` / `409` / `422` as an edit; `version` must be the latest |
+| `POST /jobs/{job_id}/draft/reject` | a `reviewer` or an `admin` | `200` with `rejected`; `404` / `403`; `409` when already decided; `reason` is one of the rubric's five values (3.17), never free text |
+| `GET /audit` | an `admin` | `200` with one page of the account's events, newest first; `403` for another role |
+| `GET /overview` | any role | `200` with the counts, the costs and the average time |
+
+A worklist line has no document text: the file name, who uploaded it and when, the job's
+status, failure and end state, the review status, the denial reason and the win probability.
+The reason and the score are read out of the stored extraction and trace inside the
+database, so neither the fields nor the trace leave it for the list.
+
+**Keyset paging.** A page holds the rows with an id below `before`, newest first; a full page
+gives `next_before`, the last id on it. Unlike offset paging, a job uploaded while a person
+pages does not shift the rows they have not seen yet.
+
+A refused letter is answered `422` with the message "the letter did not pass the checks" and
+its problems: each one a kind, the paragraph's position and the citation's position. It never
+repeats letter, quote or chunk text.
+
+### The review, step by step
+
+A draft is `pending` until it is approved or rejected. Both are final: a decided draft cannot
+be edited or decided again (`409`). Version 0 is the model's draft, which never changes; each
+edit stores the next version in `draft_revisions`.
+
+1. **Lock.** Each action first locks the draft row (`SELECT ... FOR UPDATE`, filtered by
+   `account_id`). Two reviewers acting at once are served one after the other, and the second
+   one's version is then stale (`409`).
+2. **Edit** (`PUT`). The body is the whole edited letter and the version it was based on,
+   which must be the latest. The letter is first compared with the model's draft
+   (`find_edit_problems`): a paragraph's text may change, and a paragraph or a citation may
+   be removed; a paragraph's kind may not change, and no paragraph or citation may be added
+   or moved. A new quote would need a new search, which is a model call. Then the letter is
+   checked (`check_letter`, below). Only a letter that passes is stored as the next version.
+3. **Approve.** The version approved must be the latest. Its letter is checked again, since a
+   chunk may have been reloaded since the edit. The draft then records who, when and the
+   approved version.
+4. **Reject.** One rubric reason; the draft records who, when and why.
+5. **Audit.** Each action adds its audit event in the same transaction, so a change without
+   its event cannot be committed.
+
+**The check of a stored letter** (`check_letter`, pure). A letter in `upload_drafts` or
+`draft_revisions` names each chunk by its values, not by a search label, so the validator of
+3.15 cannot read it. The check applies the same rules:
+
+1. every `policy` paragraph has at least one citation;
+2. every citation names a chunk that is still stored with the same `text_sha256`
+   (`chunk_not_found` otherwise);
+3. every quote has at least 20 characters and is in its chunk under the validator's rules
+   (whitespace collapsed, whole words; `quote_is_in_evidence`, shared with 3.15);
+4. no text in square brackets (`placeholder_text`, 3.15);
+5. no wrong dollar amount and no "other" as the reason (the fact check of 3.15, against the
+   job's stored extraction).
+
+The kind `edit_not_allowed` comes from the edit check.
+
+### The audit log
+
+| Action | Written by | Detail |
+|---|---|---|
+| `account_created` | sign-up (3.18) | none; the only event with no job |
+| `upload_created` | `POST /uploads` (3.19) | none |
+| `draft_edited` | an edit | the new version |
+| `draft_approved` | an approve | the approved version |
+| `draft_rejected` | a reject | the reject reason |
+
+An event holds the account, the user, the action, the job, the time and a detail with fixed
+keys only (`AuditDetail`: `version`, `reject_reason`). It never holds document text, letter
+text or a file name. Sign-up and the upload write their event in the same transaction as
+their rows. The code only inserts events; nothing updates or deletes one.
+
+The links from an event to its user and its job have no cascade, so an audited user or job
+cannot be deleted on its own: the database refuses it. `GET /audit` gives the events with the
+user's email, for the account's admins only.
+
+### Job costs
+
+`llm_calls` is an operational table without `account_id` (3.8), so it cannot say what one
+account spent. Each job stores its own cost instead: the job runs inside the gateway's cost
+meter, and its total goes into `jobs.cost_usd` (`Numeric(12, 6)`, default 0, never below 0)
+when the job ends `done` or `failed` (3.19). `llm_calls` is unchanged.
+
+`GET /overview` gives, for the account:
+
+- the jobs by status, the `done` jobs by end state and the drafts by review status, every
+  value present (0 when none);
+- `cost_usd_this_month` (the jobs uploaded this month, by the database clock) and
+  `cost_usd_total`, exact decimals;
+- `average_seconds`, from upload to job end over the jobs that started and ended (None when
+  there is none).
+
+### The tables
+
+All three are business tables with `account_id`.
+
+| Table | One row per | Holds |
+|---|---|---|
+| `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
+| `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`), `detail` as a JSON object |
+
+As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
+`job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
+users and to jobs from `audit_events`, and to users from the review columns and revisions,
+have no cascade. Migration 0017 set every existing draft to `pending` and every job's cost
+to 0.
+
+### Measured
+
+The second "upload to draft ready" measurement (2026-10-17): `uvicorn` on the local machine,
+`app` at migration 0017, one new made-up account, three made-up letters uploaded as text
+files (agent `v5`).
+
+| | Job 3 | Job 4 | Job 5 |
+|---|---|---|---|
+| Letter | `medical_necessity` | `medical_necessity` | `noncovered`, one of two lines denied |
+| `202` to `done` | 18.6 s | 12.8 s | 10.2 s |
+| End state | `draft_failed` | `draft_failed` | `needs_review` (drafted on attempt 1, one cited paragraph) |
+| Drafting | 2 attempts, both `blocked` `quote_not_in_evidence` | the same | |
+| `jobs.cost_usd` | $0.001817 | $0.001742 | $0.001028 |
+
+**Upload to draft ready took 10.2 s, under the 120 s target, the first time with a draft.**
+One of three uploads was drafted (33%). The three job costs add up to $0.004587, the same as
+the 11 `llm_calls` rows of the run.
+
+Through the API, on job 5: an edit of version 0 stored version 1 (a typo fixed, a sentence
+reworded); a second edit of version 0 was `409`; text in square brackets was `422`
+`placeholder_text`; a changed quote was `422` `edit_not_allowed`; approving version 0 was
+`409`; approving version 1 was `200`; a second approve and an edit after it were `409`. The
+model's draft stayed beside version 1. The other account got `404` for the job's detail and
+its approve. `GET /audit` gave 6 events (account created, 3 uploads, edit, approve). The
+server log held no error and no personal field.
+
+### Known limits
+
+- **`medical_necessity` uploads are not drafted yet.** Both ended `draft_failed`: all four
+  attempts were blocked with `quote_not_in_evidence`, on the same five `cms_manual` passages.
+  Some of those passages hold curly quotation marks, which the validator compares exactly.
+  The trace keeps no model text, so the cause is not proven.
+- **Three letters are too few** to say how often an upload is drafted.
+- **A decision is final.** A wrongly approved or rejected draft cannot be reopened; the
+  letter has to be uploaded again.
+- **An edit cannot add evidence.** A citation can only be kept or removed; a new quote needs
+  a new search and a new draft.
+- **The citation check follows paragraph kinds, not what edited text says.** An edit keeps
+  each paragraph's kind and citations but may change its text. A reviewer who writes a policy
+  claim into a paragraph that is not `policy` passes both checks without a citation; a person
+  wrote and approved that text.
+- **A job's cost can differ from `llm_calls`.** A job marked `interrupted` at startup keeps
+  `cost_usd` 0, even if it already paid for calls. The meter also counts a paid call whose
+  `llm_calls` row could not be saved, so a job's cost can be higher than its recorded calls.
+- **Approved means stored, not sent.** There is no export or letter file yet.
+- **The audit log is only append-only in the code.** The database does not stop an `UPDATE`
+  or `DELETE` on `audit_events`.
+- **The cost of a month is by upload date.** A job uploaded just before midnight at the end
+  of a month and finished after it counts in the month it was uploaded.
+- **No dashboard yet.** Everything here works through the API only; the browser comes in the
+  next Stage 5 branch.

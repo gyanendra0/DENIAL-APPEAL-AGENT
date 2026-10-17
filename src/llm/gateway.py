@@ -7,6 +7,9 @@ the answered call cost. Over budget means fallback or refuse, never overspend.
 `LlmGateway.embed` turns a batch of texts into vectors under the same budget check and the
 same spend table. It has no fallback: vectors from two models cannot be compared.
 
+`LlmGateway.meter` adds up what the answered calls of one piece of work cost, such as one
+upload job, without any function between that work and the gateway passing the amount on.
+
 The gateway knows providers only through the small `ChatProvider` and `EmbeddingProvider`
 interfaces, so the tests use stubs and no real model is called. `complete` returns text:
 turning the text into a typed schema is the caller's job.
@@ -18,7 +21,9 @@ logged as an error and the error is raised: the answer is not returned.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Protocol
@@ -199,6 +204,28 @@ class EmbeddingProvider(Protocol):
         ...
 
 
+class CostMeter:
+    """What the answered calls made inside one `LlmGateway.meter` block cost, in US dollars.
+
+    A meter opened inside another one also adds to the outer one, so an outer total is never
+    short.
+    """
+
+    def __init__(self, outer: "CostMeter | None") -> None:
+        self._outer = outer
+        self.total = Decimal("0")
+
+    def add(self, cost_usd: Decimal) -> None:
+        self.total += cost_usd
+        if self._outer is not None:
+            self._outer.add(cost_usd)
+
+
+# The meter of the block being run. A context variable, so two jobs running at the same time
+# in two threads each see only their own meter.
+_ACTIVE_METER: ContextVar[CostMeter | None] = ContextVar("llm_cost_meter", default=None)
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -226,6 +253,22 @@ class LlmGateway:
         self._session_factory = session_factory
         self._cap_usd = cap_usd
         self._clock = clock
+
+    @contextmanager
+    def meter(self) -> Iterator[CostMeter]:
+        """Add up the cost of every call answered inside the `with` block.
+
+        Counts each call a provider answered, chat or embedding, also one whose spend row
+        could not be stored (it was paid for). A call refused by the budget or by the
+        provider costs nothing and adds nothing. Calls made in the same context through
+        another gateway are counted too.
+        """
+        meter = CostMeter(_ACTIVE_METER.get())
+        token = _ACTIVE_METER.set(meter)
+        try:
+            yield meter
+        finally:
+            _ACTIVE_METER.reset(token)
 
     def complete(self, request: LlmRequest) -> LlmResult:
         """Answer `request` with the primary provider, or the fallback, within the budget.
@@ -280,6 +323,7 @@ class LlmGateway:
             answer = embedder.run(request)
         except ProviderUnavailableError as error:
             raise LlmUnavailableError("the embedding provider is unavailable") from error
+        _add_to_meter(answer.cost_usd)
         try:
             record_llm_call(
                 self._session_factory,
@@ -338,6 +382,7 @@ class LlmGateway:
 
     def _answer(self, role: LlmProvider, provider: ChatProvider, request: LlmRequest) -> LlmResult:
         answer = provider.run(request)
+        _add_to_meter(answer.cost_usd)
         try:
             record_llm_call(
                 self._session_factory,
@@ -385,3 +430,9 @@ class LlmGateway:
             cost_usd=answer.cost_usd,
             stop_reason=answer.stop_reason,
         )
+
+
+def _add_to_meter(cost_usd: Decimal) -> None:
+    meter = _ACTIVE_METER.get()
+    if meter is not None:
+        meter.add(cost_usd)

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from src.api.dependencies import AUTH_COOKIE_NAME
 from src.api.routes import me as me_module
-from src.db.models import User
+from src.db.models import AuditEvent, User
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 
@@ -50,6 +50,8 @@ def test_damaged_cookie_is_401(api_client: TestClient) -> None:
 
 def test_deleted_user_is_401(api_client: TestClient, db_session: Session) -> None:
     signed_up = _signup(api_client, "One", "a@x.org")
+    # Sign-up audited the user, and an audited user cannot be deleted alone.
+    db_session.execute(delete(AuditEvent).where(AuditEvent.user_id == signed_up["user_id"]))
     db_session.execute(delete(User).where(User.id == signed_up["user_id"]))
     db_session.commit()
     assert api_client.get("/me").status_code == 401

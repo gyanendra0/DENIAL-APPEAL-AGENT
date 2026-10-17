@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import JobRunner
-from src.api.routes import auth, health, jobs, me, users
+from src.api.routes import audit, auth, health, jobs, me, overview, review, users
 from src.api.upload_limit import UploadSizeLimit
 from src.config.settings import (
     ApiSettings,
@@ -91,6 +91,15 @@ def create_app(
     app.state.job_runner = runner
     app.add_exception_handler(RequestValidationError, answer_validation_error)
     app.add_middleware(UploadSizeLimit)
-    for router in (health.router, auth.router, me.router, users.router, jobs.router):
+    for router in (
+        health.router,
+        auth.router,
+        me.router,
+        users.router,
+        jobs.router,
+        review.router,
+        overview.router,
+        audit.router,
+    ):
         app.include_router(router)
     return app

@@ -16,6 +16,8 @@ from src.db.models import (
     PLAN_COUNT_COLUMNS,
     Account,
     AgentRun,
+    AuditAction,
+    AuditEvent,
     Claim,
     ClaimSample,
     ClaimSampleLabel,
@@ -26,6 +28,9 @@ from src.db.models import (
     DenialStatus,
     DocumentExtraction,
     DocumentType,
+    DraftRejectReason,
+    DraftReviewStatus,
+    DraftRevision,
     EndState,
     EvidenceChunk,
     EvidenceChunkEmbedding,
@@ -51,6 +56,7 @@ from src.db.models import (
     User,
     UserRole,
 )
+from src.evaluation.review_rubric import RejectReason
 from src.rules.verdict import RULES_VERSION, RuleOutcome, RuleReason
 
 # Not a real hash of any password; the column only stores text.
@@ -2014,3 +2020,381 @@ def test_deleting_an_account_removes_its_users_uploads_jobs_and_results(session:
     assert session.scalars(select(Upload).where(Upload.account_id == account_id)).all() == []
     for model in (UploadExtraction, UploadAgentRun, UploadDraft):
         assert session.scalars(select(model)).all() == [], model
+
+
+REVIEWED_AT = FINISHED_AT + timedelta(minutes=5)
+
+
+def _reviewer(session: Session, account_id: int, email: str = "second@example.com") -> User:
+    user = User(account_id=account_id, email=email, password_hash=MADE_UP_HASH)
+    session.add(user)
+    session.flush()
+    return user
+
+
+def _draft_of_new_job(session: Session, account: Account) -> UploadDraft:
+    return _upload_draft(session, _done_job(session, _upload(session, account)))
+
+
+def _revision(session: Session, draft: UploadDraft, **overrides: Any) -> DraftRevision:
+    upload = session.get(Upload, session.get(Job, draft.job_id).upload_id)  # type: ignore[union-attr]
+    assert upload is not None
+    fields: dict[str, Any] = {
+        "account_id": draft.account_id,
+        "job_id": draft.job_id,
+        "version": 1,
+        "letter": DRAFT_LETTER,
+        "text_sha256": TEXT_SHA256,
+        "edited_by": upload.user_id,
+    }
+    row = DraftRevision(**(fields | overrides))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _audit_event(session: Session, job: Job, **overrides: Any) -> AuditEvent:
+    upload = session.get(Upload, job.upload_id)
+    assert upload is not None
+    fields: dict[str, Any] = {
+        "account_id": job.account_id,
+        "user_id": upload.user_id,
+        "action": AuditAction.DRAFT_EDITED,
+        "job_id": job.id,
+        "detail": {"version": 1},
+    }
+    row = AuditEvent(**(fields | overrides))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def test_draft_reject_reasons_are_the_review_rubric_reasons() -> None:
+    assert [member.value for member in DraftRejectReason] == [
+        member.value for member in RejectReason
+    ]
+
+
+def test_a_new_draft_is_pending_and_a_new_job_cost_nothing(session: Session) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+    session.expire_all()
+
+    stored = session.get(UploadDraft, draft.id)
+    job = session.get(Job, draft.job_id)
+    assert stored is not None and job is not None
+    assert stored.review_status is DraftReviewStatus.PENDING
+    assert (stored.reviewed_by, stored.reviewed_at, stored.reject_reason) == (None, None, None)
+    assert stored.approved_version is None
+    assert job.cost_usd == Decimal("0")
+
+
+def test_stores_a_job_cost_as_an_exact_decimal(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    job.cost_usd = Decimal("0.002186")
+    session.flush()
+    session.expire_all()
+
+    assert session.get(Job, job.id).cost_usd == Decimal("0.002186")  # type: ignore[union-attr]
+
+
+def test_rejects_a_negative_job_cost(session: Session) -> None:
+    upload = _upload(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_jobs_cost_usd_not_negative"):
+        _job(session, upload, cost_usd=Decimal("-0.000001"))
+
+
+def _approved(user_id: int, version: int = 0) -> dict[str, Any]:
+    return {
+        "review_status": DraftReviewStatus.APPROVED,
+        "reviewed_by": user_id,
+        "reviewed_at": REVIEWED_AT,
+        "approved_version": version,
+    }
+
+
+def _rejected(user_id: int) -> dict[str, Any]:
+    return {
+        "review_status": DraftReviewStatus.REJECTED,
+        "reviewed_by": user_id,
+        "reviewed_at": REVIEWED_AT,
+        "reject_reason": DraftRejectReason.CITATION_DOES_NOT_FIT,
+    }
+
+
+@pytest.mark.parametrize("decision", [_approved, _rejected])
+def test_stores_an_approved_or_rejected_draft_that_reads_back(
+    session: Session, decision: Any
+) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+    reviewer = _reviewer(session, draft.account_id)
+    for key, value in decision(reviewer.id).items():
+        setattr(draft, key, value)
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(UploadDraft, draft.id)
+    assert stored is not None
+    assert {key: getattr(stored, key) for key in decision(reviewer.id)} == decision(reviewer.id)
+    assert stored.letter == DRAFT_LETTER
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"reviewed_at": REVIEWED_AT},
+        {"reject_reason": DraftRejectReason.OTHER},
+        {"approved_version": 0},
+        {"review_status": DraftReviewStatus.APPROVED, "reviewed_at": REVIEWED_AT},
+        {"review_status": DraftReviewStatus.REJECTED, "reviewed_at": REVIEWED_AT},
+    ],
+)
+def test_rejects_a_draft_whose_review_columns_do_not_fit_its_status(
+    session: Session, bad: dict[str, Any]
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+
+    with pytest.raises(IntegrityError, match="ck_upload_drafts_review_matches_status"):
+        _upload_draft(session, job, **bad)
+
+
+@pytest.mark.parametrize(
+    ("change", "constraint"),
+    [
+        ({"reject_reason": DraftRejectReason.OTHER}, "ck_upload_drafts_review_matches_status"),
+        ({"reviewed_by": None}, "ck_upload_drafts_review_matches_status"),
+        ({"approved_version": None}, "ck_upload_drafts_review_matches_status"),
+        ({"approved_version": -1}, "ck_upload_drafts_approved_version_not_negative"),
+    ],
+)
+def test_rejects_an_approved_draft_with_a_reason_no_reviewer_or_a_bad_version(
+    session: Session, change: dict[str, Any], constraint: str
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    reviewer = _reviewer(session, job.account_id)
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _upload_draft(session, job, **(_approved(reviewer.id) | change))
+
+
+def test_rejects_a_rejected_draft_without_a_reason_or_with_a_version(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    reviewer = _reviewer(session, job.account_id)
+    with (
+        pytest.raises(IntegrityError, match="ck_upload_drafts_review_matches_status"),
+        session.begin_nested(),
+    ):
+        _upload_draft(session, job, **(_rejected(reviewer.id) | {"reject_reason": None}))
+
+    with pytest.raises(IntegrityError, match="ck_upload_drafts_review_matches_status"):
+        _upload_draft(session, job, **(_rejected(reviewer.id) | {"approved_version": 1}))
+
+
+def test_rejects_an_unknown_reject_reason(session: Session) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+
+    with pytest.raises(DataError, match="draft_reject_reason"):
+        session.execute(
+            text("UPDATE upload_drafts SET reject_reason = 'too_long' WHERE id = :id"),
+            {"id": draft.id},
+        )
+
+
+def test_rejects_a_draft_reviewed_by_a_user_of_another_account(session: Session) -> None:
+    other_user = _reviewer(session, _account(session, "other").id, "someone@example.com")
+    job = _done_job(session, _upload(session, _account(session, "a")))
+
+    with pytest.raises(IntegrityError, match="fk_upload_drafts_reviewer"):
+        _upload_draft(session, job, **_approved(other_user.id))
+
+
+def test_rejects_deleting_a_user_who_reviewed_a_draft(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    reviewer = _reviewer(session, job.account_id)
+    _upload_draft(session, job, **_approved(reviewer.id))
+
+    with pytest.raises(IntegrityError, match="fk_upload_drafts_reviewer"):
+        session.execute(text("DELETE FROM users WHERE id = :id"), {"id": reviewer.id})
+
+
+def test_stores_two_revisions_of_one_draft_that_read_back(session: Session) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+    edited = DRAFT_LETTER | {"edited": True}
+    first = _revision(session, draft)
+    second = _revision(session, draft, version=2, letter=edited)
+    session.expire_all()
+
+    assert session.get(DraftRevision, first.id).letter == DRAFT_LETTER  # type: ignore[union-attr]
+    assert session.get(DraftRevision, second.id).letter == edited  # type: ignore[union-attr]
+    assert session.get(UploadDraft, draft.id).letter == DRAFT_LETTER  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("bad", "constraint"),
+    [
+        ({"version": 0}, "ck_draft_revisions_version_positive"),
+        ({"text_sha256": TEXT_SHA256.upper()}, "ck_draft_revisions_text_sha256_format"),
+    ],
+)
+def test_rejects_a_revision_with_version_zero_or_a_bad_hash(
+    session: Session, bad: dict[str, Any], constraint: str
+) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _revision(session, draft, **bad)
+
+
+def test_rejects_a_second_revision_with_the_same_version(session: Session) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+    _revision(session, draft)
+
+    with pytest.raises(IntegrityError, match="uq_draft_revisions_job_version"):
+        _revision(session, draft)
+
+
+def test_rejects_a_revision_of_a_job_that_has_no_draft(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    upload = session.get(Upload, job.upload_id)
+    assert upload is not None
+
+    with pytest.raises(IntegrityError, match="fk_draft_revisions_draft"):
+        session.add(
+            DraftRevision(
+                account_id=job.account_id,
+                job_id=job.id,
+                version=1,
+                letter=DRAFT_LETTER,
+                text_sha256=TEXT_SHA256,
+                edited_by=upload.user_id,
+            )
+        )
+        session.flush()
+
+
+def test_rejects_a_revision_naming_a_draft_or_an_editor_of_another_account(
+    session: Session,
+) -> None:
+    other_draft = _draft_of_new_job(session, _account(session, "other"))
+    account = _account(session, "a")
+    draft = _draft_of_new_job(session, account)
+    other_user = session.get(Upload, session.get(Job, other_draft.job_id).upload_id).user_id  # type: ignore[union-attr]
+    with pytest.raises(IntegrityError, match="fk_draft_revisions_draft"), session.begin_nested():
+        _revision(session, other_draft, account_id=account.id)
+
+    with pytest.raises(IntegrityError, match="fk_draft_revisions_editor"):
+        _revision(session, draft, edited_by=other_user)
+
+
+@pytest.mark.parametrize(
+    ("action", "with_job"),
+    [
+        (AuditAction.ACCOUNT_CREATED, False),
+        (AuditAction.UPLOAD_CREATED, True),
+        (AuditAction.DRAFT_EDITED, True),
+        (AuditAction.DRAFT_APPROVED, True),
+        (AuditAction.DRAFT_REJECTED, True),
+    ],
+)
+def test_stores_an_audit_event_with_a_job_exactly_when_the_action_needs_one(
+    session: Session, action: AuditAction, with_job: bool
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    event = _audit_event(session, job, action=action, job_id=job.id if with_job else None)
+    session.expire_all()
+
+    stored = session.get(AuditEvent, event.id)
+    assert stored is not None
+    assert stored.action is action
+    assert stored.job_id == (job.id if with_job else None)
+    assert stored.detail == {"version": 1}
+
+
+@pytest.mark.parametrize(
+    ("bad", "constraint"),
+    [
+        ({"action": AuditAction.ACCOUNT_CREATED}, "ck_audit_events_job_matches_action"),
+        ({"job_id": None}, "ck_audit_events_job_matches_action"),
+        ({"detail": ["version", 1]}, "ck_audit_events_detail_is_object"),
+        ({"detail": "text"}, "ck_audit_events_detail_is_object"),
+    ],
+)
+def test_rejects_an_audit_event_whose_job_does_not_fit_the_action_or_whose_detail_is_no_object(
+    session: Session, bad: dict[str, Any], constraint: str
+) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+
+    with pytest.raises(IntegrityError, match=constraint):
+        _audit_event(session, job, **bad)
+
+
+def test_an_audit_event_without_detail_stores_an_empty_object(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    upload = session.get(Upload, job.upload_id)
+    assert upload is not None
+    session.execute(
+        text(
+            "INSERT INTO audit_events (account_id, user_id, action, job_id)"
+            " VALUES (:a, :u, 'upload_created', :j)"
+        ),
+        {"a": job.account_id, "u": upload.user_id, "j": job.id},
+    )
+
+    assert session.scalars(select(AuditEvent.detail)).one() == {}
+
+
+def test_rejects_an_audit_event_naming_a_user_or_a_job_of_another_account(
+    session: Session,
+) -> None:
+    other_job = _done_job(session, _upload(session, _account(session, "other")))
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    other_user = session.get(Upload, other_job.upload_id).user_id  # type: ignore[union-attr]
+    with pytest.raises(IntegrityError, match="fk_audit_events_job"), session.begin_nested():
+        _audit_event(session, job, job_id=other_job.id)
+
+    with pytest.raises(IntegrityError, match="fk_audit_events_user"):
+        _audit_event(session, job, user_id=other_user)
+
+
+def test_deleting_an_upload_removes_the_revisions_of_its_draft(session: Session) -> None:
+    draft = _draft_of_new_job(session, _account(session, "a"))
+    _revision(session, draft)
+    upload = session.get(Upload, session.get(Job, draft.job_id).upload_id)  # type: ignore[union-attr]
+
+    session.delete(upload)
+    session.flush()
+
+    assert session.scalars(select(DraftRevision)).all() == []
+
+
+def test_rejects_deleting_an_upload_whose_job_has_an_audit_event(session: Session) -> None:
+    job = _done_job(session, _upload(session, _account(session, "a")))
+    _audit_event(session, job)
+
+    with pytest.raises(IntegrityError, match="fk_audit_events_job"):
+        session.execute(text("DELETE FROM uploads WHERE id = :id"), {"id": job.upload_id})
+
+
+def test_deleting_an_account_removes_its_reviews_revisions_and_audit_events(
+    session: Session,
+) -> None:
+    account = _account(session, "a")
+    account_id = account.id  # read before the delete; the expired object cannot be refreshed
+    kept = _draft_of_new_job(session, _account(session, "kept"))
+    _revision(session, kept)
+    draft = _draft_of_new_job(session, account)
+    reviewer = _reviewer(session, account_id)
+    for key, value in _approved(reviewer.id, version=1).items():
+        setattr(draft, key, value)
+    _revision(session, draft)
+    job = session.get(Job, draft.job_id)
+    assert job is not None
+    _audit_event(session, job)
+    _audit_event(session, job, action=AuditAction.ACCOUNT_CREATED, job_id=None)
+
+    session.execute(text("DELETE FROM accounts WHERE id = :id"), {"id": account_id})
+    session.expire_all()
+
+    assert [row.job_id for row in session.scalars(select(DraftRevision))] == [kept.job_id]
+    assert session.scalars(select(AuditEvent)).all() == []
+    assert [row.id for row in session.scalars(select(UploadDraft))] == [kept.id]

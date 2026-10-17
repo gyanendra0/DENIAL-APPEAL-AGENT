@@ -61,6 +61,8 @@ DRAFT = DraftResult(
     model_name=MODEL_NAME,
     prompt_version=PROMPT_VERSION,
 )
+COST = Decimal("0.001234")
+NO_COST = Decimal("0")
 
 
 @pytest.fixture
@@ -177,13 +179,14 @@ def test_a_finished_job_stores_its_trace_and_draft(
     member, _ = members
     job_id = _running_job(session, member)
 
-    finish_job_done(session, member.account_id, job_id, TRACE, DRAFT)
+    finish_job_done(session, member.account_id, job_id, TRACE, DRAFT, COST)
 
     job = _job(session, job_id)
-    assert (job.status, job.end_state, job.failure) == (
+    assert (job.status, job.end_state, job.failure, job.cost_usd) == (
         JobStatus.DONE,
         EndState.STOPPED_BY_RULES,
         None,
+        COST,
     )
     assert job.finished_at is not None
     run = session.scalars(select(UploadAgentRun).where(UploadAgentRun.job_id == job_id)).one()
@@ -209,7 +212,7 @@ def test_a_finished_job_without_a_letter_stores_no_draft(
     member, _ = members
     job_id = _running_job(session, member)
 
-    finish_job_done(session, member.account_id, job_id, TRACE, None)
+    finish_job_done(session, member.account_id, job_id, TRACE, None, NO_COST)
 
     assert session.scalars(select(UploadDraft).where(UploadDraft.job_id == job_id)).all() == []
 
@@ -222,9 +225,9 @@ def test_a_job_that_is_not_running_cannot_finish(
     running = _running_job(session, first)
 
     with pytest.raises(JobStateError, match=f"job {queued} is not running"):
-        finish_job_done(session, first.account_id, queued, TRACE, DRAFT)
+        finish_job_done(session, first.account_id, queued, TRACE, DRAFT, NO_COST)
     with pytest.raises(JobStateError):
-        finish_job_done(session, second.account_id, running, TRACE, DRAFT)
+        finish_job_done(session, second.account_id, running, TRACE, DRAFT, NO_COST)
 
     assert session.scalars(select(UploadAgentRun)).all() == []
     assert _job(session, running).status is JobStatus.RUNNING
@@ -236,13 +239,15 @@ def test_a_running_job_fails_with_its_code(
     member, _ = members
     job_id = _running_job(session, member)
 
-    assert finish_job_failed(session, member.account_id, job_id, JobFailure.BUDGET_EXCEEDED)
+    assert finish_job_failed(session, member.account_id, job_id, JobFailure.BUDGET_EXCEEDED, COST)
 
     job = _job(session, job_id)
-    assert (job.status, job.failure, job.end_state) == (
+    # A failed job may have spent money before it failed; that is stored too.
+    assert (job.status, job.failure, job.end_state, job.cost_usd) == (
         JobStatus.FAILED,
         JobFailure.BUDGET_EXCEEDED,
         None,
+        COST,
     )
     assert job.finished_at is not None
 
@@ -254,8 +259,12 @@ def test_only_a_running_job_of_the_account_can_fail(
     queued = create_upload_job(session, first.account_id, new_upload(first))
     running = _running_job(session, first)
 
-    assert not finish_job_failed(session, first.account_id, queued, JobFailure.INTERNAL_ERROR)
-    assert not finish_job_failed(session, second.account_id, running, JobFailure.INTERNAL_ERROR)
+    assert not finish_job_failed(
+        session, first.account_id, queued, JobFailure.INTERNAL_ERROR, NO_COST
+    )
+    assert not finish_job_failed(
+        session, second.account_id, running, JobFailure.INTERNAL_ERROR, NO_COST
+    )
 
     assert (_job(session, queued).status, _job(session, running).status) == (
         JobStatus.QUEUED,
@@ -270,13 +279,17 @@ def test_unfinished_jobs_of_every_account_are_marked_interrupted(
     queued = create_upload_job(session, first.account_id, new_upload(first))
     running = _running_job(session, second)
     done = _running_job(session, first)
-    finish_job_done(session, first.account_id, done, TRACE, None)
+    finish_job_done(session, first.account_id, done, TRACE, None, NO_COST)
 
     assert mark_interrupted_jobs(session) == 2
 
     for job_id in (queued, running):
         job = _job(session, job_id)
-        assert (job.status, job.failure) == (JobStatus.FAILED, JobFailure.INTERRUPTED)
+        assert (job.status, job.failure, job.cost_usd) == (
+            JobStatus.FAILED,
+            JobFailure.INTERRUPTED,
+            NO_COST,
+        )
         assert job.finished_at is not None
     assert _job(session, queued).started_at is None
     assert _job(session, done).status is JobStatus.DONE

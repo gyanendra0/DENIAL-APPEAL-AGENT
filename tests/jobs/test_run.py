@@ -30,6 +30,7 @@ from tests.drafting.helpers import (
     drafting_gateway,
     good_answer,
 )
+from tests.extraction.helpers import CALL_COST as CHAT_COST
 from tests.extraction.helpers import (
     LETTER,
     MODEL_NAME,
@@ -49,6 +50,7 @@ from tests.jobs.helpers import (
     read_job,
     read_results,
 )
+from tests.rag.helpers import CALL_COST as EMBEDDING_COST
 from tests.rag.helpers import CHUNK_TEXT, MODEL, StubEmbedder
 
 # The made-up letter is dated 2008-03-20, may be appealed until 2008-09-16 and is about 130.10.
@@ -129,6 +131,8 @@ def test_a_letter_that_passes_every_step_ends_done_with_a_stored_draft(setup: Se
         EndState.NEEDS_REVIEW,
         None,
     )
+    # The cost meter counted the three calls.
+    assert job.cost_usd == 2 * CHAT_COST + EMBEDDING_COST
     assert job.started_at is not None
     assert job.finished_at is not None
     # One extraction call, one embedding call and one drafting call.
@@ -163,7 +167,8 @@ def test_a_letter_the_rules_stop_ends_done_with_no_draft_and_one_call(setup: Set
     status = _run(setup, job_id, primary, embedder=embedder, today=AFTER_THE_DEADLINE)
 
     assert status is JobStatus.DONE
-    assert read_job(setup.factory, job_id).end_state is EndState.STOPPED_BY_RULES
+    job = read_job(setup.factory, job_id)
+    assert (job.end_state, job.cost_usd) == (EndState.STOPPED_BY_RULES, CHAT_COST)
     assert (len(primary.requests), embedder.requests) == (1, [])
     results = read_results(setup.factory, job_id)
     assert (results.extraction is not None, results.agent_run is not None) == (True, True)
@@ -205,10 +210,16 @@ def test_a_failed_draft_ends_done_as_draft_failed(setup: Setup) -> None:
             return json.dumps(fields_json(LETTER))
         return "not JSON"
 
-    status = _run(setup, job_id, StubProvider(answer))
+    primary = StubProvider(answer)
+
+    status = _run(setup, job_id, primary)
 
     assert status is JobStatus.DONE
-    assert read_job(setup.factory, job_id).end_state is EndState.DRAFT_FAILED
+    job = read_job(setup.factory, job_id)
+    assert job.end_state is EndState.DRAFT_FAILED
+    # The extraction, then two drafting attempts, each paid for.
+    assert len(primary.requests) == 3
+    assert job.cost_usd == 3 * CHAT_COST + EMBEDDING_COST
     assert read_results(setup.factory, job_id).draft is None
 
 
@@ -232,6 +243,8 @@ def test_an_unusable_extraction_fails_the_job(setup: Setup, stub: StubProvider) 
         JobFailure.EXTRACTION_FAILED,
         None,
     )
+    # The extraction call was answered, so it was paid for even though the job failed.
+    assert job.cost_usd == CHAT_COST
     assert job.finished_at is not None
     assert read_results(setup.factory, job_id) == JobResults(None, None, None)
 
@@ -242,7 +255,8 @@ def test_a_reached_budget_fails_the_job_before_any_call(setup: Setup) -> None:
 
     assert _run(setup, job_id, primary) is JobStatus.FAILED
 
-    assert read_job(setup.factory, job_id).failure is JobFailure.BUDGET_EXCEEDED
+    job = read_job(setup.factory, job_id)
+    assert (job.failure, job.cost_usd) == (JobFailure.BUDGET_EXCEEDED, Decimal("0"))
     assert primary.requests == []
 
 

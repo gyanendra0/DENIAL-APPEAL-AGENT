@@ -24,8 +24,9 @@ from src.api.dependencies import (
 from src.api.upload_file import UploadFileError, read_uploaded_letter
 from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
-from src.db.models import EndState, JobFailure, JobStatus, UserRole
+from src.db.models import AuditAction, EndState, JobFailure, JobStatus, UserRole
 from src.jobs.store import NewUpload, create_upload_job, find_job
+from src.review.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def upload_letter(
     runner: Annotated[JobRunner, Depends(get_job_runner)],
     session: DbSession,
 ) -> UploadAccepted:
-    """Store one denial letter (UTF-8 text or a PDF with text) and queue its job.
+    """Store one denial letter (UTF-8 text or a PDF with text), queue its job and audit it.
 
     The job runs after the answer is sent; read its status with `GET /jobs/{job_id}`.
     """
@@ -93,6 +94,7 @@ def upload_letter(
             text=text,
         ),
     )
+    record_audit_event(session, user.account_id, user.user_id, AuditAction.UPLOAD_CREATED, job_id)
     # Added now, run after the answer: by then `DbSession` has committed the queued job.
     background_tasks.add_task(runner, user.account_id, job_id)
     logger.info(

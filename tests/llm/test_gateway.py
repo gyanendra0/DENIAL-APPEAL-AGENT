@@ -1,3 +1,4 @@
+import contextvars
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -736,3 +737,103 @@ def test_rejects_an_embedding_model_name_the_spend_table_cannot_hold(
 ) -> None:
     with pytest.raises(ValueError, match="1 to 100 characters"):
         _embedding_gateway(session_factory, StubEmbedder(model_name))
+
+
+def test_the_meter_adds_up_the_chat_and_embedding_calls_made_inside_it(
+    session_factory: sessionmaker[Session],
+) -> None:
+    gateway, _ = _embedding_gateway(session_factory, StubEmbedder(cost="0.000004"))
+
+    with gateway.meter() as meter:
+        assert meter.total == Decimal("0")
+        gateway.complete(_request())
+        gateway.embed(_embedding_request())
+        gateway.complete(_request())
+
+    assert meter.total == Decimal("0.000250")
+
+
+def test_the_meter_counts_nothing_made_before_or_after_its_block(
+    session_factory: sessionmaker[Session],
+) -> None:
+    gateway = _gateway(session_factory, StubProvider("example-small-model"))
+
+    gateway.complete(_request())
+    with gateway.meter() as meter:
+        pass
+    gateway.complete(_request())
+
+    assert meter.total == Decimal("0")
+
+
+def test_the_meter_counts_the_fallbacks_answer_and_not_the_unanswered_primary(
+    session_factory: sessionmaker[Session],
+) -> None:
+    primary = StubProvider("example-small-model", error=ProviderUnavailableError("timeout"))
+    fallback = StubProvider("example-open-model", cost="0.000050")
+    gateway = _gateway(session_factory, primary, fallback)
+
+    with gateway.meter() as meter:
+        gateway.complete(_request())
+
+    assert meter.total == Decimal("0.000050")
+
+
+def test_the_meter_counts_nothing_for_a_call_the_budget_refused(
+    session_factory: sessionmaker[Session],
+) -> None:
+    gateway = _gateway(session_factory, StubProvider("example-small-model", highest_cost="5.00"))
+
+    with gateway.meter() as meter, pytest.raises(LlmBudgetExceededError):
+        gateway.complete(_request())
+
+    assert meter.total == Decimal("0")
+
+
+def test_the_meter_counts_a_paid_call_whose_spend_could_not_be_recorded(
+    session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_record(*_: object) -> None:
+        raise RuntimeError("made-up database failure")
+
+    monkeypatch.setattr(gateway_module, "record_llm_call", failing_record)
+    gateway, _ = _embedding_gateway(session_factory, StubEmbedder(cost="0.000004"))
+
+    with gateway.meter() as meter:
+        with pytest.raises(RuntimeError):
+            gateway.complete(_request())
+        with pytest.raises(RuntimeError):
+            gateway.embed(_embedding_request())
+
+    assert meter.total == Decimal("0.000127")
+
+
+def test_a_meter_inside_another_adds_to_both(session_factory: sessionmaker[Session]) -> None:
+    gateway = _gateway(session_factory, StubProvider("example-small-model"))
+
+    with gateway.meter() as outer:
+        gateway.complete(_request())
+        with gateway.meter() as inner:
+            gateway.complete(_request())
+        gateway.complete(_request())
+
+    assert (inner.total, outer.total) == (Decimal("0.000123"), Decimal("0.000369"))
+
+
+def test_two_contexts_keep_their_own_meter(session_factory: sessionmaker[Session]) -> None:
+    """Two jobs in two threads each run in their own context, as here."""
+    gateway = _gateway(session_factory, StubProvider("example-small-model"))
+
+    def one_job(calls: int) -> Decimal:
+        with gateway.meter() as meter:
+            for _ in range(calls):
+                gateway.complete(_request())
+        return meter.total
+
+    with gateway.meter() as outside:
+        first = contextvars.Context().run(one_job, 1)
+        second = contextvars.Context().run(one_job, 2)
+
+    assert (first, second) == (Decimal("0.000123"), Decimal("0.000246"))
+    # An empty context starts with no meter, so the one outside counts nothing of theirs.
+    assert outside.total == Decimal("0")

@@ -30,7 +30,12 @@ from src.jobs.store import (
     save_upload_extraction,
     start_job,
 )
-from src.llm.gateway import LlmBudgetExceededError, LlmGateway, LlmUnavailableError
+from src.llm.gateway import (
+    CostMeter,
+    LlmBudgetExceededError,
+    LlmGateway,
+    LlmUnavailableError,
+)
 from src.ml.features import ClaimFeatures, build_letter_features
 from src.ml.training import WinModel
 from src.rag.retrieval import EvidenceNotEmbeddedError
@@ -82,13 +87,14 @@ def run_upload_job(
     """Run the `queued` job `job_id` of `account_id` and return the status it ended in.
 
     Spends money and can take several seconds: one extraction call, and, when the rules and
-    the score let the letter through, one embedding call and one drafting call. Returns
+    the score let the letter through, one embedding call and one or two drafting calls. Returns
     None, doing nothing, when the job is not `queued` (already run, or of another account).
 
     The extraction is stored as soon as it is read. A job ends `done` with the loop's end
     state, its trace and its checked letter, or `failed` with a code: `extraction_failed`,
     `budget_exceeded`, `llm_unavailable`, `evidence_not_ready`, or `internal_error` for any
-    other error.
+    other error. Either way the job stores what its model calls cost, counted by the
+    gateway's cost meter.
     """
     started_at = time.monotonic()
     with session_scope(session_factory) as session:
@@ -99,20 +105,21 @@ def run_upload_job(
 
     failure = JobFailure.INTERNAL_ERROR
     end_state: EndState | None = None
-    try:
-        end_state = _run_steps(session_factory, context, account_id, job_id, text, today)
-    except ExtractionError:
-        failure = JobFailure.EXTRACTION_FAILED
-    except LlmBudgetExceededError:
-        failure = JobFailure.BUDGET_EXCEEDED
-    except LlmUnavailableError:
-        failure = JobFailure.LLM_UNAVAILABLE
-    except EvidenceNotEmbeddedError:
-        failure = JobFailure.EVIDENCE_NOT_READY
-    except Exception as error:
-        # A background job has no caller to raise to: any other error fails the job.
-        # The class name only: an error's message can quote the document or the answer.
-        logger.error("job %d failed with %s", job_id, type(error).__name__)
+    with context.gateway.meter() as meter:
+        try:
+            end_state = _run_steps(session_factory, context, account_id, job_id, text, today, meter)
+        except ExtractionError:
+            failure = JobFailure.EXTRACTION_FAILED
+        except LlmBudgetExceededError:
+            failure = JobFailure.BUDGET_EXCEEDED
+        except LlmUnavailableError:
+            failure = JobFailure.LLM_UNAVAILABLE
+        except EvidenceNotEmbeddedError:
+            failure = JobFailure.EVIDENCE_NOT_READY
+        except Exception as error:
+            # A background job has no caller to raise to: any other error fails the job.
+            # The class name only: an error's message can quote the document or the answer.
+            logger.error("job %d failed with %s", job_id, type(error).__name__)
 
     seconds = time.monotonic() - started_at
     if end_state is not None:
@@ -121,7 +128,7 @@ def run_upload_job(
         )
         return JobStatus.DONE
     with session_scope(session_factory) as session:
-        recorded = finish_job_failed(session, account_id, job_id, failure)
+        recorded = finish_job_failed(session, account_id, job_id, failure, meter.total)
     if not recorded:
         logger.warning("job %d was no longer running; failure %s not recorded", job_id, failure)
     logger.info(
@@ -137,6 +144,7 @@ def _run_steps(
     job_id: int,
     text: str,
     today: date,
+    meter: CostMeter,
 ) -> EndState:
     text_hash = text_sha256(text)
     extraction = extract_document(context.gateway, context.extraction_prompt, text)
@@ -163,5 +171,6 @@ def _run_steps(
         embedding_model=context.embedding_model,
     )
     with session_scope(session_factory) as session:
-        finish_job_done(session, account_id, job_id, outcome.trace, outcome.draft)
+        # Every call of the job is made by now, so the meter's total is the job's cost.
+        finish_job_done(session, account_id, job_id, outcome.trace, outcome.draft, meter.total)
     return outcome.trace.end_state

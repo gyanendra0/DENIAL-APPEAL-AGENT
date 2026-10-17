@@ -31,8 +31,8 @@ RULES = RulesStep(
 )
 
 
-def test_the_agent_version_is_v4() -> None:
-    assert AGENT_VERSION == "v4"
+def test_the_agent_version_is_v5() -> None:
+    assert AGENT_VERSION == "v5"
 
 
 def test_a_stored_trace_of_agent_version_v1_still_reads_back() -> None:
@@ -196,7 +196,10 @@ def test_a_stored_trace_of_agent_version_v3_still_reads_back() -> None:
     assert trace.retrieval.search_question_version == "v3"
     assert trace.drafting.prompt_version == "v2"
     assert trace.drafting.failure is DraftFailure.PLACEHOLDER_TEXT
-    assert trace.model_dump(mode="json") == stored
+    # Written back, the trace keeps every stored value and gains only the empty `v5` count.
+    written = trace.model_dump(mode="json")
+    assert written["drafting"].pop("attempts") is None
+    assert written == stored
 
 
 def test_a_step_is_done_stopped_failed_or_not_run() -> None:
@@ -265,6 +268,8 @@ def test_a_stored_trace_with_a_failure_value_from_before_still_reads_back(
     trace = AgentTrace.model_validate(stored)
 
     assert trace.drafting.failure is DraftFailure(failure)
+    # Before `v5` the loop made one attempt and stored no count.
+    assert trace.drafting.attempts is None
     assert trace.model_dump(mode="json")["drafting"]["failure"] == failure
 
 
@@ -378,3 +383,16 @@ def test_a_score_or_threshold_outside_0_to_1_is_refused(field: str, value: float
 def test_the_letter_hash_must_be_a_sha256() -> None:
     with pytest.raises(ValidationError):
         ExtractionStep(status=StepStatus.DONE, prompt_version="v2", text_sha256="made-up text")
+
+
+@pytest.mark.parametrize("attempts", [1, 2])
+def test_the_drafting_step_records_one_or_two_attempts(attempts: int) -> None:
+    step = DraftingStep(status=StepStatus.FAILED, failure=DraftFailure.BLOCKED, attempts=attempts)
+
+    assert DraftingStep.model_validate(step.model_dump(mode="json")).attempts == attempts
+
+
+@pytest.mark.parametrize("attempts", [0, 3])
+def test_the_drafting_step_refuses_an_attempt_count_the_loop_cannot_make(attempts: int) -> None:
+    with pytest.raises(ValidationError):
+        DraftingStep(status=StepStatus.DONE, attempts=attempts)

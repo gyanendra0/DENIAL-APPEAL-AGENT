@@ -9,6 +9,8 @@ status before it, so a job is never run twice. The times come from the database 
 function here commits: the caller owns the transaction.
 """
 
+from decimal import Decimal
+
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -131,8 +133,11 @@ def finish_job_done(
     job_id: int,
     trace: AgentTrace,
     draft: DraftResult | None,
+    cost_usd: Decimal,
 ) -> None:
     """Store the trace and the checked letter, if any, and move the `running` job to `done`.
+
+    `cost_usd` is what the job's model calls cost; it is stored on the job.
 
     Raises `JobStateError` when the job is not `running` (it was marked `interrupted`
     meanwhile); nothing is then stored, as the caller rolls back.
@@ -140,7 +145,12 @@ def finish_job_done(
     finished = session.execute(
         update(Job)
         .where(Job.account_id == account_id, Job.id == job_id, Job.status == JobStatus.RUNNING)
-        .values(status=JobStatus.DONE, end_state=trace.end_state, finished_at=func.now())
+        .values(
+            status=JobStatus.DONE,
+            end_state=trace.end_state,
+            cost_usd=cost_usd,
+            finished_at=func.now(),
+        )
         .returning(Job.id)
     ).first()
     if finished is None:
@@ -171,15 +181,19 @@ def finish_job_done(
     session.flush()
 
 
-def finish_job_failed(session: Session, account_id: int, job_id: int, failure: JobFailure) -> bool:
-    """Move a `running` job of `account_id` to `failed` with `failure`.
+def finish_job_failed(
+    session: Session, account_id: int, job_id: int, failure: JobFailure, cost_usd: Decimal
+) -> bool:
+    """Move a `running` job of `account_id` to `failed` with `failure` and what it cost.
+
+    `cost_usd` counts the calls made before the failure: a failed job may have spent money.
 
     False when the job was not `running`; it is then left as it is.
     """
     failed = session.execute(
         update(Job)
         .where(Job.account_id == account_id, Job.id == job_id, Job.status == JobStatus.RUNNING)
-        .values(status=JobStatus.FAILED, failure=failure, finished_at=func.now())
+        .values(status=JobStatus.FAILED, failure=failure, cost_usd=cost_usd, finished_at=func.now())
         .returning(Job.id)
     ).first()
     return failed is not None
@@ -190,7 +204,8 @@ def mark_interrupted_jobs(session: Session) -> int:
 
     Run once when the API starts, before it takes a request: a job left unfinished then was
     stopped with the process before it. Goes account by account, so each query on `jobs`
-    filters on `account_id`.
+    filters on `account_id`. An interrupted job keeps `cost_usd` 0: what it spent before the
+    stop was not counted anywhere it can be read back (the calls are in `llm_calls`).
     """
     interrupted = 0
     for account_id in session.scalars(select(Account.id).order_by(Account.id)).all():

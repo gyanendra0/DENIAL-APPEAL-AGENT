@@ -1,9 +1,10 @@
 """Walks one denied claim through the five steps and returns the trace of what happened.
 
 The order is fixed in code: the stored letter extraction, the rules, the win model, the
-evidence search, the draft. Each step runs at most once and no model picks the next step.
-Only a `pass` verdict and a score at or above the threshold reach the two paid steps, so a
-claim costs at most one embedding call and one model call.
+evidence search, the draft. Each step runs at most once and no model picks the next step;
+only the drafting call is made a second time, with the same evidence, when the first draft
+is blocked or cannot be parsed. Only a `pass` verdict and a score at or above the threshold
+reach the two paid steps, so a claim costs at most one embedding call and two model calls.
 
 The loop always ends in a stop for a person. Nothing here sends a letter anywhere, and
 nothing reads the clock: "today", the amount floor and the threshold are passed in. The loop
@@ -19,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.agent.trace import (
+    MAX_DRAFT_ATTEMPTS,
     AgentTrace,
     DraftFailure,
     DraftingStep,
@@ -36,6 +38,7 @@ from src.drafting.drafter import (
     DraftBlockedError,
     DraftFactError,
     DraftingError,
+    DraftParseError,
     DraftPlaceholderError,
     DraftResult,
     DraftTruncatedError,
@@ -121,7 +124,7 @@ def run_agent_for_claim(
     """Run the loop for `candidate` and return its trace, with the checked letter if any.
 
     Spends money and can take several seconds when the claim reaches the last two steps: one
-    embedding call and one model call through `gateway`. A claim the rules or the threshold
+    embedding call and one or two model calls through `gateway`. A claim the rules or the threshold
     stop costs nothing. `embedding_model` must be the model the gateway embeds with.
 
     A chunk less similar to the search question than `MIN_EVIDENCE_SIMILARITY` is not shown
@@ -129,8 +132,9 @@ def run_agent_for_claim(
 
     A claim without `features` stops before the score as `needs_review_no_draft`, like a
     `must_review` verdict, with no model call. Nothing is stored: `session_factory` is only
-    read by the evidence search. A draft that is blocked, cut off, not parseable, holds
-    placeholder text or states a wrong fact ends as `draft_failed`, with no letter.
+    read by the evidence search. A draft that is blocked or not parseable is drafted once
+    more with the same chunks. A draft that is cut off, holds placeholder text or states a
+    wrong fact, or a second draft that fails, ends as `draft_failed`, with no letter.
 
     Errors that say nothing about the claim pass through, with no trace: the gateway's
     (`LlmBudgetExceededError`, `LlmUnavailableError`, `ProviderRejectedError`,
@@ -209,9 +213,19 @@ def run_agent_for_claim(
         ),
     )
 
-    try:
-        result = draft_appeal(gateway, prompt, letter, matches)
-    except DraftingError as error:
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            result = draft_appeal(gateway, prompt, letter, matches)
+            break
+        except (DraftBlockedError, DraftParseError) as error:
+            # The model answers differently each time; a second try often gives a clean draft.
+            if attempts < MAX_DRAFT_ATTEMPTS:
+                continue
+            failed_error: DraftingError = error
+        except DraftingError as error:
+            failed_error = error
         return AgentOutcome(
             trace=AgentTrace(
                 end_state=EndState.DRAFT_FAILED,
@@ -219,7 +233,7 @@ def run_agent_for_claim(
                 rules=rules,
                 scoring=scoring,
                 retrieval=retrieval,
-                drafting=_failed_drafting_step(prompt, error),
+                drafting=_failed_drafting_step(prompt, failed_error, attempts),
             )
         )
     return AgentOutcome(
@@ -237,6 +251,7 @@ def run_agent_for_claim(
                 cited_paragraphs=sum(
                     1 for paragraph in result.letter.paragraphs if paragraph.citations
                 ),
+                attempts=attempts,
             ),
         ),
         draft=result,
@@ -272,7 +287,9 @@ def _rules_step(letter: DenialLetterExtraction, today: date, amount_floor: Decim
     )
 
 
-def _failed_drafting_step(prompt: DraftingPrompt, error: DraftingError) -> DraftingStep:
+def _failed_drafting_step(
+    prompt: DraftingPrompt, error: DraftingError, attempts: int
+) -> DraftingStep:
     problem_kinds: tuple[CitationProblemKind, ...] = ()
     if isinstance(error, DraftBlockedError):
         failure = DraftFailure.BLOCKED
@@ -291,4 +308,5 @@ def _failed_drafting_step(prompt: DraftingPrompt, error: DraftingError) -> Draft
         prompt_version=prompt.version,
         failure=failure,
         problem_kinds=problem_kinds,
+        attempts=attempts,
     )

@@ -21,6 +21,7 @@ from src.db.migrations.versions import rev_0013_agent_runs as migration_0013
 from src.db.migrations.versions import rev_0014_evidence_source_cms_manual as migration_0014
 from src.db.migrations.versions import rev_0015_users_password_and_global_email as migration_0015
 from src.db.migrations.versions import rev_0016_uploads_and_jobs as migration_0016
+from src.db.migrations.versions import rev_0017_draft_review_and_audit as migration_0017
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -28,9 +29,12 @@ from src.db.models import (
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
+    AuditAction,
     DatasetSplit,
     DenialReasonCategory,
     DocumentType,
+    DraftRejectReason,
+    DraftReviewStatus,
     EndState,
     EvidenceSource,
     ExchangeType,
@@ -44,7 +48,9 @@ from src.db.models import (
 
 # The upload tables, children before parents (the order a downgrade drops them).
 UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jobs", "uploads")
-BUSINESS_TABLES = {"accounts", "users", "claims", "denials", *UPLOAD_TABLES}
+# Added by 0017, children before parents.
+REVIEW_TABLES = ("audit_events", "draft_revisions")
+BUSINESS_TABLES = {"accounts", "users", "claims", "denials", *UPLOAD_TABLES, *REVIEW_TABLES}
 REFERENCE_TABLES = {
     "issuer_denial_stats",
     "plan_denial_stats",
@@ -698,6 +704,7 @@ def test_jobs_has_its_keys_the_upload_link_carrying_the_account_and_its_checks(
         "ck_jobs_end_state_only_when_done",
         "ck_jobs_times_match_status",
         "ck_jobs_finished_not_before_started",
+        "ck_jobs_cost_usd_not_negative",
     }
 
 
@@ -721,15 +728,6 @@ def test_jobs_has_its_keys_the_upload_link_carrying_the_account_and_its_checks(
                 "ck_upload_agent_runs_trace_agent_version_matches",
             },
         ),
-        (
-            "upload_drafts",
-            {
-                "ck_upload_drafts_prompt_version_not_empty",
-                "ck_upload_drafts_search_question_version_not_empty",
-                "ck_upload_drafts_model_name_not_empty",
-                "ck_upload_drafts_text_sha256_format",
-            },
-        ),
     ],
 )
 def test_job_result_tables_have_one_row_per_job_a_link_carrying_the_account_and_checks(
@@ -750,12 +748,34 @@ def test_migration_0016_lists_the_same_values_as_the_models() -> None:
     assert tuple(member.value for member in JobFailure) == migration_0016.JOB_FAILURE
 
 
-def test_migration_0016_has_the_same_check_rules_as_the_models() -> None:
-    model_checks = {
-        constraint.name: str(constraint.sqltext)
-        for table in UPLOAD_TABLES
+def _model_checks(tables: tuple[str, ...]) -> dict[str, str]:
+    return {
+        str(constraint.name): str(constraint.sqltext)
+        for table in tables
         for constraint in Base.metadata.tables[table].constraints
         if isinstance(constraint, CheckConstraint)
+    }
+
+
+# The checks 0017 adds, two of them on tables that 0016 made.
+MIGRATION_0017_CHECKS = {
+    "ck_jobs_cost_usd_not_negative": migration_0017.COST_USD_NOT_NEGATIVE,
+    "ck_upload_drafts_review_matches_status": migration_0017.REVIEW_MATCHES_STATUS,
+    "ck_upload_drafts_approved_version_not_negative": (
+        migration_0017.APPROVED_VERSION_NOT_NEGATIVE
+    ),
+    "ck_draft_revisions_version_positive": migration_0017.VERSION_POSITIVE,
+    "ck_draft_revisions_text_sha256_format": migration_0017.TEXT_SHA256_FORMAT,
+    "ck_audit_events_job_matches_action": migration_0017.JOB_MATCHES_ACTION,
+    "ck_audit_events_detail_is_object": migration_0017.DETAIL_IS_OBJECT,
+}
+
+
+def test_migration_0016_has_the_same_check_rules_as_the_models() -> None:
+    model_checks = {
+        name: rule
+        for name, rule in _model_checks(UPLOAD_TABLES).items()
+        if name not in MIGRATION_0017_CHECKS
     }
 
     assert model_checks == {
@@ -785,6 +805,92 @@ def test_migration_0016_has_the_same_check_rules_as_the_models() -> None:
     }
 
 
+def test_upload_drafts_has_its_keys_the_job_and_reviewer_links_and_its_checks(
+    engine: Engine,
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, "upload_drafts")
+
+    assert unique == {
+        "uq_upload_drafts_job_id": ["job_id"],
+        "uq_upload_drafts_account_job_id": ["account_id", "job_id"],
+    }
+    assert foreign == {
+        "fk_upload_drafts_job": (["account_id", "job_id"], "jobs", ["account_id", "id"], "CASCADE"),
+        "fk_upload_drafts_reviewer": (
+            ["account_id", "reviewed_by"],
+            "users",
+            ["account_id", "id"],
+            None,
+        ),
+    }
+    assert checks == {
+        "ck_upload_drafts_prompt_version_not_empty",
+        "ck_upload_drafts_search_question_version_not_empty",
+        "ck_upload_drafts_model_name_not_empty",
+        "ck_upload_drafts_text_sha256_format",
+        "ck_upload_drafts_review_matches_status",
+        "ck_upload_drafts_approved_version_not_negative",
+    }
+
+
+def test_draft_revisions_has_one_version_per_number_a_cascading_draft_link_and_its_checks(
+    engine: Engine,
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, "draft_revisions")
+
+    assert unique == {"uq_draft_revisions_job_version": ["job_id", "version"]}
+    assert foreign == {
+        "fk_draft_revisions_draft": (
+            ["account_id", "job_id"],
+            "upload_drafts",
+            ["account_id", "job_id"],
+            "CASCADE",
+        ),
+        "fk_draft_revisions_editor": (
+            ["account_id", "edited_by"],
+            "users",
+            ["account_id", "id"],
+            None,
+        ),
+    }
+    assert checks == {
+        "ck_draft_revisions_version_positive",
+        "ck_draft_revisions_text_sha256_format",
+    }
+
+
+def test_audit_events_has_user_and_job_links_without_cascade_and_its_checks(
+    engine: Engine,
+) -> None:
+    unique, foreign, checks = _keys_links_and_checks(engine, "audit_events")
+
+    assert unique == {}
+    assert foreign == {
+        "fk_audit_events_user": (["account_id", "user_id"], "users", ["account_id", "id"], None),
+        "fk_audit_events_job": (["account_id", "job_id"], "jobs", ["account_id", "id"], None),
+    }
+    assert checks == {"ck_audit_events_job_matches_action", "ck_audit_events_detail_is_object"}
+
+
+def test_migration_0017_lists_the_same_values_as_the_models() -> None:
+    assert tuple(member.value for member in DraftReviewStatus) == (
+        migration_0017.DRAFT_REVIEW_STATUS
+    )
+    assert tuple(member.value for member in DraftRejectReason) == (
+        migration_0017.DRAFT_REJECT_REASON
+    )
+    assert tuple(member.value for member in AuditAction) == migration_0017.AUDIT_ACTION
+
+
+def test_migration_0017_has_the_same_check_rules_as_the_models() -> None:
+    model_checks = _model_checks((*UPLOAD_TABLES, *REVIEW_TABLES))
+
+    assert {
+        name: rule for name, rule in model_checks.items() if name in MIGRATION_0017_CHECKS
+    } == MIGRATION_0017_CHECKS
+    assert set(_model_checks(REVIEW_TABLES)) <= set(MIGRATION_0017_CHECKS)
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -805,6 +911,96 @@ def _type_names(engine: Engine, names: tuple[str, ...]) -> set[str]:
                 {"names": list(names)},
             )
         )
+
+
+def _review_columns(engine: Engine) -> tuple[set[str], set[str]]:
+    inspector = inspect(engine)
+    return (
+        {column["name"] for column in inspector.get_columns("upload_drafts")},
+        {column["name"] for column in inspector.get_columns("jobs")},
+    )
+
+
+def _store_a_draft_with_sql(engine: Engine) -> None:
+    # Raw SQL, because at 0016 the models have columns the table does not.
+    with engine.begin() as conn:
+        account_id = conn.scalar(text("INSERT INTO accounts (name) VALUES ('m') RETURNING id"))
+        user_id = conn.scalar(
+            text(
+                "INSERT INTO users (account_id, email, password_hash, role)"
+                " VALUES (:a, 'm@example.com', 'x', 'reviewer') RETURNING id"
+            ),
+            {"a": account_id},
+        )
+        upload_id = conn.scalar(
+            text(
+                "INSERT INTO uploads (account_id, user_id, file_name, file_type, byte_size, text,"
+                " text_sha256) VALUES (:a, :u, 'l.txt', 'text', 4, 'made', :h) RETURNING id"
+            ),
+            {"a": account_id, "u": user_id, "h": "0" * 64},
+        )
+        job_id = conn.scalar(
+            text(
+                "INSERT INTO jobs (account_id, upload_id, status, end_state, started_at,"
+                " finished_at) VALUES (:a, :u, 'done', 'needs_review', now(), now()) RETURNING id"
+            ),
+            {"a": account_id, "u": upload_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO upload_drafts (account_id, job_id, prompt_version,"
+                " search_question_version, model_name, provider, text_sha256, letter)"
+                " VALUES (:a, :j, 'v3', 'v3', 'm', 'primary', :h, '{}')"
+            ),
+            {"a": account_id, "j": job_id, "h": "0" * 64},
+        )
+
+
+def test_upgrade_to_0017_makes_existing_drafts_pending_and_existing_jobs_cost_nothing(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0016")
+    try:
+        _store_a_draft_with_sql(engine)
+        command.upgrade(alembic_config, "0017")
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT d.review_status::text, d.reviewed_by, j.cost_usd"
+                    " FROM upload_drafts d JOIN jobs j ON j.id = d.job_id"
+                )
+            ).one()
+        assert tuple(row) == ("pending", None, 0)
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
+
+
+def test_downgrade_to_0016_removes_the_review_tables_columns_and_enums_and_keeps_the_drafts(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0016")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert tables.isdisjoint(REVIEW_TABLES)
+        assert set(UPLOAD_TABLES) <= tables
+        draft_columns, job_columns = _review_columns(engine)
+        assert draft_columns.isdisjoint(
+            {"review_status", "reviewed_by", "reviewed_at", "reject_reason", "approved_version"}
+        )
+        assert "cost_usd" not in job_columns
+        assert _type_names(engine, migration_0017.NEW_ENUMS) == set()
+        unique, foreign, checks = _keys_links_and_checks(engine, "upload_drafts")
+        assert set(unique) == {"uq_upload_drafts_job_id"}
+        assert set(foreign) == {"fk_upload_drafts_job"}
+        assert "ck_jobs_cost_usd_not_negative" not in _keys_links_and_checks(engine, "jobs")[2]
+        assert len(checks) == 4
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert set(REVIEW_TABLES) <= set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0015_removes_the_upload_tables_and_enums_and_keeps_the_shared_enums(

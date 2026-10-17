@@ -36,6 +36,7 @@ src/
   llm/          provider gateway, prompts, budget guard
   ml/           features, training, inference
   rag/          chunking, embedding, retrieval
+  review/       worklist, denial detail, draft review, audit log, costs
   rules/        deterministic policy checks
   synth/        synthetic document generation
 tests/          mirrors src/ exactly

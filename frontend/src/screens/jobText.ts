@@ -1,6 +1,13 @@
 // Plain sentences for where a job is and how it ended. Shared by the upload and worklist screens.
 
-import type { EndState, JobFailure, JobResponse, JobStatus } from "../api/types";
+import type {
+  DenialReasonCategory,
+  DraftReviewStatus,
+  EndState,
+  JobFailure,
+  JobResponse,
+  JobStatus,
+} from "../api/types";
 
 export const STATUS_TEXT: Readonly<Record<JobStatus, string>> = {
   queued: "Waiting to start",
@@ -26,8 +33,24 @@ export const FAILURE_TEXT: Readonly<Record<JobFailure, string>> = {
   internal_error: "Something went wrong on the server",
 };
 
-// One line for a job: its end state when done, its failure when failed, else its status.
-export function describeJob(job: JobResponse): string {
+export const REVIEW_STATUS_TEXT: Readonly<Record<DraftReviewStatus, string>> = {
+  pending: "Waiting for review",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
+export const DENIAL_REASON_TEXT: Readonly<Record<DenialReasonCategory, string>> = {
+  noncovered: "Not covered",
+  medical_necessity: "Medical necessity",
+  duplicate: "Duplicate claim",
+  benefits_exhausted: "Benefits used up",
+  coordination_of_benefits: "Coordination of benefits",
+  other: "Other",
+};
+
+// One line for a job: its end state when done, its failure when failed, else its status. A
+// worklist item has these three fields too.
+export function describeJob(job: Pick<JobResponse, "status" | "failure" | "end_state">): string {
   if (job.status === "done" && job.end_state !== null) {
     return END_STATE_TEXT[job.end_state];
   }

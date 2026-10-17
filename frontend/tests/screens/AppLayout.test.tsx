@@ -3,11 +3,20 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { SESSION_KEY } from "../../src/auth/session";
-import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { worklistKey } from "../../src/worklist/useWorklist";
+import {
+  EMPTY_WORKLIST,
+  ADMIN,
+  REVIEWER,
+  VIEWER,
+  jsonResponse,
+  renderAt,
+  stubApi,
+} from "../helpers";
 
 describe("AppLayout", () => {
   it("shows the account, the email and the role", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
 
     renderAt("/app/worklist");
 
@@ -18,23 +27,27 @@ describe("AppLayout", () => {
 
   it("logs out, empties the cache and goes to login", async () => {
     const fetchStub = stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": () => jsonResponse(200, ADMIN),
       "POST /auth/logout": () => new Response(null, { status: 204 }),
     });
     const { router, queryClient } = renderAt("/app/worklist");
-    queryClient.setQueryData(["worklist"], { items: [], next_before: null });
+    const allJobs = worklistKey({ status: null, reviewStatus: null });
+    await screen.findByText(/No jobs here yet/);
+    expect(queryClient.getQueryData(allJobs)).toBeDefined();
 
     await userEvent.setup().click(await screen.findByRole("button", { name: "Log out" }));
 
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/login");
-    expect(queryClient.getQueryData(["worklist"])).toBeUndefined();
+    expect(queryClient.getQueryData(allJobs)).toBeUndefined();
     expect(queryClient.getQueryData(SESSION_KEY)).toBeNull();
     expect(fetchStub.mock.calls.filter(([path]) => path === "/me")).toHaveLength(1);
   });
 
   it("shows an error and stays when logout fails", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": () => jsonResponse(200, ADMIN),
       "POST /auth/logout": () => Promise.reject(new TypeError("offline")),
     });
@@ -47,7 +60,7 @@ describe("AppLayout", () => {
   });
 
   it("links to the upload screen for a reviewer", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, REVIEWER) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, REVIEWER) });
 
     renderAt("/app/worklist");
 
@@ -59,7 +72,7 @@ describe("AppLayout", () => {
   });
 
   it("hides the upload link from a viewer", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, VIEWER) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, VIEWER) });
 
     renderAt("/app/worklist");
 

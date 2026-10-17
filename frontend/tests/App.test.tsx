@@ -2,11 +2,11 @@ import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { createAppRouter } from "../src/router";
-import { ADMIN, jsonResponse, renderAt, stubApi } from "./helpers";
+import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, stubApi } from "./helpers";
 
 describe("App", () => {
   it("sends the root path through the worklist to login when there is no session", async () => {
-    stubApi({ "GET /me": () => jsonResponse(401, { detail: "not logged in" }) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(401, { detail: "not logged in" }) });
 
     const { router } = renderAt("/");
 
@@ -15,7 +15,7 @@ describe("App", () => {
   });
 
   it.each(["/app", "/somewhere/else"])("sends %s to the worklist", async (path) => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
 
     const { router } = renderAt(path);
 

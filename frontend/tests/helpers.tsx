@@ -46,6 +46,11 @@ export function stubApi(answers: Record<string, Answer>) {
   return fetchStub;
 }
 
+// An empty first worklist page, for a test that lands on the worklist but is about something else.
+export const EMPTY_WORKLIST: Record<string, Answer> = {
+  "GET /worklist?limit=50": () => jsonResponse(200, { items: [], next_before: null }),
+};
+
 // The JSON body sent with the first request to "METHOD /path".
 export function sentBody(fetchStub: ReturnType<typeof stubApi>, key: string): unknown {
   const call = fetchStub.mock.calls.find(([input, init]) => {

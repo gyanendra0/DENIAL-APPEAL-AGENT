@@ -2,7 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { ADMIN, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
+import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
 const PASSWORD = "a long made-up password";
@@ -18,6 +18,7 @@ async function fillAndSubmit() {
 describe("SignupScreen", () => {
   it("creates the account, logs in and goes to the worklist", async () => {
     const fetchStub = stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/signup": () => jsonResponse(201, ADMIN),
     });
@@ -35,7 +36,7 @@ describe("SignupScreen", () => {
   });
 
   it("asks the browser for the API's password length", async () => {
-    stubApi({ "GET /me": NO_SESSION });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
     renderAt("/app/signup");
 
     const password = await screen.findByLabelText(/^Password/);
@@ -46,6 +47,7 @@ describe("SignupScreen", () => {
 
   it("says which name is taken on a 409", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/signup": () => jsonResponse(409, { detail: "the email is taken" }),
     });
@@ -58,6 +60,7 @@ describe("SignupScreen", () => {
 
   it("names the refused field on a 422 without the text typed into it", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/signup": () =>
         jsonResponse(422, {
@@ -74,7 +77,7 @@ describe("SignupScreen", () => {
   });
 
   it("links to login", async () => {
-    stubApi({ "GET /me": NO_SESSION });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
     const { router } = renderAt("/app/signup");
 
     await userEvent.setup().click(screen.getByRole("link", { name: "Log in" }));

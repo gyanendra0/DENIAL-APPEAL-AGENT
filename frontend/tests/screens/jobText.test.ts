@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { EndState, JobFailure, JobResponse } from "../../src/api/types";
-import { END_STATE_TEXT, FAILURE_TEXT, describeJob } from "../../src/screens/jobText";
+import {
+  DENIAL_REASON_TEXT,
+  END_STATE_TEXT,
+  FAILURE_TEXT,
+  REVIEW_STATUS_TEXT,
+  describeJob,
+} from "../../src/screens/jobText";
 
 const BASE: JobResponse = {
   job_id: 1,
@@ -49,5 +55,25 @@ describe("describeJob", () => {
   it("falls back to the status when the end state or failure is missing", () => {
     expect(describeJob({ ...BASE, status: "done" })).toBe("Finished");
     expect(describeJob({ ...BASE, status: "failed" })).toBe("Failed");
+  });
+});
+
+describe("the text maps", () => {
+  it("name every review status and denial reason in plain words", () => {
+    expect(Object.keys(REVIEW_STATUS_TEXT)).toEqual(["pending", "approved", "rejected"]);
+    expect(Object.keys(DENIAL_REASON_TEXT)).toEqual([
+      "noncovered",
+      "medical_necessity",
+      "duplicate",
+      "benefits_exhausted",
+      "coordination_of_benefits",
+      "other",
+    ]);
+    for (const text of [
+      ...Object.values(REVIEW_STATUS_TEXT),
+      ...Object.values(DENIAL_REASON_TEXT),
+    ]) {
+      expect(text).not.toMatch(/_/);
+    }
   });
 });

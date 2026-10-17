@@ -1,11 +1,11 @@
 import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ADMIN, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, stubApi } from "../helpers";
 
 describe("RequireSession", () => {
   it("shows the screen to a logged-in user", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
 
     renderAt("/app/worklist");
 
@@ -13,7 +13,7 @@ describe("RequireSession", () => {
   });
 
   it("sends a user without a session to login and remembers the page", async () => {
-    stubApi({ "GET /me": () => jsonResponse(401, { detail: "not logged in" }) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(401, { detail: "not logged in" }) });
 
     const { router } = renderAt("/app/worklist?status=done");
 
@@ -23,7 +23,7 @@ describe("RequireSession", () => {
   });
 
   it("shows a loading line while the session is asked for", () => {
-    stubApi({ "GET /me": () => new Promise<Response>(() => undefined) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => new Promise<Response>(() => undefined) });
 
     renderAt("/app/worklist");
 
@@ -31,7 +31,7 @@ describe("RequireSession", () => {
   });
 
   it("shows an error when the API cannot be reached", async () => {
-    stubApi({ "GET /me": () => Promise.reject(new TypeError("offline")) });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => Promise.reject(new TypeError("offline")) });
 
     renderAt("/app/worklist");
 

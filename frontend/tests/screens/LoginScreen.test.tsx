@@ -2,7 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { ADMIN, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
+import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
 
@@ -16,6 +16,7 @@ async function fillAndSubmit(email: string, password: string) {
 describe("LoginScreen", () => {
   it("logs in and goes to the worklist", async () => {
     const fetchStub = stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/login": () => jsonResponse(200, ADMIN),
     });
@@ -35,6 +36,7 @@ describe("LoginScreen", () => {
   it("goes back to the page the guard remembered", async () => {
     let loggedIn = false;
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": () => (loggedIn ? jsonResponse(200, ADMIN) : NO_SESSION()),
       "POST /auth/login": () => {
         loggedIn = true;
@@ -53,6 +55,7 @@ describe("LoginScreen", () => {
 
   it("says the email or password is wrong on a 401", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/login": () => jsonResponse(401, { detail: "email or password is wrong" }),
     });
@@ -65,6 +68,7 @@ describe("LoginScreen", () => {
 
   it("names the refused field on a 422 without the text typed into it", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/login": () =>
         jsonResponse(422, {
@@ -85,6 +89,7 @@ describe("LoginScreen", () => {
 
   it("says when the API cannot be reached", async () => {
     stubApi({
+      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/login": () => Promise.reject(new TypeError("offline")),
     });
@@ -96,7 +101,7 @@ describe("LoginScreen", () => {
   });
 
   it("links to sign-up", async () => {
-    stubApi({ "GET /me": NO_SESSION });
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
     const { router } = renderAt("/app/login");
 
     await userEvent.setup().click(screen.getByRole("link", { name: "Sign up" }));

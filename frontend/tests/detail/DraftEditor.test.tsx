@@ -7,7 +7,7 @@ import { jsonResponse, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED, ORIGINAL } from "./fixtures";
 import { detailReads, findDraft, openDetail } from "./reviewHelpers";
 
-const AFTER_SAVE: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 2, latest: EDITED } };
+const AFTER_SAVE: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } };
 
 async function startEditing() {
   const user = userEvent.setup();
@@ -19,7 +19,7 @@ async function startEditing() {
 describe("DraftEditor", () => {
   it("saves the whole edited letter with the version it started from", async () => {
     const fetchStub = openDetail([DETAIL, AFTER_SAVE], {
-      "PUT /jobs/9/draft": () => jsonResponse(200, { job_id: 9, version: 2 }),
+      "PUT /jobs/9/draft": () => jsonResponse(200, { job_id: 9, version: 1 }),
     });
     const { user, editor } = await startEditing();
 
@@ -30,18 +30,18 @@ describe("DraftEditor", () => {
     await user.type(text, "Please review this made-up claim again.");
     await user.click(save);
 
-    expect(await screen.findByText(/Version 2, edited by a person\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Version 1, edited by a person\./)).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Edit the draft" })).not.toBeInTheDocument();
     expect(sentBody(fetchStub, "PUT /jobs/9/draft")).toEqual({
       letter: EDITED,
-      based_on_version: 1,
+      based_on_version: 0,
     });
     expect(detailReads(fetchStub)).toBe(2);
   });
 
   it("removes a paragraph and a citation before saving", async () => {
     const fetchStub = openDetail([DETAIL], {
-      "PUT /jobs/9/draft": () => jsonResponse(200, { job_id: 9, version: 2 }),
+      "PUT /jobs/9/draft": () => jsonResponse(200, { job_id: 9, version: 1 }),
     });
     const { user, editor } = await startEditing();
 
@@ -54,7 +54,7 @@ describe("DraftEditor", () => {
     await waitFor(() => {
       expect(sentBody(fetchStub, "PUT /jobs/9/draft")).toEqual({
         letter: { paragraphs: [{ ...ORIGINAL.paragraphs[1], citations: [] }] },
-        based_on_version: 1,
+        based_on_version: 0,
       });
     });
   });
@@ -125,7 +125,7 @@ describe("DraftEditor", () => {
     expect(detailReads(fetchStub)).toBe(1);
     await user.click(alert.getByRole("button", { name: "Reload" }));
 
-    expect(await screen.findByText(/Version 2, edited by a person\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Version 1, edited by a person\./)).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Edit the draft" })).not.toBeInTheDocument();
   });
 
@@ -137,7 +137,7 @@ describe("DraftEditor", () => {
         review_status: "approved",
         reviewed_by: "rev@example.test",
         reviewed_at: "2026-10-18T09:00:00Z",
-        approved_version: 1,
+        approved_version: 0,
       },
     };
     const fetchStub = openDetail([DETAIL, approved], {

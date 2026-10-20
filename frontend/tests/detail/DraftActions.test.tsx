@@ -11,6 +11,8 @@ const APPROVED: JobDetail = {
   ...DETAIL,
   draft: {
     ...DRAFT,
+    latest_version: 1,
+    latest: EDITED,
     review_status: "approved",
     reviewed_by: "rev@example.test",
     reviewed_at: "2026-10-18T09:00:00Z",
@@ -31,7 +33,7 @@ const REJECTED: JobDetail = {
 
 describe("DraftActions", () => {
   it("approves the latest version after a confirm that says nothing is sent", async () => {
-    const edited: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 2, latest: EDITED } };
+    const edited: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } };
     const fetchStub = openDetail([edited, APPROVED], {
       "POST /jobs/9/draft/approve": () =>
         jsonResponse(200, { job_id: 9, review_status: "approved" }),
@@ -42,13 +44,13 @@ describe("DraftActions", () => {
     await user.click(draft.getByRole("button", { name: "Approve" }));
     expect(
       draft.getByText(
-        "Approving version 2 marks this letter ready for you to send. Nothing is sent by this system.",
+        "Approving version 1 marks this letter ready for you to send. Nothing is sent by this system.",
       ),
     ).toBeInTheDocument();
     await user.click(draft.getByRole("button", { name: "Yes, approve" }));
 
     expect(await screen.findByText("Approved version")).toBeInTheDocument();
-    expect(sentBody(fetchStub, "POST /jobs/9/draft/approve")).toEqual({ version: 2 });
+    expect(sentBody(fetchStub, "POST /jobs/9/draft/approve")).toEqual({ version: 1 });
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
@@ -125,7 +127,7 @@ describe("DraftActions", () => {
   });
 
   it("offers a reload when the approved version is no longer the latest", async () => {
-    const edited: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 2, latest: EDITED } };
+    const edited: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } };
     const fetchStub = openDetail([DETAIL, edited], {
       "POST /jobs/9/draft/approve": () =>
         jsonResponse(409, { detail: "the draft has a newer version; reload it" }),
@@ -141,7 +143,7 @@ describe("DraftActions", () => {
     ).toBeInTheDocument();
     await user.click(alert.getByRole("button", { name: "Reload" }));
 
-    expect(await screen.findByText(/Version 2, edited by a person\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Version 1, edited by a person\./)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(detailReads(fetchStub)).toBe(2);
   });

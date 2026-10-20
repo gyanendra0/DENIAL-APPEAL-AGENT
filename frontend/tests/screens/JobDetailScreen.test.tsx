@@ -161,7 +161,7 @@ describe("JobDetailScreen", () => {
 
     const draft = within(await screen.findByRole("region", { name: "Draft" }));
     expect(draft.getByText("Waiting for review")).toBeInTheDocument();
-    expect(draft.getByText(/Version 1, not edited\./)).toBeInTheDocument();
+    expect(draft.getByText(/Version 0, not edited\./)).toBeInTheDocument();
     expect(draft.getByText("Policy argument")).toBeInTheDocument();
     expect(draft.getByText("We ask you to look again at this made-up claim.")).toBeInTheDocument();
     // An unedited draft is the model's draft, so there is nothing to toggle.
@@ -174,11 +174,11 @@ describe("JobDetailScreen", () => {
   });
 
   it("shows the latest version and the model's draft on request", async () => {
-    openDetail({ ...DETAIL, draft: { ...DRAFT, latest_version: 2, latest: EDITED } });
+    openDetail({ ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } });
     const user = userEvent.setup();
 
     const draft = within(await screen.findByRole("region", { name: "Draft" }));
-    expect(draft.getByText(/Version 2, edited by a person\./)).toBeInTheDocument();
+    expect(draft.getByText(/Version 1, edited by a person\./)).toBeInTheDocument();
     expect(draft.getByText("Please review this made-up claim again.")).toBeInTheDocument();
 
     await user.click(draft.getByRole("button", { name: "Show the model's draft" }));
@@ -198,7 +198,7 @@ describe("JobDetailScreen", () => {
         review_status: "approved",
         reviewed_by: "rev@example.test",
         reviewed_at: "2026-10-18T09:00:00Z",
-        approved_version: 1,
+        approved_version: 0,
       },
     });
 

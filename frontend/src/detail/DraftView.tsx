@@ -7,7 +7,12 @@ import { useSession } from "../auth/session";
 import { END_STATE_TEXT, REVIEW_STATUS_TEXT } from "../screens/jobText";
 import { DraftActions } from "./DraftActions";
 import { DraftEditor } from "./DraftEditor";
-import { PARAGRAPH_KIND_TEXT, REJECT_REASON_TEXT, SOURCE_TEXT } from "./detailText";
+import {
+  MODEL_DRAFT_VERSION,
+  PARAGRAPH_KIND_TEXT,
+  REJECT_REASON_TEXT,
+  SOURCE_TEXT,
+} from "./detailText";
 import { refreshAfterReview } from "./useDraftActions";
 
 const REVIEWED_AT = new Intl.DateTimeFormat(undefined, {
@@ -41,7 +46,7 @@ export function DraftView({
     );
   }
 
-  const edited = draft.latest_version > 1;
+  const edited = draft.latest_version > MODEL_DRAFT_VERSION;
   const reviewable = draft.review_status === "pending" && canReview(session.data?.role);
 
   // After a 409 stale: leave edit mode and read the latest version.

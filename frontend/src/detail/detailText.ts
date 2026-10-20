@@ -16,6 +16,10 @@ import type {
 } from "../api/types";
 import { DENIAL_REASON_TEXT } from "../screens/jobText";
 
+// The version number of the model's own draft; a person's first edit is version 1. Matches
+// `MODEL_DRAFT_VERSION` in `src/review/actions.py`.
+export const MODEL_DRAFT_VERSION = 0;
+
 // A field read with less confidence than this, or not found at all, is marked "check this".
 export const LOW_CONFIDENCE = 0.8;
 

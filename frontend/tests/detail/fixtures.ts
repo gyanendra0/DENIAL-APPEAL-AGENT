@@ -123,7 +123,7 @@ export const DRAFT: DraftDetail = {
   prompt_version: "v3",
   model_name: "made-up-model",
   original: ORIGINAL,
-  latest_version: 1,
+  latest_version: 0,
   latest: ORIGINAL,
   review_status: "pending",
   reviewed_by: null,

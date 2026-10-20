@@ -45,7 +45,7 @@
 | `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
 | `review` | Worklist, denial detail, a person's edit, approve and reject of a draft, the audit log and the job costs (see 3.20) | Every edit and approve checked again; an audit event in the same transaction |
 | `jobs` | Turn one uploaded denial letter into a draft in the background: extraction, then the agent loop, then the stored result (see 3.19) | A `jobs` table, run by FastAPI background tasks in the API process |
-| `frontend` | The web dashboard in the browser: sign-up, login, upload, job status, worklist (see 3.21) | React + Vite + TypeScript; one site with the API through the dev proxy |
+| `frontend` | The web dashboard in the browser: sign-up, login, upload, job status, worklist (see 3.21); denial detail, draft review and overview (see 3.22) | React + Vite + TypeScript; one site with the API through the dev proxy |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
 | `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
@@ -72,7 +72,8 @@ status (see 3.19). Sign-up, login and the logged-in user's own record work throu
 (see 3.18). Step 7 works through the API: a reviewer reads the worklist and the denial
 detail, edits, approves or rejects the draft, and each action is written to the audit log
 (see 3.20). In the browser, the web dashboard covers sign-up, login, the upload with its job
-status and the worklist (see 3.21); the draft review in the browser comes next.
+status and the worklist (see 3.21), and the denial detail, the draft review and the overview
+(see 3.22).
 
 ## 3.4 Data model (core tables)
 
@@ -4365,16 +4366,13 @@ server log held no error and no personal field.
   or `DELETE` on `audit_events`.
 - **The cost of a month is by upload date.** A job uploaded just before midnight at the end
   of a month and finished after it counts in the month it was uploaded.
-- **No draft review in the browser yet.** The dashboard shows the worklist (3.21); the denial
-  detail, the edit, approve and reject and the overview work through the API only until the
-  next Stage 5 branch.
 
 ## 3.21 Web dashboard (part 1)
 
 A person uses the product in the browser: they sign up or log in, upload a denial letter,
 watch its job until it ends, and see the account's jobs in a worklist. This is the first
-half of the dashboard. Reading a denial, reviewing its draft and the overview come in the next
-Stage 5 branch.
+half of the dashboard. Reading a denial, reviewing its draft and the overview are the second
+half (3.22).
 
 The app is React + TypeScript, built with Vite, in `frontend/`. Four things hold for every
 screen:
@@ -4394,7 +4392,7 @@ screen:
 |---|---|
 | `frontend/vite.config.ts` | The dev server and its proxy: `API_PATHS`, the nine top-level API paths, forwarded to `API_TARGET` (`http://127.0.0.1:8000`) |
 | `frontend/src/main.tsx`, `App.tsx`, `router.tsx` | The start of the app, the query client and the router; every screen is under `/app/...` |
-| `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session and empties the cache |
+| `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session (the login screen then empties the cache) |
 | `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
 | `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
@@ -4442,19 +4440,23 @@ with the app's page instead of forwarding it.
    answer under the cache key `["me"]`. A `401` there means "not logged in", and the session
    is set to null.
 2. The guard (`RequireSession`) sends a user without a session to `/app/login` and remembers
-   the page they wanted.
+   the page they wanted, together with the id of the user whose session just ended (none on a
+   page load without a session).
 3. Login and sign-up empty the cache and write the user they get back into the session. The
-   app then goes back
-   to the remembered page, but only to a page under `/app/` that is not login or sign-up
+   app then goes back to the remembered page, but only to a page under `/app/` that is not
+   login or sign-up, and only when the user who logs in is the one remembered, or no user was
    (`afterLoginPath`); anything else goes to the worklist.
 4. A `401` from any later call means the session has ended (the token expired, say): the
-   session is set to null, everything else is removed from the cache, and the guard sends
-   the user to login.
+   session is set to null and the guard sends the user to login. The login screen removes
+   everything but the session from the cache when it opens. Doing it in the `401` handler
+   instead would remove the failed query while its screen is still shown, and that screen
+   would ask for it once more before the guard sends the user away.
 5. Logout sets the session to null and removes everything else from the cache.
 
-The cache keys of the worklist and the jobs do not name the account, so the cache is emptied
-at each of these changes (`clearAccountData`): a second user who logs in on the same browser
-never sees the first one's rows, even for a moment.
+The cache keys of the worklist, the jobs, the denial detail and the overview do not name the
+account, so everything but the session is removed (`clearAccountData`) when the login screen
+opens, at login, at sign-up and at logout: a second user who logs in on the same browser never
+sees the first one's rows, even for a moment.
 
 The sign-up form checks the password length (12 to 128) in the browser too; the API checks
 it again.
@@ -4464,7 +4466,7 @@ it again.
 1. The user picks one file. The browser refuses it at once, without sending it, when its name
    does not end in `.txt` or `.pdf` (any case), when it is empty, or when it is over
    `UPLOAD_MAX_BYTES` (1,000,000 bytes, the default of the API's setting), in
-   `src/jobs/uploadCheck.ts`; the sentence never names the file. The API checks again and
+   `frontend/src/jobs/uploadCheck.ts`; the sentence never names the file. The API checks again and
    decides: it reads the type from the content, not the name, and a server with a lower limit
    still answers `413`.
 2. A file that passes is sent as the form field `file` (`POST /uploads`). The browser sets the
@@ -4549,15 +4551,158 @@ it in the worklist, tried the filters and logged out.
 
 - **It runs only on the dev server.** `npm run build` makes the files, but nothing serves
   them beside the API yet; that is part of the deployment (Stage 6).
-- **No draft review in the browser yet.** Reading a denial, editing, approving or rejecting
-  its draft, and the overview are the next Stage 5 branch; until then they work through the
-  API only (3.20).
-- **Login and `GET /me` were not exercised live.** After logout the guard sent the user to
-  login from the session already in the cache, with no request. Both are covered by tests
-  with a stubbed `fetch`.
+- **Login and `GET /me` were not exercised live in this measurement.** After logout the guard
+  sent the user to login from the session already in the cache, with no request. Both are
+  covered by tests with a stubbed `fetch`, and both ran live in the measurement of 3.22.
 - **The API types are written by hand.** A change to a Python schema must be made in
   `frontend/src/api/types.ts` too; nothing checks that they match.
 - **One measurement.** One letter is too few to say how long an upload usually takes.
 - **The polling has no time limit.** A job that stays `queued` or `running` (a call that
   hangs, say) is asked about every 2 seconds for as long as the page is open. If the API
   itself stops, the next poll gets no answer and polling stops with a `network` error.
+
+## 3.22 Web dashboard (part 2)
+
+A reviewer finishes the work in the browser: they open one denial, read the letter beside what
+the agent made of it, edit the draft, and approve or reject it. Everyone in the account sees
+the overview. This is the second half of the dashboard (the first is 3.21). It uses only the
+routes of 3.20; the API did not change, and there is no migration.
+
+The four rules of 3.21 hold here too. Two more:
+
+- **A draft is never sent.** Approving marks the letter ready for a person to send; the
+  confirm says "Nothing is sent by this system".
+- **A refused letter is never echoed.** A `422` from an edit is shown as where the problem is
+  (paragraph and citation, counted from 1) and one fixed sentence per kind, never the text.
+
+### Where the code is
+
+| File | Holds |
+|---|---|
+| `frontend/src/api/review.ts`, `overview.ts` | `fetchJobDetail`, `saveDraft` (`PUT /jobs/{id}/draft`), `approveDraft`, `rejectDraft`; `fetchOverview` |
+| `frontend/src/api/client.ts` | Since this branch also `jsonRequest`, and `ApiError.letterProblems`, the refused-letter problems of a `422` |
+| `frontend/src/auth/roles.ts` | `canReview`: `reviewer` and `admin`, the API's `REVIEW_ROLES` |
+| `frontend/src/jobs/useJobDetail.ts` | `useJobDetail`, cache key `["job-detail", id]`, read once the job is finished |
+| `frontend/src/screens/JobDetailScreen.tsx` | The split view and the job facts |
+| `frontend/src/detail/ExtractionTable.tsx`, `AnalysisSection.tsx` | The extracted fields with their confidence; the rules, the score and the evidence matches |
+| `frontend/src/detail/DraftView.tsx`, `DraftEditor.tsx`, `DraftActions.tsx`, `ReviewError.tsx` | The draft and its review status; the editor; approve and reject with their confirms; the `409` and `422` messages |
+| `frontend/src/detail/useDraftActions.ts` | `useSaveDraft`, `useApproveDraft`, `useRejectDraft`; `refreshAfterReview`; `STALE_VERSION` |
+| `frontend/src/detail/detailText.ts` | Labels and sentences; `MODEL_DRAFT_VERSION` (0), `LOW_CONFIDENCE` (0.80) |
+| `frontend/src/overview/useOverview.ts`, `screens/OverviewScreen.tsx` | The overview, cache key `["overview"]` |
+
+### The screens
+
+| Path | Who may see it | Calls |
+|---|---|---|
+| `/app/jobs/:id` | a logged-in user of any role; edit, approve and reject only for a `reviewer` or an `admin` | `GET /jobs/{id}` while the job runs, then `GET /jobs/{id}/detail`; `PUT /jobs/{id}/draft`, `POST /jobs/{id}/draft/approve`, `POST /jobs/{id}/draft/reject` |
+| `/app/overview` | a logged-in user of any role | `GET /overview` |
+
+The job id in the worklist links to `/app/jobs/:id`, and a finished upload shows "Open the
+denial". The menu has an Overview link for every role.
+
+### The split view
+
+1. An id that is not a whole number above 0 shows "Not found." without asking the API. A
+   `404` (no such job, or another account's) shows the same.
+2. While the job is `queued` or `running`, its status is polled as on the upload screen
+   (3.21). Once it is finished, the detail is read once.
+3. Left: the letter's text (for a PDF, the text read from it, and the screen says so).
+4. Right, from top to bottom: the job facts (where it is, uploaded when and by whom, started,
+   finished, the model cost as the API's decimal string); the fifteen extracted fields, each
+   with its confidence as a percentage, marked "Check this" when it is below `LOW_CONFIDENCE`
+   (0.80) or the field is empty; the rules' verdict and reasons as sentences; the score beside
+   the threshold a draft needs; the evidence matches with their similarity; the draft.
+5. Under 800 pixels wide the two columns become one.
+
+### The draft review, step by step
+
+The model's own draft is version 0 (`MODEL_DRAFT_VERSION`, the same as in
+`src/review/actions.py`); each saved edit adds one. The screen shows the latest version, says
+whether a person edited it, and, once one did, offers a toggle to the model's draft, which is
+kept unchanged. Each citation shows its source, document and chunk; a click opens its quote in
+place.
+
+1. **Edit.** For a `reviewer` or an `admin` and a `pending` draft, Edit turns every paragraph
+   into a text area. A paragraph can be removed (not the last one) and a citation can be
+   removed; the kinds and the quotes cannot be changed. Save is off until something changed
+   and sends the whole letter with `based_on_version`, the version being edited. Cancel drops
+   the changes.
+2. **A refused edit (`422`).** The API checks the letter again (3.20). Each problem is shown
+   beside its paragraph, for example "Paragraph 2, citation 1: the quote is not in the cited
+   evidence." The problems are cleared at the next change, since removing a paragraph moves
+   the positions.
+3. **Approve.** Off while editing ("Save or cancel your edits before approving"). A confirm
+   names the version that will be approved, the latest one when Approve was clicked.
+4. **Reject.** A confirm asks for one of the five rubric reasons (3.17) and says that
+   rejecting is final.
+5. **Someone else was faster (`409`).** If the draft has a newer version, the screen says so
+   with a Reload button, which leaves the editor and reads the latest version. If the draft
+   was already approved or rejected, the screen says so and reads the detail again. The
+   detail is also read again in the background (when the window gets focus); that never
+   changes the version an open edit is based on or an open approve confirm names, so a newer
+   version still gives this `409` instead of being overwritten or approved unseen.
+6. **After a success**, the detail, the worklist and the overview are read again
+   (`refreshAfterReview`) before the buttons come back, so no button shows a state that has
+   passed.
+
+A `viewer` sees the draft and its review status, with no Edit, Approve or Reject; the API
+answers `403` to one anyway.
+
+### The overview
+
+`/app/overview` shows only what `GET /overview` returns: the jobs by status, the finished jobs
+by end state and the drafts by review status (every value, zeros included, in the worklist's
+sentences), the model cost this month and in all (the API's decimal strings, never added up in
+the browser), and the average time from upload to the end of a job in seconds ("No finished
+job yet." when there is none).
+
+### The session
+
+Two changes to the session of 3.21 came with this branch. A `401` now only ends the session;
+the login screen empties the cache when it opens, so a `401` on a shown screen gives one
+request, not two. And the page the guard remembers is kept only for the same user; a different
+user who logs in goes to the worklist.
+
+### Checks and tests
+
+The same commands as 3.21. At the end of this branch: 207 tests, 99.78% of lines and 97.16% of
+branches.
+
+### Measured
+
+The fourth "upload to draft ready" measurement (2026-10-20), the first run of the Stage 5 done
+condition: `uvicorn` and the dev server on the local machine, `app` at migration 0017, agent
+`v5`. In a real browser a new made-up account signed up, uploaded one made-up letter as a text
+file, opened the split view, edited one sentence, saved, approved, saw the approval on the
+overview, logged out and logged in again.
+
+| | |
+|---|---|
+| Job end | `done`, `needs_review`, two drafting attempts, a draft of 3 paragraphs |
+| Upload to draft ready | 15.7 s (target under 120 s) |
+| Upload to approval | 2 min 43.1 s, reading and editing included |
+| Database | one `draft_revisions` row (version 1); the draft `approved`, approved version 1; audit `upload_created`, `draft_edited`, `draft_approved` |
+| `jobs.cost_usd` | $0.001581, the same as its 4 `llm_calls` rows |
+| Server log | 34 requests: 33 2xx and the expected `401` on `GET /me` before sign-up; no traceback, no email, no letter text |
+
+The check found one bug the tests had missed: the screen took version 1 for the model's draft,
+so after one edit it said "not edited" and hid the toggle. The test data used the same wrong
+numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API numbers it.
+
+### Known limits
+
+- **Version 0 is shown as a number.** An unedited draft reads "Version 0, not edited" and its
+  confirm "Approving version 0". It is the API's numbering and the audit log's, kept on
+  purpose.
+- **No highlighting on the letter.** The extraction keeps no positions, so a field cannot be
+  marked on the letter or jumped to (04 screen 6).
+- **No reasons behind the score.** The trace has the score and the threshold only.
+- **A citation shows its quote, not the whole chunk.** Seeing the chunk would need a new API
+  route.
+- **The overview is counts and costs only.** Money at risk, win rate, payers and overdue
+  appeals are not in `GET /overview`; the screen says they are not shown yet.
+- **Leaving with unsaved edits is not blocked.** The edits are lost without a warning.
+- **Approved means stored, not sent.** As in 3.20, there is no export or letter file yet.
+- **The API types are written by hand** (3.21), now including the detail, the draft and the
+  overview.
+- **One measurement**, on one text letter.

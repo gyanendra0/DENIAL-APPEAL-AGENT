@@ -14,7 +14,10 @@ describe("afterLoginPath", () => {
     [{ from: "/app/login" }, "/app/worklist"],
     [{ from: "/app/signup?x=1" }, "/app/worklist"],
     [{ from: "/app/upload" }, "/app/upload"],
-  ])("sends state %j to %s", (state, expected) => {
-    expect(afterLoginPath(state)).toBe(expected);
+    [{ from: "/app/upload", userId: 1 }, "/app/upload"],
+    [{ from: "/app/upload", userId: 2 }, "/app/worklist"],
+    [{ from: "/app/upload", userId: "1" }, "/app/worklist"],
+  ])("sends state %j to %s for user 1", (state, expected) => {
+    expect(afterLoginPath(state, 1)).toBe(expected);
   });
 });

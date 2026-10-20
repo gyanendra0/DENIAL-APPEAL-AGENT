@@ -22,6 +22,18 @@ describe("RequireSession", () => {
     expect(router.state.location.state).toEqual({ from: "/app/worklist?status=done" });
   });
 
+  it("remembers who was logged in when the session ends", async () => {
+    stubApi({
+      "GET /me": () => jsonResponse(200, ADMIN),
+      "GET /worklist?limit=50": () => jsonResponse(401, { detail: "not logged in" }),
+    });
+
+    const { router } = renderAt("/app/worklist");
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(router.state.location.state).toEqual({ from: "/app/worklist", userId: ADMIN.user_id });
+  });
+
   it("shows a loading line while the session is asked for", () => {
     stubApi({ ...EMPTY_WORKLIST, "GET /me": () => new Promise<Response>(() => undefined) });
 

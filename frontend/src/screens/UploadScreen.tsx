@@ -114,7 +114,10 @@ function JobStatusBox({ jobId }: { jobId: number }) {
         <>
           <p role="status">{describeJob(job.data)}</p>
           {isJobFinished(job.data) ? (
-            <Link to="/app/worklist">Go to the worklist</Link>
+            <p className="links">
+              <Link to={`/app/jobs/${jobId}`}>Open the denial</Link>
+              <Link to="/app/worklist">Go to the worklist</Link>
+            </p>
           ) : (
             <p className="muted">This page updates by itself.</p>
           )}

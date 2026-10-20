@@ -145,6 +145,79 @@ describe("apiRequest", () => {
     expect(error.problems).toEqual([]);
   });
 
+  it("keeps only the kinds and positions of a refused letter, never its text", async () => {
+    stubFetch(
+      jsonResponse(422, {
+        detail: {
+          message: "the letter did not pass the checks",
+          problems: [
+            { kind: "policy_without_citation", paragraph_index: 1, citation_index: null },
+            {
+              kind: "quote_not_in_evidence",
+              paragraph_index: 2,
+              citation_index: 0,
+              text: "Made-up secret letter text",
+            },
+          ],
+        },
+      }),
+    );
+
+    const error = await caught(apiRequest("/jobs/7/draft", { method: "PUT" }));
+
+    expect(error.kind).toBe("invalid");
+    expect(error.message).toBe("the letter did not pass the checks");
+    expect(error.problems).toEqual([]);
+    expect(error.letterProblems).toEqual([
+      { kind: "policy_without_citation", paragraph_index: 1, citation_index: null },
+      { kind: "quote_not_in_evidence", paragraph_index: 2, citation_index: 0 },
+    ]);
+    expect(JSON.stringify(error.letterProblems)).not.toContain("secret");
+  });
+
+  it("drops refused-letter problems that do not have the expected shape", async () => {
+    stubFetch(
+      jsonResponse(422, {
+        detail: {
+          message: "the letter did not pass the checks",
+          problems: [
+            "text",
+            { kind: "not_a_kind", paragraph_index: 0 },
+            { kind: "placeholder_text", paragraph_index: -1 },
+            { kind: "placeholder_text", paragraph_index: "0" },
+            { kind: "edit_not_allowed", paragraph_index: 3, citation_index: 1.5 },
+          ],
+        },
+      }),
+    );
+
+    const error = await caught(apiRequest("/jobs/7/draft/approve", { method: "POST" }));
+
+    expect(error.letterProblems).toEqual([
+      { kind: "edit_not_allowed", paragraph_index: 3, citation_index: null },
+    ]);
+  });
+
+  it("gives no problems of either kind for a 422 without a detail", async () => {
+    stubFetch(new Response("not JSON", { status: 422 }));
+
+    const error = await caught(apiRequest("/jobs/7/draft", { method: "PUT" }));
+
+    expect(error.kind).toBe("invalid");
+    expect(error.message).toBe("the request was not valid");
+    expect(error.problems).toEqual([]);
+    expect(error.letterProblems).toEqual([]);
+  });
+
+  it("gives no letter problems for a 422 with a list of field problems", async () => {
+    stubFetch(jsonResponse(422, { detail: [{ loc: ["body", "version"], type: "missing" }] }));
+
+    const error = await caught(apiRequest("/jobs/7/draft/approve", { method: "POST" }));
+
+    expect(error.problems).toEqual([{ loc: ["body", "version"], type: "missing" }]);
+    expect(error.letterProblems).toEqual([]);
+  });
+
   it("gives a plain message when the error body is not JSON", async () => {
     stubFetch(new Response("<html>bad gateway</html>", { status: 502 }));
 

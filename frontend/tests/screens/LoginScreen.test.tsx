@@ -3,7 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { jobKey } from "../../src/jobs/useJob";
-import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
+import type { UserResponse } from "../../src/api/types";
+import { SESSION_KEY } from "../../src/auth/session";
+import {
+  ADMIN,
+  EMPTY_WORKLIST,
+  REVIEWER,
+  jsonResponse,
+  renderAt,
+  sentBody,
+  stubApi,
+} from "../helpers";
+
+const DONE_PAGE = "GET /worklist?limit=50&status=done";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
 
@@ -66,6 +78,51 @@ describe("LoginScreen", () => {
     expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
     expect(router.state.location.pathname + router.state.location.search).toBe(
       "/app/worklist?status=done",
+    );
+  });
+
+  it("empties the cache when it opens after the session has ended", async () => {
+    stubApi({
+      "GET /me": () => jsonResponse(200, ADMIN),
+      "GET /worklist?limit=50": () => jsonResponse(401, { detail: "not logged in" }),
+    });
+    const { queryClient } = renderAt("/app/worklist");
+    queryClient.setQueryData(jobKey(7), { job_id: 7 });
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(SESSION_KEY)).toBeNull();
+    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
+  });
+
+  // The session ends on the done filter (a 401), then `next` logs in.
+  async function logInAfterSessionEnds(next: UserResponse) {
+    let loggedIn = true;
+    stubApi({
+      ...EMPTY_WORKLIST,
+      "GET /me": () => jsonResponse(200, ADMIN),
+      [DONE_PAGE]: () =>
+        loggedIn
+          ? jsonResponse(401, { detail: "not logged in" })
+          : jsonResponse(200, { items: [], next_before: null }),
+      "POST /auth/login": () => jsonResponse(200, next),
+    });
+    const { router } = renderAt("/app/worklist?status=done");
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    loggedIn = false;
+
+    await fillAndSubmit(next.email, "a long made-up password");
+
+    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
+    return router.state.location.pathname + router.state.location.search;
+  }
+
+  it("brings the same user back to the page they had open", async () => {
+    expect(await logInAfterSessionEnds(ADMIN)).toBe("/app/worklist?status=done");
+  });
+
+  it("sends a different user home, not to the page the first one had open", async () => {
+    expect(await logInAfterSessionEnds({ ...REVIEWER, email: "bo@example.test" })).toBe(
+      "/app/worklist",
     );
   });
 

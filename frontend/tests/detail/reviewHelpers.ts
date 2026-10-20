@@ -1,7 +1,7 @@
 // Opens the detail of job 9 for the draft review tests, as a reviewer unless told otherwise. Each read of the detail
 // takes the next of `details` (the last one repeats), so a test sees what a refetch brings.
 
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 
 import type { JobDetail, JobResponse, UserResponse } from "../../src/api/types";
 import { REVIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
@@ -39,4 +39,12 @@ export function detailReads(fetchStub: ReturnType<typeof stubApi>): number {
 
 export async function findDraft(): Promise<ReturnType<typeof within>> {
   return within(await screen.findByRole("region", { name: "Draft" }));
+}
+
+// The window gets focus again, as when the user comes back from another tab: the query client
+// reads the detail again in the background.
+export function refocusWindow() {
+  act(() => {
+    window.dispatchEvent(new Event("visibilitychange"));
+  });
 }

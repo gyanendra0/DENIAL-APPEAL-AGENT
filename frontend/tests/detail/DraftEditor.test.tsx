@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { JobDetail } from "../../src/api/types";
 import { jsonResponse, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED, ORIGINAL } from "./fixtures";
-import { detailReads, findDraft, openDetail } from "./reviewHelpers";
+import { detailReads, findDraft, openDetail, refocusWindow } from "./reviewHelpers";
 
 const AFTER_SAVE: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } };
 
@@ -104,6 +104,24 @@ describe("DraftEditor", () => {
     await user.type(editor.getByRole("textbox", { name: "Text of paragraph 1" }), "x");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(editor.queryByText(/Paragraph 2: a policy paragraph/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the version it started from when a newer one is read in the background", async () => {
+    const fetchStub = openDetail([DETAIL, AFTER_SAVE], {
+      "PUT /jobs/9/draft": () =>
+        jsonResponse(409, { detail: "the draft has a newer version; reload it" }),
+    });
+    const { user, editor } = await startEditing();
+
+    await user.type(editor.getByRole("textbox", { name: "Text of paragraph 1" }), " more");
+    refocusWindow();
+    await waitFor(() => expect(detailReads(fetchStub)).toBe(2));
+    expect(editor.getByText(/^Editing version 0\./)).toBeInTheDocument();
+    await user.click(editor.getByRole("button", { name: "Save" }));
+
+    // Version 1 came in meanwhile; naming it would overwrite it without a word.
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone saved a newer version.");
+    expect(sentBody(fetchStub, "PUT /jobs/9/draft")).toMatchObject({ based_on_version: 0 });
   });
 
   it("offers a reload when someone saved a newer version", async () => {

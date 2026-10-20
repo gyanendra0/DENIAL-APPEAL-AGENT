@@ -25,13 +25,20 @@ export function DraftEditor({
   onClose: () => void;
   onReload: () => void;
 }) {
+  // The version the edit started from. A read in the background (when the window gets focus, say)
+  // may bring a newer one; Save still names this one, so the API answers 409 instead of letting
+  // these edits overwrite the newer version.
+  const [base] = useState(() => ({
+    version: draft.latest_version,
+    paragraphs: draft.latest.paragraphs,
+  }));
   const [items, setItems] = useState<EditedParagraph[]>(() =>
-    draft.latest.paragraphs.map((paragraph, key) => ({ key, paragraph })),
+    base.paragraphs.map((paragraph, key) => ({ key, paragraph })),
   );
   const save = useSaveDraft(jobId);
 
   const paragraphs = items.map((item) => item.paragraph);
-  const changed = JSON.stringify(paragraphs) !== JSON.stringify(draft.latest.paragraphs);
+  const changed = JSON.stringify(paragraphs) !== JSON.stringify(base.paragraphs);
   // The problems name positions in the letter as sent; any change moves them, so they go.
   const problems = save.error instanceof ApiError ? save.error.letterProblems : [];
 
@@ -69,10 +76,7 @@ export function DraftEditor({
   }
 
   function submit() {
-    save.mutate(
-      { letter: { paragraphs }, basedOnVersion: draft.latest_version },
-      { onSuccess: onClose },
-    );
+    save.mutate({ letter: { paragraphs }, basedOnVersion: base.version }, { onSuccess: onClose });
   }
 
   return (
@@ -85,8 +89,7 @@ export function DraftEditor({
       }}
     >
       <p className="muted">
-        Editing version {draft.latest_version}. Change the text, or remove a paragraph or a
-        citation.
+        Editing version {base.version}. Change the text, or remove a paragraph or a citation.
       </p>
       <ol className="letter">
         {items.map(({ key, paragraph }, index) => {

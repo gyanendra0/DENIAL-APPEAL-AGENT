@@ -22,6 +22,9 @@ export function DraftActions({
 }) {
   const [confirming, setConfirming] = useState<"approve" | "reject" | null>(null);
   const [reason, setReason] = useState<DraftRejectReason | null>(null);
+  // The version shown when Approve was clicked. A newer one read in the background is not
+  // approved unseen: the API answers 409 and the screen offers Reload.
+  const [version, setVersion] = useState(draft.latest_version);
   const approve = useApproveDraft(jobId);
   const reject = useRejectDraft(jobId);
   const pending = approve.isPending || reject.isPending;
@@ -30,6 +33,7 @@ export function DraftActions({
     approve.reset();
     reject.reset();
     setReason(null);
+    setVersion(draft.latest_version);
     setConfirming(next);
   }
 
@@ -51,15 +55,11 @@ export function DraftActions({
       {confirming === "approve" && (
         <div className="status-box">
           <p>
-            Approving version {draft.latest_version} marks this letter ready for you to send.
-            Nothing is sent by this system.
+            Approving version {version} marks this letter ready for you to send. Nothing is sent by
+            this system.
           </p>
           <div className="links">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => approve.mutate(draft.latest_version)}
-            >
+            <button type="button" disabled={pending} onClick={() => approve.mutate(version)}>
               {approve.isPending ? "Approving…" : "Yes, approve"}
             </button>
             <button type="button" className="secondary" onClick={() => open(null)}>

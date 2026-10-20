@@ -1,11 +1,11 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { JobDetail } from "../../src/api/types";
 import { ADMIN, VIEWER, jsonResponse, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED } from "./fixtures";
-import { detailReads, findDraft, openDetail } from "./reviewHelpers";
+import { detailReads, findDraft, openDetail, refocusWindow } from "./reviewHelpers";
 
 const APPROVED: JobDetail = {
   ...DETAIL,
@@ -53,6 +53,25 @@ describe("DraftActions", () => {
     expect(sentBody(fetchStub, "POST /jobs/9/draft/approve")).toEqual({ version: 1 });
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("approves the version shown at Approve, not a newer one read in the background", async () => {
+    const edited: JobDetail = { ...DETAIL, draft: { ...DRAFT, latest_version: 1, latest: EDITED } };
+    const fetchStub = openDetail([DETAIL, edited], {
+      "POST /jobs/9/draft/approve": () =>
+        jsonResponse(409, { detail: "the draft has a newer version; reload it" }),
+    });
+    const user = userEvent.setup();
+    const draft = await findDraft();
+
+    await user.click(draft.getByRole("button", { name: "Approve" }));
+    refocusWindow();
+    await waitFor(() => expect(detailReads(fetchStub)).toBe(2));
+    expect(draft.getByText(/^Approving version 0 /)).toBeInTheDocument();
+    await user.click(draft.getByRole("button", { name: "Yes, approve" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Someone saved a newer version.");
+    expect(sentBody(fetchStub, "POST /jobs/9/draft/approve")).toEqual({ version: 0 });
   });
 
   it("sends nothing when a confirm is cancelled", async () => {

@@ -4632,12 +4632,15 @@ place.
    evidence." The problems are cleared at the next change, since removing a paragraph moves
    the positions.
 3. **Approve.** Off while editing ("Save or cancel your edits before approving"). A confirm
-   names the version that will be approved, the latest one.
+   names the version that will be approved, the latest one when Approve was clicked.
 4. **Reject.** A confirm asks for one of the five rubric reasons (3.17) and says that
    rejecting is final.
 5. **Someone else was faster (`409`).** If the draft has a newer version, the screen says so
    with a Reload button, which leaves the editor and reads the latest version. If the draft
-   was already approved or rejected, the screen says so and reads the detail again.
+   was already approved or rejected, the screen says so and reads the detail again. The
+   detail is also read again in the background (when the window gets focus); that never
+   changes the version an open edit is based on or an open approve confirm names, so a newer
+   version still gives this `409` instead of being overwritten or approved unseen.
 6. **After a success**, the detail, the worklist and the overview are read again
    (`refreshAfterReview`) before the buttons come back, so no button shows a state that has
    passed.
@@ -4662,7 +4665,7 @@ user who logs in goes to the worklist.
 
 ### Checks and tests
 
-The same commands as 3.21. At the end of this branch: 205 tests, 99.77% of lines and 97.16% of
+The same commands as 3.21. At the end of this branch: 207 tests, 99.78% of lines and 97.16% of
 branches.
 
 ### Measured

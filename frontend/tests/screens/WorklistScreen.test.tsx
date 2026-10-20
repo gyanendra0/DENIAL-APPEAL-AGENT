@@ -52,6 +52,7 @@ describe("WorklistScreen", () => {
 
     expect(await screen.findByRole("cell", { name: "letter-9.txt" })).toBeInTheDocument();
     const drafted = within(rowOf(9));
+    expect(drafted.getByRole("link", { name: "9" })).toHaveAttribute("href", "/app/jobs/9");
     expect(drafted.getByText("Draft ready for review")).toBeInTheDocument();
     expect(drafted.getByText("Waiting for review")).toBeInTheDocument();
     expect(drafted.getByText("Medical necessity")).toBeInTheDocument();

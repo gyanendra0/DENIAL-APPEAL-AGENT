@@ -158,7 +158,9 @@ function WorklistTable({ filters }: { filters: WorklistFilters }) {
 function WorklistRow({ item }: { item: WorklistItem }) {
   return (
     <tr>
-      <td>{item.job_id}</td>
+      <td>
+        <Link to={`/app/jobs/${item.job_id}`}>{item.job_id}</Link>
+      </td>
       <td>{item.file_name}</td>
       <td>{UPLOADED_AT.format(new Date(item.uploaded_at))}</td>
       <td>{item.uploaded_by}</td>

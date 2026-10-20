@@ -4,6 +4,7 @@ import type { RouteObject } from "react-router";
 import { RequireSession } from "./auth/RequireSession";
 import { HOME_PATH } from "./auth/redirect";
 import { AppLayout } from "./screens/AppLayout";
+import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { SignupScreen } from "./screens/SignupScreen";
 import { UploadScreen } from "./screens/UploadScreen";
@@ -24,6 +25,7 @@ export const routes: RouteObject[] = [
       { index: true, element: <Navigate to={HOME_PATH} replace /> },
       { path: "worklist", element: <WorklistScreen /> },
       { path: "upload", element: <UploadScreen /> },
+      { path: "jobs/:id", element: <JobDetailScreen /> },
     ],
   },
   { path: "*", element: <Navigate to={HOME_PATH} replace /> },

@@ -25,7 +25,7 @@ body {
 }
 
 .page {
-  max-width: 960px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: var(--space-4) var(--space-3);
 }
@@ -157,4 +157,85 @@ select {
 
 .worklist th {
   background: var(--color-surface);
+}
+
+.pre-wrap {
+  white-space: pre-wrap;
+}
+
+.check-this {
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.letter-pane {
+  position: sticky;
+  top: var(--space-3);
+}
+
+.letter-text {
+  margin: 0;
+  padding: var(--space-3);
+  max-height: 80vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-body);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+}
+
+.facts dt {
+  color: var(--color-muted);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.letter {
+  padding-left: var(--space-4);
+}
+
+.letter > li {
+  margin-bottom: var(--space-3);
+}
+
+.citations {
+  padding-left: var(--space-3);
+}
+
+.citations summary {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+button.secondary {
+  background: var(--color-background);
+  color: var(--color-accent);
 }

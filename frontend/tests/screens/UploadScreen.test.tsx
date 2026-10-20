@@ -70,6 +70,10 @@ describe("UploadScreen", () => {
     await nextPoll();
     expect(screen.getByRole("status")).toHaveTextContent("Draft ready for review");
     expect(screen.getByRole("link", { name: "Go to the worklist" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the denial" })).toHaveAttribute(
+      "href",
+      "/app/jobs/7",
+    );
 
     await nextPoll();
     await nextPoll();

@@ -8,6 +8,8 @@ import type {
   EvidenceSource,
   Extracted,
   ExtractedDeniedLine,
+  LetterProblem,
+  LetterProblemKind,
   ParagraphKind,
   RuleOutcome,
   RuleReason,
@@ -120,3 +122,26 @@ export const REJECT_REASON_TEXT: Readonly<Record<DraftRejectReason, string>> = {
   poor_wording: "Too many sentences need rewording",
   other: "Another reason",
 };
+
+// One fixed sentence per kind of a refused letter (`src/drafting/letter_check.py`). None repeats
+// the letter's text.
+export const LETTER_PROBLEM_TEXT: Readonly<Record<LetterProblemKind, string>> = {
+  policy_without_citation: "a policy paragraph needs at least one citation",
+  chunk_not_found: "the cited evidence no longer exists or has changed",
+  quote_too_short: "the quote is too short to check",
+  quote_not_in_evidence: "the quote is not in the cited evidence",
+  placeholder_text: "the text still has a placeholder in square brackets",
+  amount_not_a_denied_line: "a dollar amount is not the amount of a denied line",
+  other_as_reason: 'the text gives the category "other" as the reason for the denial',
+  edit_not_allowed:
+    "this change is not allowed; only change text, or remove a paragraph or a citation",
+};
+
+// Where a problem is and what it is, counted from 1 for people: "Paragraph 2, citation 1: ...".
+export function describeLetterProblem(problem: LetterProblem): string {
+  const where =
+    problem.citation_index === null
+      ? `Paragraph ${problem.paragraph_index + 1}`
+      : `Paragraph ${problem.paragraph_index + 1}, citation ${problem.citation_index + 1}`;
+  return `${where}: ${LETTER_PROBLEM_TEXT[problem.kind]}.`;
+}

@@ -4,7 +4,9 @@ import type { DenialLetterExtraction } from "../../src/api/types";
 import {
   FIELD_LABELS,
   FIELD_NAMES,
+  LETTER_PROBLEM_TEXT,
   LOW_CONFIDENCE,
+  describeLetterProblem,
   formatFieldValue,
   formatPercent,
   needsCheck,
@@ -61,5 +63,40 @@ describe("formatPercent", () => {
     expect(formatPercent(0.634)).toBe("63%");
     expect(formatPercent(0.5)).toBe("50%");
     expect(formatPercent(1)).toBe("100%");
+  });
+});
+
+describe("describeLetterProblem", () => {
+  it("names the paragraph counted from 1", () => {
+    expect(
+      describeLetterProblem({
+        kind: "policy_without_citation",
+        paragraph_index: 1,
+        citation_index: null,
+      }),
+    ).toBe("Paragraph 2: a policy paragraph needs at least one citation.");
+  });
+
+  it("names the citation counted from 1 when the problem is one citation's", () => {
+    expect(
+      describeLetterProblem({
+        kind: "quote_not_in_evidence",
+        paragraph_index: 0,
+        citation_index: 2,
+      }),
+    ).toBe("Paragraph 1, citation 3: the quote is not in the cited evidence.");
+  });
+
+  it("has a sentence for every kind the letter check sends", () => {
+    expect(Object.keys(LETTER_PROBLEM_TEXT).sort()).toEqual([
+      "amount_not_a_denied_line",
+      "chunk_not_found",
+      "edit_not_allowed",
+      "other_as_reason",
+      "placeholder_text",
+      "policy_without_citation",
+      "quote_not_in_evidence",
+      "quote_too_short",
+    ]);
   });
 });

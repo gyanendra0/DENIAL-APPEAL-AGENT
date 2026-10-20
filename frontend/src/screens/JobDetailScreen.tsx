@@ -97,7 +97,7 @@ function SplitView({ detail }: { detail: JobDetail }) {
           <JobFacts detail={detail} />
           <ExtractionTable extraction={detail.extraction} />
           <AnalysisSection trace={detail.trace} />
-          <DraftView draft={detail.draft} endState={detail.end_state} />
+          <DraftView jobId={detail.job_id} draft={detail.draft} endState={detail.end_state} />
         </div>
       </div>
     </>

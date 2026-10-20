@@ -1,6 +1,8 @@
 // The one way the screens call the API. The login token is an HttpOnly cookie on the same site,
 // so every request sends it (`credentials: "same-origin"`) and no code ever reads it.
 
+import type { LetterProblem, LetterProblemKind } from "./types";
+
 export type ApiErrorKind =
   | "unauthorized" // 401: not logged in, or the session ended
   | "forbidden" // 403: the role cannot do this
@@ -17,6 +19,18 @@ export interface FieldProblem {
   loc: (string | number)[];
   type: string;
 }
+
+// The letter check's kinds, to keep only a kind the API can send.
+const LETTER_PROBLEM_KINDS: ReadonlySet<string> = new Set<LetterProblemKind>([
+  "policy_without_citation",
+  "chunk_not_found",
+  "quote_too_short",
+  "quote_not_in_evidence",
+  "placeholder_text",
+  "amount_not_a_denied_line",
+  "other_as_reason",
+  "edit_not_allowed",
+]);
 
 // The message of a 422 that carries a list of field problems.
 export const INVALID_REQUEST = "the request was not valid";
@@ -35,18 +49,22 @@ export class ApiError extends Error {
   readonly status: number | null;
   readonly kind: ApiErrorKind;
   readonly problems: readonly FieldProblem[];
+  // The problems of a refused letter (a draft edit or approval): kinds and positions only.
+  readonly letterProblems: readonly LetterProblem[];
 
   constructor(
     status: number | null,
     kind: ApiErrorKind,
     message: string,
     problems: readonly FieldProblem[] = [],
+    letterProblems: readonly LetterProblem[] = [],
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
     this.problems = problems;
+    this.letterProblems = letterProblems;
   }
 }
 
@@ -72,6 +90,36 @@ function readProblems(detail: unknown): FieldProblem[] {
   });
 }
 
+function isIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+// Keeps only `kind`, `paragraph_index` and `citation_index` of each problem of a refused letter;
+// an entry of another shape is dropped.
+function readLetterProblems(problems: unknown): LetterProblem[] {
+  if (!Array.isArray(problems)) {
+    return [];
+  }
+  return problems.flatMap((item: unknown) => {
+    if (
+      !isRecord(item) ||
+      typeof item.kind !== "string" ||
+      !LETTER_PROBLEM_KINDS.has(item.kind) ||
+      !isIndex(item.paragraph_index)
+    ) {
+      return [];
+    }
+    const citationIndex = isIndex(item.citation_index) ? item.citation_index : null;
+    return [
+      {
+        kind: item.kind as LetterProblemKind,
+        paragraph_index: item.paragraph_index,
+        citation_index: citationIndex,
+      },
+    ];
+  });
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -86,11 +134,26 @@ async function toApiError(response: Response): Promise<ApiError> {
   const detail = isRecord(body) ? body.detail : undefined;
   // A 422 whose detail is text is one of the API's fixed sentences (the upload route's, such as
   // "the file is empty"), never input, so it is kept. A list keeps only `loc` and `type`.
+  // A 422 whose detail is an object is a refused letter: its `message` is a fixed sentence and
+  // its `problems` hold kinds and positions only.
+  if (kind === "invalid" && isRecord(detail)) {
+    const message = typeof detail.message === "string" ? detail.message : INVALID_REQUEST;
+    return new ApiError(response.status, kind, message, [], readLetterProblems(detail.problems));
+  }
   if (kind === "invalid" && typeof detail !== "string") {
     return new ApiError(response.status, kind, INVALID_REQUEST, readProblems(detail));
   }
   const message = typeof detail === "string" ? detail : `the API answered ${response.status}`;
   return new ApiError(response.status, kind, message);
+}
+
+// The options of a request with a JSON body.
+export function jsonRequest(method: "POST" | "PUT", body: object): RequestInit {
+  return {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 // Sends one request and returns the parsed JSON body (undefined for 204). Any other answer than

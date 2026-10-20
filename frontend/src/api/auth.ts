@@ -1,7 +1,7 @@
 // The auth calls: sign-up, login, logout and the logged-in user. The API sets and clears the
 // HttpOnly login cookie itself; these calls never see the token.
 
-import { ApiError, apiRequest } from "./client";
+import { ApiError, apiRequest, jsonRequest } from "./client";
 import type { UserResponse } from "./types";
 
 export interface SignupInput {
@@ -15,20 +15,12 @@ export interface LoginInput {
   password: string;
 }
 
-function postJson(body: object): RequestInit {
-  return {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
-
 export function signup(input: SignupInput): Promise<UserResponse> {
-  return apiRequest<UserResponse>("/auth/signup", postJson(input));
+  return apiRequest<UserResponse>("/auth/signup", jsonRequest("POST", input));
 }
 
 export function login(input: LoginInput): Promise<UserResponse> {
-  return apiRequest<UserResponse>("/auth/login", postJson(input));
+  return apiRequest<UserResponse>("/auth/login", jsonRequest("POST", input));
 }
 
 export async function logout(): Promise<void> {

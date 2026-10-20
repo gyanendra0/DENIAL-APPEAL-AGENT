@@ -67,7 +67,8 @@ Denial document
 **Stages 0 to 4 are released (`v0.5.0`); Stage 5, the product, is in progress.** The API
 signs users up, takes an uploaded denial letter through extraction, rules, scoring, evidence
 and drafting, and lets a reviewer edit, approve or reject the draft. The web dashboard covers
-sign-up, login, the upload and the worklist so far. See the
+all of it in the browser: sign-up, login, the upload, the worklist, the denial beside its
+draft, the review, and an overview. See the
 [build plan](docs/05-build-plan.md).
 
 ## Running it locally
@@ -103,7 +104,8 @@ Uploading a letter calls a model and spends money (within the monthly cap in the
 
 Checks: `ruff check . && black --check . && mypy && pytest` for the backend (database tests
 need `TEST_DATABASE_URL`), and `npm run check` in `frontend/` for the dashboard. How the
-dashboard is built: [architecture 3.21](docs/03-architecture.md#321-web-dashboard-part-1).
+dashboard is built: architecture [3.21](docs/03-architecture.md#321-web-dashboard-part-1) and
+[3.22](docs/03-architecture.md#322-web-dashboard-part-2).
 
 ## How work is split across machines
 

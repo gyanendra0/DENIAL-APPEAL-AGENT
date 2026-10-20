@@ -8,6 +8,7 @@ import { ApiError } from "../api/client";
 import { approveDraft, rejectDraft, saveDraft } from "../api/review";
 import type { AppealLetter, DraftRejectReason } from "../api/types";
 import { jobDetailKey } from "../jobs/useJobDetail";
+import { overviewKey } from "../overview/useOverview";
 
 // The API's 409 sentence for an edit or approval made on an older version
 // (`STALE_VERSION` in `src/api/routes/review.py`). Any other 409 means the draft is final.
@@ -26,7 +27,7 @@ export function refreshAfterReview(queryClient: QueryClient, jobId: number): Pro
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: jobDetailKey(jobId) }),
     queryClient.invalidateQueries({ queryKey: ["worklist"] }),
-    queryClient.invalidateQueries({ queryKey: ["overview"] }),
+    queryClient.invalidateQueries({ queryKey: overviewKey() }),
   ]).then(() => undefined);
 }
 

@@ -178,4 +178,18 @@ describe("WorklistScreen", () => {
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/login");
   });
+
+  it("asks for the page only once when the session has ended", async () => {
+    const fetchStub = stubApi({
+      "GET /me": () => jsonResponse(200, ADMIN),
+      [FIRST_PAGE]: () => jsonResponse(401, { detail: "not logged in" }),
+    });
+    renderAt("/app/worklist");
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    const pageCalls = fetchStub.mock.calls.filter(
+      ([input]) => String(input) === FIRST_PAGE.slice(4),
+    );
+    expect(pageCalls).toHaveLength(1);
+  });
 });

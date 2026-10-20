@@ -24,6 +24,7 @@ export function AppLayout() {
         <nav className="app-nav">
           <NavLink to="/app/worklist">Worklist</NavLink>
           {canUpload(user?.role) && <NavLink to="/app/upload">Upload</NavLink>}
+          <NavLink to="/app/overview">Overview</NavLink>
         </nav>
         {user && (
           <span className="muted">

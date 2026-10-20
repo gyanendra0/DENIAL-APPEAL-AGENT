@@ -14,7 +14,8 @@ function failWith(error: ApiError): () => Promise<never> {
 }
 
 describe("createQueryClient", () => {
-  it("ends the session and empties the rest of the cache on a 401", async () => {
+  // The login screen empties the rest of the cache when it opens (see LoginScreen.test.tsx).
+  it("ends the session on a 401 and leaves the rest of the cache to the login screen", async () => {
     const queryClient = createQueryClient();
     queryClient.setQueryData(SESSION_KEY, ADMIN);
     queryClient.setQueryData(ALL_JOBS, { pages: [], pageParams: [] });
@@ -29,11 +30,11 @@ describe("createQueryClient", () => {
     ).rejects.toThrow();
 
     expect(queryClient.getQueryData(SESSION_KEY)).toBeNull();
-    expect(queryClient.getQueryData(ALL_JOBS)).toBeUndefined();
-    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
+    expect(queryClient.getQueryData(ALL_JOBS)).toEqual({ pages: [], pageParams: [] });
+    expect(queryClient.getQueryData(jobKey(7))).toEqual({ job_id: 7 });
   });
 
-  it("empties the cache on a 401 from a mutation too", async () => {
+  it("ends the session on a 401 from a mutation too", async () => {
     const queryClient = createQueryClient();
     queryClient.setQueryData(SESSION_KEY, ADMIN);
     queryClient.setQueryData(jobKey(7), { job_id: 7 });
@@ -48,7 +49,6 @@ describe("createQueryClient", () => {
     ).rejects.toThrow();
 
     expect(queryClient.getQueryData(SESSION_KEY)).toBeNull();
-    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
   });
 
   it("keeps the session and the cache on any other error", async () => {

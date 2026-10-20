@@ -78,5 +78,6 @@ describe("AppLayout", () => {
 
     expect(await screen.findByRole("link", { name: "Worklist" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Upload" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/app/overview");
   });
 });

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 
 import { afterLoginPath } from "../auth/redirect";
-import { useLogin } from "../auth/session";
+import { clearAccountData, useLogin } from "../auth/session";
 import { describeError } from "./errorMessage";
 
 export function LoginScreen() {
@@ -12,12 +13,21 @@ export function LoginScreen() {
   const loginMutation = useLogin();
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
+
+  // A 401 from any call ends up here; by now the screens that showed the account's data are gone,
+  // so emptying the cache makes none of them ask again.
+  useEffect(() => clearAccountData(queryClient), [queryClient]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     loginMutation.mutate(
       { email, password },
-      { onSuccess: () => void navigate(afterLoginPath(location.state), { replace: true }) },
+      {
+        onSuccess: (user) => {
+          void navigate(afterLoginPath(location.state, user.user_id), { replace: true });
+        },
+      },
     );
   }
 

@@ -1,6 +1,7 @@
 // The session is the answer of `GET /me`, kept in the query cache under one key. Login and sign-up
-// write the user they get back into it; logout sets it to null. Each of them, and a 401 from any
-// call, empties the rest of the cache, so no screen shows data of another user.
+// write the user they get back into it; logout sets it to null. Each of them, and opening the login
+// screen (where a 401 from any call leads), empties the rest of the cache, so no screen shows data
+// of another user.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";

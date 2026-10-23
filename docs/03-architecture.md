@@ -4404,7 +4404,7 @@ screen:
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
 | `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `AppLayout` (account, email, role, menu, Log out), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
-| `frontend/src/styles.css` | Plain CSS with variables |
+| `frontend/src/styles.css` | Plain CSS with variables; soft UI theme (calming teal palette, all text pairs WCAG AA) |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
 ### The screens

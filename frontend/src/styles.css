@@ -1,15 +1,25 @@
+/* Soft UI theme: calming teal palette; every text colour pair meets WCAG AA (4.5:1 or more). */
 :root {
-  --color-text: #1f2328;
-  --color-muted: #59636e;
-  --color-background: #ffffff;
-  --color-surface: #f6f8fa;
-  --color-border: #d1d9e0;
-  --color-accent: #0969da;
-  --color-error: #cf222e;
+  --color-text: #1e3a3a;
+  --color-muted: #4f6b6a;
+  --color-background: #f4f8f7;
+  --color-card: #ffffff;
+  --color-surface: #eaf3f1;
+  --color-border: #c9dcd8;
+  --color-line: #e1ece9;
+  --color-accent: #26736f;
+  --color-accent-hover: #1f5f5c;
+  --color-on-accent: #ffffff;
+  --color-error: #b4373a;
+  --color-focus: rgba(38, 115, 111, 0.35);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 16px;
   --space-4: 24px;
+  --radius-field: 10px;
+  --radius-card: 14px;
+  --radius-pill: 999px;
+  --shadow-soft: 0 2px 6px rgba(30, 58, 58, 0.06), 0 8px 24px rgba(30, 58, 58, 0.06);
   --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -20,8 +30,13 @@
 body {
   margin: 0;
   font-family: var(--font-body);
+  line-height: 1.5;
   color: var(--color-text);
   background: var(--color-background);
+}
+
+a {
+  color: var(--color-accent);
 }
 
 .page {
@@ -47,9 +62,9 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-surface);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-card);
+  box-shadow: var(--shadow-soft);
 }
 
 .app-header button {
@@ -69,18 +84,41 @@ body {
 }
 
 input,
-button {
+select,
+textarea {
   font: inherit;
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-field);
+  background: var(--color-card);
+  color: var(--color-text);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+  border-color: var(--color-accent);
 }
 
 button {
+  font: inherit;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-pill);
   background: var(--color-accent);
-  color: var(--color-background);
-  border-color: var(--color-accent);
+  color: var(--color-on-accent);
   cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
 }
 
 button:disabled {
@@ -88,40 +126,47 @@ button:disabled {
   cursor: default;
 }
 
+button.secondary {
+  background: var(--color-card);
+  color: var(--color-accent);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--color-surface);
+  border-color: var(--color-accent);
+}
+
 .app-nav {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .app-nav a {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
   color: var(--color-accent);
   text-decoration: none;
 }
 
+.app-nav a:hover {
+  background: var(--color-surface);
+}
+
 .app-nav a.active {
   font-weight: 600;
-  text-decoration: underline;
+  background: var(--color-surface);
 }
 
 .status-box {
   margin-top: var(--space-4);
-  padding: var(--space-3);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
+  padding: var(--space-4);
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
 }
 
 .status-box h2 {
   margin-top: 0;
-}
-
-select {
-  font: inherit;
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-background);
-  color: var(--color-text);
 }
 
 .filters {
@@ -140,6 +185,9 @@ select {
 .table-scroll {
   overflow-x: auto;
   margin-bottom: var(--space-3);
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
 }
 
 .worklist,
@@ -152,10 +200,15 @@ select {
 .worklist td,
 .counts th,
 .counts td {
-  padding: var(--space-2);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-line);
   text-align: left;
   vertical-align: top;
+}
+
+.worklist tr:last-child td,
+.counts tr:last-child td {
+  border-bottom: none;
 }
 
 .worklist th,
@@ -204,14 +257,14 @@ select {
 
 .letter-text {
   margin: 0;
-  padding: var(--space-3);
+  padding: var(--space-4);
   max-height: 80vh;
   overflow: auto;
   white-space: pre-wrap;
   font-family: var(--font-body);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
 }
 
 .facts {
@@ -245,20 +298,9 @@ select {
   cursor: pointer;
 }
 
-button.secondary {
-  background: var(--color-background);
-  color: var(--color-accent);
-}
-
 textarea {
   display: block;
   width: 100%;
-  font: inherit;
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-background);
-  color: var(--color-text);
   margin-bottom: var(--space-2);
 }
 

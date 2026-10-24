@@ -4,7 +4,7 @@
 import { act, screen, within } from "@testing-library/react";
 
 import type { JobDetail, JobResponse, UserResponse } from "../../src/api/types";
-import { REVIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { NO_RECENT, REVIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
 import type { Answer } from "../helpers";
 
 const DONE_JOB: JobResponse = {
@@ -24,6 +24,7 @@ export function openDetail(
 ) {
   let reads = 0;
   const fetchStub = stubApi({
+    ...NO_RECENT,
     "GET /me": () => jsonResponse(200, user),
     "GET /jobs/9": () => jsonResponse(200, DONE_JOB),
     "GET /jobs/9/detail": () => jsonResponse(200, details[Math.min(reads++, details.length - 1)]),

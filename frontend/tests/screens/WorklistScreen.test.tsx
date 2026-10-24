@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { WorklistItem } from "../../src/api/types";
-import { ADMIN, VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 
 const FIRST_PAGE = "GET /worklist?limit=50";
 
@@ -46,7 +46,11 @@ function rowOf(jobId: number): HTMLElement {
 
 describe("WorklistScreen", () => {
   it("shows each job in plain words", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN), [FIRST_PAGE]: page([DRAFTED, FAILED]) });
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, ADMIN),
+      [FIRST_PAGE]: page([DRAFTED, FAILED]),
+    });
 
     renderAt("/app/worklist");
 
@@ -67,6 +71,7 @@ describe("WorklistScreen", () => {
 
   it("loads the older jobs when asked", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: page([DRAFTED], 9),
       "GET /worklist?before=9&limit=50": page([FAILED]),
@@ -83,6 +88,7 @@ describe("WorklistScreen", () => {
 
   it("keeps the shown jobs when an older page fails", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: page([DRAFTED], 9),
       "GET /worklist?before=9&limit=50": () => jsonResponse(500, { detail: "boom" }),
@@ -98,10 +104,12 @@ describe("WorklistScreen", () => {
 
   it("puts a chosen filter in the address and asks the API with it", async () => {
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: page([DRAFTED, FAILED]),
       "GET /worklist?limit=50&status=failed": page([FAILED]),
       "GET /worklist?limit=50&status=failed&review_status=pending": page([]),
+      "GET /worklist?limit=50&review_status=pending": page([]),
     });
     const user = userEvent.setup();
     const { router } = renderAt("/app/worklist");
@@ -130,6 +138,7 @@ describe("WorklistScreen", () => {
 
   it("reads the filters from the address and ignores a value it does not know", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /worklist?limit=50&review_status=approved": page([DRAFTED]),
     });
@@ -142,7 +151,7 @@ describe("WorklistScreen", () => {
   });
 
   it("offers the upload on an empty list only to a role that can upload", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN), [FIRST_PAGE]: page([]) });
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, ADMIN), [FIRST_PAGE]: page([]) });
     renderAt("/app/worklist");
 
     expect(await screen.findByText(/No jobs here yet/)).toBeInTheDocument();
@@ -150,7 +159,7 @@ describe("WorklistScreen", () => {
   });
 
   it("does not offer the upload to a viewer", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, VIEWER), [FIRST_PAGE]: page([]) });
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, VIEWER), [FIRST_PAGE]: page([]) });
     renderAt("/app/worklist");
 
     expect(await screen.findByText(/No jobs here yet/)).toBeInTheDocument();
@@ -159,6 +168,7 @@ describe("WorklistScreen", () => {
 
   it("shows an error when the first page fails", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: () => jsonResponse(500, { detail: "boom" }),
     });
@@ -170,6 +180,7 @@ describe("WorklistScreen", () => {
 
   it("sends the user to login when the session has ended", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: () => jsonResponse(401, { detail: "not logged in" }),
     });
@@ -181,6 +192,7 @@ describe("WorklistScreen", () => {
 
   it("asks for the page only once when the session has ended", async () => {
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       [FIRST_PAGE]: () => jsonResponse(401, { detail: "not logged in" }),
     });

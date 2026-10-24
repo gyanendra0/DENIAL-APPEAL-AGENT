@@ -125,6 +125,31 @@ describe("AppLayout", () => {
     expect(menu).toHaveFocus();
   });
 
+  it("makes the page behind the open drawer inert and closes it with Escape from anywhere", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
+    renderAt("/app/worklist");
+    const user = userEvent.setup();
+
+    const menu = await screen.findByRole("button", { name: "Menu" });
+    const topbar = document.querySelector(".app-topbar");
+    const main = document.querySelector(".app-main");
+    expect(main).not.toHaveAttribute("inert");
+    await user.click(menu);
+
+    expect(topbar).toHaveAttribute("inert");
+    expect(main).toHaveAttribute("inert");
+
+    // The focus is outside the drawer, as if it had got past the last item.
+    screen.getByRole("button", { name: "Close menu" }).blur();
+    expect(document.body).toHaveFocus();
+    await user.keyboard("{Escape}");
+
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(topbar).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("inert");
+    expect(menu).toHaveFocus();
+  });
+
   it("closes the drawer when a link in it is followed", async () => {
     stubApi({
       ...EMPTY_WORKLIST,

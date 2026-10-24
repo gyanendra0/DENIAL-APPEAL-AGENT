@@ -2,7 +2,7 @@ import { screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { Overview } from "../../src/api/types";
-import { VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 
 const OVERVIEW: Overview = {
   jobs_by_status: { queued: 0, running: 1, done: 3, failed: 2 },
@@ -20,7 +20,11 @@ const OVERVIEW: Overview = {
 };
 
 function showOverview(answer: () => Response | Promise<Response>) {
-  return stubApi({ "GET /me": () => jsonResponse(200, VIEWER), "GET /overview": answer });
+  return stubApi({
+    ...NO_RECENT,
+    "GET /me": () => jsonResponse(200, VIEWER),
+    "GET /overview": answer,
+  });
 }
 
 // The count beside a row's label in the table under `title`.

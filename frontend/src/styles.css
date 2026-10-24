@@ -971,6 +971,19 @@ textarea {
   }
 }
 
+/* Under 800 pixels the split view is one column, the draft after the letter. */
+@media (max-width: 800px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .appeal-pane {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 /* Narrow screens: a bar on top with a menu button; the sidebar slides in as a drawer. */
 @media (max-width: 760px) {
   .app-shell {
@@ -1028,16 +1041,6 @@ textarea {
 
   .page {
     padding: var(--space-4) var(--space-3);
-  }
-
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .appeal-pane {
-    position: static;
-    max-height: none;
-    overflow: visible;
   }
 }
 

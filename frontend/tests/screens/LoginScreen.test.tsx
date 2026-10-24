@@ -13,6 +13,7 @@ import {
   renderAt,
   sentBody,
   stubApi,
+  NO_RECENT,
 } from "../helpers";
 
 const DONE_PAGE = "GET /worklist?limit=50&status=done";
@@ -65,6 +66,8 @@ describe("LoginScreen", () => {
     let loggedIn = false;
     stubApi({
       ...EMPTY_WORKLIST,
+      "GET /worklist?limit=50&status=done": () =>
+        jsonResponse(200, { items: [], next_before: null }),
       "GET /me": () => (loggedIn ? jsonResponse(200, ADMIN) : NO_SESSION()),
       "POST /auth/login": () => {
         loggedIn = true;
@@ -83,6 +86,7 @@ describe("LoginScreen", () => {
 
   it("empties the cache when it opens after the session has ended", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /worklist?limit=50": () => jsonResponse(401, { detail: "not logged in" }),
     });

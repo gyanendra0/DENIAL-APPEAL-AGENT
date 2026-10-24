@@ -32,12 +32,25 @@ export function jsonResponse(status: number, body: unknown): Response {
 // for no answer at all.
 export type Answer = () => Response | Promise<Response>;
 
+// Requests a test made with no stubbed answer. `apiRequest` turns the thrown error into a network
+// error the screen may show quietly, so `expectEveryRequestAnswered` (run after each test) fails
+// the test instead.
+const unanswered: string[] = [];
+
+export function expectEveryRequestAnswered() {
+  const missing = unanswered.splice(0);
+  if (missing.length > 0) {
+    throw new Error(`no stubbed answer for ${missing.join(", ")}`);
+  }
+}
+
 // Stubs `fetch` with one answer per "METHOD /path"; a request with no answer fails the test.
 export function stubApi(answers: Record<string, Answer>) {
   const fetchStub = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${String(input)}`;
     const answer = answers[key];
     if (answer === undefined) {
+      unanswered.push(key);
       throw new Error(`no stubbed answer for ${key}`);
     }
     return Promise.resolve(answer());
@@ -46,8 +59,14 @@ export function stubApi(answers: Record<string, Answer>) {
   return fetchStub;
 }
 
+// An empty sidebar "Recent" list, which every logged-in screen asks for.
+export const NO_RECENT: Record<string, Answer> = {
+  "GET /worklist?limit=10": () => jsonResponse(200, { items: [], next_before: null }),
+};
+
 // An empty first worklist page, for a test that lands on the worklist but is about something else.
 export const EMPTY_WORKLIST: Record<string, Answer> = {
+  ...NO_RECENT,
   "GET /worklist?limit=50": () => jsonResponse(200, { items: [], next_before: null }),
 };
 

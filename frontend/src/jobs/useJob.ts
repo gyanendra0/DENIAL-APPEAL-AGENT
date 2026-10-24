@@ -1,6 +1,7 @@
-// The upload mutation and the job query, which asks again while the job is not finished.
+// The upload mutation and the job query, which asks again while the job is not finished. A new
+// upload and a job that finishes both refresh the worklist (and so the sidebar's "Recent" list).
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { fetchJob, uploadLetter } from "../api/jobs";
 import type { JobResponse } from "../api/types";
@@ -17,14 +18,27 @@ export function isJobFinished(job: JobResponse): boolean {
 }
 
 export function useUploadLetter() {
-  return useMutation({ mutationFn: (file: File) => uploadLetter(file) });
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => uploadLetter(file),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["worklist"] }),
+  });
 }
 
 // Polls every JOB_POLL_MS until the job is finished, and stops on an error (a 404 stays a 404).
+// The first answer that shows the job finished refreshes the worklist once.
 export function useJob(jobId: number) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: jobKey(jobId),
-    queryFn: () => fetchJob(jobId),
+    queryFn: async () => {
+      const before = queryClient.getQueryData<JobResponse>(jobKey(jobId));
+      const job = await fetchJob(jobId);
+      if (isJobFinished(job) && (before === undefined || !isJobFinished(before))) {
+        void queryClient.invalidateQueries({ queryKey: ["worklist"] });
+      }
+      return job;
+    },
     retry: false,
     refetchInterval: (query) => {
       const job = query.state.data;

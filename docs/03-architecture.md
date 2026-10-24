@@ -4400,12 +4400,12 @@ screen:
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
-| `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms) |
+| `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished refresh the worklist and the sidebar's Recent list |
 | `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login or sign-up is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
-| `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval or rejection refreshes it |
+| `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password; `icons.tsx`, inline icons), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password; `icons.tsx`, inline icons), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert` and Escape closes it wherever the focus is), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4520,7 +4520,8 @@ answers a `422` without the input).
 
 Every library has an exact version, and the Node major version is pinned in
 `frontend/.nvmrc` (26) and in `engines`. The tests run in Vitest with jsdom and Testing
-Library; `fetch` is stubbed, so no test reaches a server. Coverage on `frontend/src/` must be
+Library; `fetch` is stubbed, so no test reaches a server, and a request with no stubbed answer
+fails the test that made it (`tests/helpers.tsx`, checked after each test). Coverage on `frontend/src/` must be
 at least 70% (lines, functions, branches, statements), the same as `src/`. CI runs all of it
 as a second job, `frontend`, beside the Python job. At the end of this branch: 134 tests,
 99.60% of lines and 96.72% of branches.
@@ -4620,7 +4621,7 @@ denial". The menu has an Overview link for every role.
    the threshold a draft needs; the evidence matches with their similarity.
 4. Right: the appeal draft with its review actions. It stays in view while the left column
    scrolls and scrolls by itself when it is longer than the window.
-5. Under 760 pixels wide the two columns become one, the draft after the left column.
+5. Under 800 pixels wide the two columns become one, the draft after the left column.
 
 ### The draft review, step by step
 

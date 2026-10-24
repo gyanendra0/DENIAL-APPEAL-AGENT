@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 
 import { canUpload } from "../auth/roles";
@@ -43,12 +43,31 @@ export function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
 
-  // The focus goes into the drawer when it opens.
+  // The focus goes into the drawer when it opens, and back to the menu button when it closes
+  // (after the render, once the bar on top is no longer inert).
   useEffect(() => {
     if (drawerOpen) {
       closeButton.current?.focus();
+    } else if (wasOpen.current) {
+      menuButton.current?.focus();
     }
+    wasOpen.current = drawerOpen;
+  }, [drawerOpen]);
+
+  // Escape closes the open drawer wherever the focus is.
+  useEffect(() => {
+    if (!drawerOpen) {
+      return undefined;
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDrawerOpen(false);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [drawerOpen]);
 
   function onLogout() {
@@ -64,13 +83,6 @@ export function AppLayout() {
 
   function closeDrawer() {
     setDrawerOpen(false);
-    menuButton.current?.focus();
-  }
-
-  function onSidebarKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (drawerOpen && event.key === "Escape") {
-      closeDrawer();
-    }
   }
 
   // Following a link in the drawer closes it, so the new screen is in view.
@@ -88,7 +100,8 @@ export function AppLayout() {
 
   return (
     <div className={shellClass.trim()}>
-      <div className="app-topbar">
+      {/* While the drawer is open the page behind it cannot take the focus. */}
+      <div className="app-topbar" inert={drawerOpen}>
         <button
           ref={menuButton}
           type="button"
@@ -102,12 +115,7 @@ export function AppLayout() {
         </button>
         <Brand />
       </div>
-      <header
-        id={SIDEBAR_ID}
-        className="app-header"
-        onKeyDown={onSidebarKeyDown}
-        onClick={onSidebarClick}
-      >
+      <header id={SIDEBAR_ID} className="app-header" onClick={onSidebarClick}>
         <div className="app-sidebar-top">
           <Brand />
           <button
@@ -165,7 +173,7 @@ export function AppLayout() {
         </div>
       </header>
       {drawerOpen && <div className="app-backdrop" aria-hidden="true" onClick={closeDrawer} />}
-      <div className="app-main">
+      <div className="app-main" inert={drawerOpen}>
         {logoutMutation.isError && (
           <p className="page error" role="alert">
             {describeError(logoutMutation.error)}

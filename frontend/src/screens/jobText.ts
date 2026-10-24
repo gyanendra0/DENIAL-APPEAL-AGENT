@@ -7,6 +7,7 @@ import type {
   JobFailure,
   JobResponse,
   JobStatus,
+  WorklistItem,
 } from "../api/types";
 
 export const STATUS_TEXT: Readonly<Record<JobStatus, string>> = {
@@ -56,6 +57,15 @@ export function describeJob(job: Pick<JobResponse, "status" | "failure" | "end_s
   }
   if (job.status === "failed" && job.failure !== null) {
     return `${STATUS_TEXT.failed}: ${FAILURE_TEXT[job.failure].toLowerCase()}`;
+  }
+  return STATUS_TEXT[job.status];
+}
+
+// A few words for a job in the sidebar's recent list: its review when it has a draft, else its
+// status.
+export function shortStatus(job: Pick<WorklistItem, "status" | "review_status">): string {
+  if (job.review_status !== null) {
+    return REVIEW_STATUS_TEXT[job.review_status];
   }
   return STATUS_TEXT[job.status];
 }

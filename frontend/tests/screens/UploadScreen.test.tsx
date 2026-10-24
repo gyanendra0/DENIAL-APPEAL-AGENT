@@ -1,11 +1,11 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { JobResponse } from "../../src/api/types";
 import { UPLOAD_MAX_BYTES } from "../../src/jobs/uploadCheck";
 import { JOB_POLL_MS } from "../../src/jobs/useJob";
-import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 import type { Answer } from "../helpers";
 
 const QUEUED: JobResponse = {
@@ -51,6 +51,7 @@ describe("UploadScreen", () => {
   it("uploads a letter, polls the job until it ends and then stops", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, REVIEWER),
       "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
       "GET /jobs/7": inTurn([QUEUED, RUNNING, DONE]),
@@ -80,8 +81,58 @@ describe("UploadScreen", () => {
     expect(jobCalls(fetchStub)).toBe(3);
   });
 
+  it("refreshes the sidebar's Recent list after the upload and once the job ends", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchStub = stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
+      "GET /jobs/7": inTurn([QUEUED, DONE]),
+    });
+    const recentCalls = () =>
+      fetchStub.mock.calls.filter(([path]) => path === "/worklist?limit=10").length;
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderAt("/app/upload");
+
+    const button = await screen.findByRole("button", { name: "Upload" });
+    await waitFor(() => expect(recentCalls()).toBe(1));
+    await user.upload(screen.getByLabelText("Denial letter"), letter());
+    await user.click(button);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
+    await waitFor(() => expect(recentCalls()).toBe(2));
+    await nextPoll();
+    expect(screen.getByRole("status")).toHaveTextContent("Draft ready for review");
+    await waitFor(() => expect(recentCalls()).toBe(3));
+
+    await nextPoll();
+    expect(recentCalls()).toBe(3);
+  });
+
+  it("shows the job at once, without waiting for the Recent list to be read again", async () => {
+    let recentCalls = 0;
+    stubApi({
+      "GET /worklist?limit=10": () =>
+        recentCalls++ === 0
+          ? jsonResponse(200, { items: [], next_before: null })
+          : new Promise<Response>(() => undefined),
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
+      "GET /jobs/7": () => jsonResponse(200, QUEUED),
+    });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+
+    await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
+    expect(recentCalls).toBe(2);
+  });
+
   it("shows why a job failed", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /jobs/7": () =>
         jsonResponse(200, { ...RUNNING, status: "failed", failure: "budget_exceeded" }),
@@ -96,6 +147,7 @@ describe("UploadScreen", () => {
 
   it("shows the job named in the address after a reload", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /jobs/7": () => jsonResponse(200, DONE),
     });
@@ -107,7 +159,7 @@ describe("UploadScreen", () => {
   });
 
   it("ignores a job id in the address that is not a number", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, ADMIN) });
 
     renderAt("/app/upload?job=7x");
 
@@ -117,6 +169,7 @@ describe("UploadScreen", () => {
 
   it("says not found for a job of another account", async () => {
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /jobs/7": () => jsonResponse(404, { detail: "job not found" }),
     });
@@ -133,6 +186,7 @@ describe("UploadScreen", () => {
     [403, { detail: "role not allowed" }, "Your role cannot do this."],
   ])("shows the refusal of an upload answered %i", async (status, body, message) => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "POST /uploads": () => jsonResponse(status, body),
     });
@@ -153,7 +207,7 @@ describe("UploadScreen", () => {
       "larger than the upload limit",
     ],
   ])("refuses %s before sending it", async (_label, file, message) => {
-    const fetchStub = stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    const fetchStub = stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, ADMIN) });
     // As if "All files" were chosen in the file picker, past the `accept` hint.
     const user = userEvent.setup({ applyAccept: false });
     renderAt("/app/upload");
@@ -166,7 +220,7 @@ describe("UploadScreen", () => {
   });
 
   it("clears the refusal when a good file is picked after a wrong one", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, ADMIN) });
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, ADMIN) });
     const user = userEvent.setup({ applyAccept: false });
     renderAt("/app/upload");
     const input = await screen.findByLabelText("Denial letter");
@@ -181,6 +235,7 @@ describe("UploadScreen", () => {
 
   it("goes to login when the session ends while polling", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /jobs/7": () => jsonResponse(401, { detail: "not logged in" }),
     });
@@ -192,7 +247,7 @@ describe("UploadScreen", () => {
   });
 
   it("shows a viewer that the role cannot upload, without the form", async () => {
-    stubApi({ "GET /me": () => jsonResponse(200, VIEWER) });
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, VIEWER) });
 
     renderAt("/app/upload");
 

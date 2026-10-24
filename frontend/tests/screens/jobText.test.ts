@@ -7,6 +7,7 @@ import {
   FAILURE_TEXT,
   REVIEW_STATUS_TEXT,
   describeJob,
+  shortStatus,
 } from "../../src/screens/jobText";
 
 const BASE: JobResponse = {
@@ -75,5 +76,17 @@ describe("the text maps", () => {
     ]) {
       expect(text).not.toMatch(/_/);
     }
+  });
+});
+
+describe("shortStatus", () => {
+  it("gives the review when the job has a draft", () => {
+    expect(shortStatus({ status: "done", review_status: "pending" })).toBe("Waiting for review");
+  });
+
+  it("gives the status when there is no draft", () => {
+    expect(shortStatus({ status: "running", review_status: null })).toBe(
+      "Reading the letter and drafting",
+    );
   });
 });

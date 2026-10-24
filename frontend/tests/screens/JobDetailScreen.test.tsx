@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobDetail, JobResponse } from "../../src/api/types";
 import { JOB_POLL_MS } from "../../src/jobs/useJob";
 import { DETAIL, DRAFT, EDITED, TRACE } from "../detail/fixtures";
-import { VIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 import type { Answer } from "../helpers";
 
 const DONE_JOB: JobResponse = {
@@ -31,6 +31,7 @@ function answer(body: unknown, status = 200): Answer {
 // Opens the detail of job 9 as a viewer (any role may read it), with the given detail.
 function openDetail(detail: JobDetail, job: JobResponse = DONE_JOB) {
   const fetchStub = stubApi({
+    ...NO_RECENT,
     "GET /me": answer(VIEWER),
     "GET /jobs/9": answer(job),
     "GET /jobs/9/detail": answer(detail),
@@ -230,6 +231,7 @@ describe("JobDetailScreen", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let jobCalls = 0;
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": answer(VIEWER),
       "GET /jobs/9": () => jsonResponse(200, jobCalls++ === 0 ? RUNNING_JOB : DONE_JOB),
       "GET /jobs/9/detail": answer(DETAIL),
@@ -245,6 +247,7 @@ describe("JobDetailScreen", () => {
 
   it("answers a job of another account as not found", async () => {
     const fetchStub = stubApi({
+      ...NO_RECENT,
       "GET /me": answer(VIEWER),
       "GET /jobs/9": answer({ detail: "not found" }, 404),
     });
@@ -255,15 +258,16 @@ describe("JobDetailScreen", () => {
   });
 
   it("answers an id that is not a job number as not found, without asking the API", async () => {
-    const fetchStub = stubApi({ "GET /me": answer(VIEWER) });
+    const fetchStub = stubApi({ ...NO_RECENT, "GET /me": answer(VIEWER) });
     renderAt("/app/jobs/abc");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Not found.");
-    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls.some(([path]) => String(path).startsWith("/jobs"))).toBe(false);
   });
 
   it("shows a server error on the detail in plain words", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": answer(VIEWER),
       "GET /jobs/9": answer(DONE_JOB),
       "GET /jobs/9/detail": answer({ detail: "boom" }, 500),

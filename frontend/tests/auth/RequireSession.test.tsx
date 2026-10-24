@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 
 describe("RequireSession", () => {
   it("shows the screen to a logged-in user", async () => {
@@ -24,6 +24,7 @@ describe("RequireSession", () => {
 
   it("remembers who was logged in when the session ends", async () => {
     stubApi({
+      ...NO_RECENT,
       "GET /me": () => jsonResponse(200, ADMIN),
       "GET /worklist?limit=50": () => jsonResponse(401, { detail: "not logged in" }),
     });

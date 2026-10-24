@@ -433,7 +433,8 @@ def _is_placeholder(key: SecretStr) -> bool:
 
 # A made-up value of exactly 32 characters. No real secret ever appears in a test.
 TOKEN_SECRET = "test-token-secret-not-real-32chr"  # noqa: S105  (made up, not a real secret)
-API_KEYS = ("AUTH_TOKEN_SECRET", "AUTH_TOKEN_TTL_MINUTES", "AUTH_COOKIE_SECURE")
+LOGIN_LIMIT_KEYS = ("LOGIN_LIMIT_WINDOW_MINUTES", "LOGIN_LIMIT_PER_EMAIL", "LOGIN_LIMIT_PER_IP")
+API_KEYS = ("AUTH_TOKEN_SECRET", "AUTH_TOKEN_TTL_MINUTES", "AUTH_COOKIE_SECURE", *LOGIN_LIMIT_KEYS)
 
 
 @pytest.fixture
@@ -504,6 +505,39 @@ def test_rejects_a_token_lifetime_that_is_not_a_whole_number_of_at_least_1(
     api_env.setenv("AUTH_TOKEN_TTL_MINUTES", value)
 
     with pytest.raises(ValidationError, match="auth_token_ttl_minutes"):
+        load_api_settings(env_file=None)
+
+
+def test_login_limit_defaults_to_5_per_email_and_20_per_ip_in_15_minutes(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert settings.login_limit_window_minutes == 15
+    assert settings.login_limit_per_email == 5
+    assert settings.login_limit_per_ip == 20
+
+
+def test_login_limit_is_read_from_the_environment(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("LOGIN_LIMIT_WINDOW_MINUTES", "30")
+    api_env.setenv("LOGIN_LIMIT_PER_EMAIL", "3")
+    api_env.setenv("LOGIN_LIMIT_PER_IP", "1")
+
+    settings = load_api_settings(env_file=None)
+
+    assert settings.login_limit_window_minutes == 30
+    assert settings.login_limit_per_email == 3
+    assert settings.login_limit_per_ip == 1
+
+
+@pytest.mark.parametrize("key", LOGIN_LIMIT_KEYS)
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "many"])
+def test_rejects_a_login_limit_that_is_not_a_whole_number_of_at_least_1_and_names_the_key(
+    api_env: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    api_env.setenv(key, value)
+
+    with pytest.raises(ValidationError, match=key.lower()):
         load_api_settings(env_file=None)
 
 

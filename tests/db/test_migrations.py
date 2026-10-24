@@ -22,6 +22,7 @@ from src.db.migrations.versions import rev_0014_evidence_source_cms_manual as mi
 from src.db.migrations.versions import rev_0015_users_password_and_global_email as migration_0015
 from src.db.migrations.versions import rev_0016_uploads_and_jobs as migration_0016
 from src.db.migrations.versions import rev_0017_draft_review_and_audit as migration_0017
+from src.db.migrations.versions import rev_0018_login_failures as migration_0018
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -41,6 +42,7 @@ from src.db.models import (
     JobFailure,
     JobStatus,
     LlmProvider,
+    LoginKeyKind,
     MetalLevel,
     PlanType,
     UploadFileType,
@@ -65,8 +67,9 @@ REFERENCE_TABLES = {
     "appeal_drafts",
     "agent_runs",
 }
-# Neither customer data nor public data: counts and cost of the project's own model calls.
-OPERATIONAL_TABLES = {"llm_calls"}
+# Neither customer data nor public data: counts and cost of the project's own model calls,
+# and keyed hashes of failed logins.
+OPERATIONAL_TABLES = {"llm_calls", "login_failures"}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES | OPERATIONAL_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
@@ -81,6 +84,7 @@ EVIDENCE_CHUNK_TABLE = "evidence_chunks"
 EMBEDDING_TABLE = "evidence_chunk_embeddings"
 DRAFT_TABLE = "appeal_drafts"
 AGENT_RUN_TABLE = "agent_runs"
+LOGIN_FAILURE_TABLE = "login_failures"
 
 
 def test_upgrade_creates_core_tables_and_vector_extension(engine: Engine) -> None:
@@ -891,6 +895,27 @@ def test_migration_0017_has_the_same_check_rules_as_the_models() -> None:
     assert set(_model_checks(REVIEW_TABLES)) <= set(MIGRATION_0017_CHECKS)
 
 
+def test_login_failures_has_its_lookup_index_and_hash_check_and_no_links(engine: Engine) -> None:
+    inspector = inspect(engine)
+    indexes = {i["name"]: i["column_names"] for i in inspector.get_indexes(LOGIN_FAILURE_TABLE)}
+    unique, foreign, checks = _keys_links_and_checks(engine, LOGIN_FAILURE_TABLE)
+
+    assert indexes == {
+        "ix_login_failures_key_kind_key_hash_created_at": ["key_kind", "key_hash", "created_at"]
+    }
+    assert unique == {}
+    assert inspector.get_foreign_keys(LOGIN_FAILURE_TABLE) == []
+    assert foreign == {}
+    assert checks == {"ck_login_failures_key_hash_format"}
+
+
+def test_migration_0018_lists_the_same_values_and_check_rule_as_the_model() -> None:
+    assert tuple(member.value for member in LoginKeyKind) == migration_0018.LOGIN_KEY_KIND
+    assert _model_checks((LOGIN_FAILURE_TABLE,)) == {
+        "ck_login_failures_key_hash_format": migration_0018.KEY_HASH_FORMAT
+    }
+
+
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
     engine: Engine,
 ) -> None:
@@ -976,6 +1001,22 @@ def test_upgrade_to_0017_makes_existing_drafts_pending_and_existing_jobs_cost_no
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM accounts"))
         command.upgrade(alembic_config, "head")
+
+
+def test_downgrade_to_0017_removes_the_login_failures_table_and_its_enum(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0017")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert LOGIN_FAILURE_TABLE not in tables
+        assert set(REVIEW_TABLES) <= tables
+        assert _type_names(engine, migration_0018.NEW_ENUMS) == set()
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert LOGIN_FAILURE_TABLE in set(inspect(engine).get_table_names())
+    assert _type_names(engine, migration_0018.NEW_ENUMS) == set(migration_0018.NEW_ENUMS)
 
 
 def test_downgrade_to_0016_removes_the_review_tables_columns_and_enums_and_keeps_the_drafts(

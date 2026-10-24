@@ -1,4 +1,5 @@
-"""Core tables, uploads, jobs, draft review and audit (business), reference tables, `llm_calls`."""
+"""Core tables, uploads, jobs, draft review and audit (business), reference tables, and the
+operational tables `llm_calls` and `login_failures`."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -151,6 +152,13 @@ class AuditAction(StrEnum):
     DRAFT_EDITED = "draft_edited"
     DRAFT_APPROVED = "draft_approved"
     DRAFT_REJECTED = "draft_rejected"
+
+
+class LoginKeyKind(StrEnum):
+    """What a failed login is counted against: the email that was typed, or the client IP."""
+
+    EMAIL = "email"
+    IP = "ip"
 
 
 def _values(enum_cls: type[StrEnum]) -> list[str]:
@@ -580,6 +588,31 @@ class LlmCall(TimestampMixin, Base):
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+
+
+class LoginFailure(TimestampMixin, Base):
+    """One failed login, counted against one key: the typed email or the client IP.
+
+    Operational table, no `account_id`: a failure on an unknown email has no account, and the
+    row never holds a personal field. `key_hash` is an HMAC-SHA256 of the email or IP (lowercase
+    hex) with a key derived from the token secret, so neither can be read back from the table.
+    A failed login writes one row per key; the login limit counts the rows of a key inside its
+    window by `created_at`, so the count survives a restart.
+    """
+
+    __tablename__ = "login_failures"
+    __table_args__ = (
+        CheckConstraint("key_hash ~ '^[0-9a-f]{64}$'", name="ck_login_failures_key_hash_format"),
+        Index(
+            "ix_login_failures_key_kind_key_hash_created_at", "key_kind", "key_hash", "created_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key_kind: Mapped[LoginKeyKind] = mapped_column(
+        Enum(LoginKeyKind, name="login_key_kind", values_callable=_values), nullable=False
+    )
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class DocumentExtraction(TimestampMixin, Base):

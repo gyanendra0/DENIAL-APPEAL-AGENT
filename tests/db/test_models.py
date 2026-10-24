@@ -44,6 +44,8 @@ from src.db.models import (
     JobStatus,
     LlmCall,
     LlmProvider,
+    LoginFailure,
+    LoginKeyKind,
     MetalLevel,
     PlanDenialStats,
     PlanType,
@@ -2398,3 +2400,58 @@ def test_deleting_an_account_removes_its_reviews_revisions_and_audit_events(
     assert [row.job_id for row in session.scalars(select(DraftRevision))] == [kept.job_id]
     assert session.scalars(select(AuditEvent)).all() == []
     assert [row.id for row in session.scalars(select(UploadDraft))] == [kept.id]
+
+
+# A made-up HMAC: 64 lowercase hex characters, as the login limit writes them.
+KEY_HASH = "fedcba9876543210" * 4
+
+
+def _login_failure(session: Session, **overrides: Any) -> LoginFailure:
+    fields: dict[str, Any] = {"key_kind": LoginKeyKind.EMAIL, "key_hash": KEY_HASH}
+    failure = LoginFailure(**(fields | overrides))
+    session.add(failure)
+    session.flush()
+    return failure
+
+
+@pytest.mark.parametrize("kind", list(LoginKeyKind))
+def test_stores_a_login_failure_with_its_key_kind_hash_and_timestamps(
+    session: Session, kind: LoginKeyKind
+) -> None:
+    failure = _login_failure(session, key_kind=kind)
+    session.expire_all()
+
+    stored = session.get(LoginFailure, failure.id)
+    assert stored is not None
+    assert stored.key_kind is kind
+    assert stored.key_hash == KEY_HASH
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_stores_many_failures_for_the_same_key(session: Session) -> None:
+    for _ in range(3):
+        _login_failure(session)
+
+    assert len(session.scalars(select(LoginFailure)).all()) == 3
+
+
+@pytest.mark.parametrize(
+    "key_hash",
+    [KEY_HASH[:63], KEY_HASH.upper(), "g" + KEY_HASH[1:], "", "ada@example.test"],
+    ids=["too-short", "uppercase", "not-hex", "empty", "plain-email"],
+)
+def test_rejects_a_login_failure_whose_hash_is_not_64_lowercase_hex(
+    session: Session, key_hash: str
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_login_failures_key_hash_format"):
+        _login_failure(session, key_hash=key_hash)
+
+
+def test_rejects_unknown_login_key_kind(session: Session) -> None:
+    insert = text(
+        "INSERT INTO login_failures (key_kind, key_hash) VALUES ('user_agent', :key_hash)"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, {"key_hash": KEY_HASH})

@@ -1,5 +1,8 @@
 """Sign-up, login and logout through the real app on `app_test`."""
 
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Connection, func, select
@@ -8,14 +11,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.api import login as login_module
 from src.api.app import create_app
-from src.api.dependencies import AUTH_COOKIE_NAME
+from src.api.dependencies import AUTH_COOKIE_NAME, get_now
+from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.routes import auth as auth_module
 from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN, LOGIN_FAILED
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
-from src.db.models import Account, User, UserRole
+from src.db.models import Account, LoginFailure, LoginKeyKind, User, UserRole
 from tests.api.conftest import API_TTL_MINUTES, BASE_URL, api_settings
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
+WRONG = "a-made-up-wrong-password"  # noqa: S105  (made up)
+NOW = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 
 
 def _signup(
@@ -223,3 +229,106 @@ def test_signup_whose_commit_fails_is_not_answered_201(api_connection: Connectio
     )
     assert response.status_code == 500
     assert "set-cookie" not in response.headers
+
+
+class _Clock:
+    """The time the app sees; a test moves it on instead of waiting."""
+
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+@pytest.fixture
+def clock(api_client: TestClient) -> Iterator[_Clock]:
+    fake = _Clock()
+    api_client.app.dependency_overrides[get_now] = fake  # type: ignore[attr-defined]
+    yield fake
+    api_client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
+
+
+def _login(client: TestClient, email: str = "ann@x.org", password: str = WRONG) -> int:
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    return response.status_code
+
+
+def _failure_rows(session: Session) -> list[LoginKeyKind]:
+    return list(session.scalars(select(LoginFailure.key_kind)).all())
+
+
+@pytest.mark.parametrize("email", ["ann@x.org", "nobody@x.org"])
+def test_after_five_failures_even_the_right_password_is_429(
+    api_client: TestClient, clock: _Clock, email: str
+) -> None:
+    _signup(api_client)
+    api_client.cookies.clear()
+    for _ in range(5):
+        assert _login(api_client, email) == 401
+    clock.now = NOW + timedelta(minutes=1)
+    response = api_client.post("/auth/login", json={"email": email, "password": PASSWORD})
+    assert (response.status_code, response.json()) == (429, {"detail": TOO_MANY_LOGINS})
+    assert response.headers["retry-after"] == str(14 * 60)
+    assert "set-cookie" not in response.headers
+
+
+def test_twenty_failures_from_one_ip_block_a_fresh_email(
+    api_client: TestClient, clock: _Clock
+) -> None:
+    for number in range(20):
+        assert _login(api_client, f"user{number}@x.org") == 401
+    assert _login(api_client, "fresh@x.org") == 429
+
+
+def test_after_the_window_the_login_works_again(api_client: TestClient, clock: _Clock) -> None:
+    _signup(api_client)
+    api_client.cookies.clear()
+    for _ in range(5):
+        _login(api_client)
+    clock.now = NOW + timedelta(minutes=15)
+    assert _login(api_client, password=PASSWORD) == 200
+    assert AUTH_COOKIE_NAME in api_client.cookies
+
+
+def test_a_good_login_clears_the_email_count_but_not_the_ip_count(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    _signup(api_client)
+    api_client.cookies.clear()
+    for _ in range(4):
+        _login(api_client)
+    assert _login(api_client, password=PASSWORD) == 200
+    assert _failure_rows(db_session) == [LoginKeyKind.IP] * 4
+    for _ in range(4):
+        assert _login(api_client) == 401
+    assert _login(api_client, password=PASSWORD) == 200
+
+
+def test_a_failure_row_survives_the_401(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    assert _login(api_client, "nobody@x.org") == 401
+    assert sorted(_failure_rows(db_session)) == [LoginKeyKind.EMAIL, LoginKeyKind.IP]
+
+
+def test_a_refused_try_writes_no_row(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    for _ in range(5):
+        _login(api_client)
+    assert _login(api_client) == 429
+    assert len(_failure_rows(db_session)) == 10
+
+
+def test_a_422_writes_no_row(api_client: TestClient, db_session: Session, clock: _Clock) -> None:
+    assert _login(api_client, "not-an-email") == 422
+    assert _failure_rows(db_session) == []
+
+
+def test_a_password_over_the_cap_counts_as_a_failure(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    too_long = "p" * (MAX_LOGIN_PASSWORD_CHARACTERS + 1)
+    assert _login(api_client, password=too_long) == 401
+    assert len(_failure_rows(db_session)) == 2

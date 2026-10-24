@@ -1,5 +1,5 @@
-"""FastAPI dependencies: settings, the database session, the job runner, the logged-in user and
-role checks.
+"""FastAPI dependencies: settings, the database session, the job runner, the clock, the logged-in
+user and role checks.
 
 Every route takes the `account_id` it queries with from `current_user`, never from the path,
 query or body. The app factory puts `api_settings`, `session_factory` and `job_runner` on
@@ -7,6 +7,7 @@ query or body. The app factory puts `api_settings`, `session_factory` and `job_r
 """
 
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -49,6 +50,17 @@ def get_api_settings(request: Request) -> ApiSettings:
 def get_job_runner(request: Request) -> JobRunner:
     runner: JobRunner = request.app.state.job_runner
     return runner
+
+
+def get_session_factory(request: Request) -> sessionmaker[Session]:
+    """The app's session factory, for a route that needs more than one transaction."""
+    factory: sessionmaker[Session] = request.app.state.session_factory
+    return factory
+
+
+def get_now() -> datetime:
+    """The current time in UTC. Tests override it, so a time window needs no waiting."""
+    return datetime.now(UTC)
 
 
 def get_db_session(request: Request) -> Iterator[Session]:

@@ -19,6 +19,8 @@ import { RecentDenials } from "./RecentDenials";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarPreference";
 
 const SIDEBAR_ID = "app-sidebar";
+// The width under which the sidebar is a drawer; the same number as in styles.css.
+const DRAWER_QUERY = "(max-width: 760px)";
 
 function Brand() {
   return (
@@ -68,6 +70,22 @@ export function AppLayout() {
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen]);
+
+  // A window that grows past the drawer width (a tablet turned sideways) closes the drawer, which
+  // is hidden there, so the page behind it is not left inert.
+  useEffect(() => {
+    if (!drawerOpen || typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const narrow = window.matchMedia(DRAWER_QUERY);
+    function onChange(event: MediaQueryListEvent) {
+      if (!event.matches) {
+        setDrawerOpen(false);
+      }
+    }
+    narrow.addEventListener("change", onChange);
+    return () => narrow.removeEventListener("change", onChange);
   }, [drawerOpen]);
 
   function onLogout() {

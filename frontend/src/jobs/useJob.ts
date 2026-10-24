@@ -21,7 +21,10 @@ export function useUploadLetter() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (file: File) => uploadLetter(file),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["worklist"] }),
+    // Not awaited: the job status shows at once, without waiting for the worklist to be read again.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["worklist"] });
+    },
   });
 }
 

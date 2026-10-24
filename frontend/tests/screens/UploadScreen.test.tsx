@@ -109,6 +109,27 @@ describe("UploadScreen", () => {
     expect(recentCalls()).toBe(3);
   });
 
+  it("shows the job at once, without waiting for the Recent list to be read again", async () => {
+    let recentCalls = 0;
+    stubApi({
+      "GET /worklist?limit=10": () =>
+        recentCalls++ === 0
+          ? jsonResponse(200, { items: [], next_before: null })
+          : new Promise<Response>(() => undefined),
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
+      "GET /jobs/7": () => jsonResponse(200, QUEUED),
+    });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+
+    await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
+    expect(recentCalls).toBe(2);
+  });
+
   it("shows why a job failed", async () => {
     stubApi({
       ...NO_RECENT,

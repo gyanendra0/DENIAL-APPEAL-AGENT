@@ -1,6 +1,6 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { SESSION_KEY } from "../../src/auth/session";
 import { worklistKey } from "../../src/worklist/useWorklist";
@@ -148,6 +148,35 @@ describe("AppLayout", () => {
     expect(topbar).not.toHaveAttribute("inert");
     expect(main).not.toHaveAttribute("inert");
     expect(menu).toHaveFocus();
+  });
+
+  it("closes the drawer when the window grows past the drawer width", async () => {
+    const listeners: ((event: MediaQueryListEvent) => void)[] = [];
+    const resize = (matches: boolean) =>
+      act(() => listeners.forEach((listener) => listener({ matches } as MediaQueryListEvent)));
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      media: query,
+      matches: true,
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) =>
+        listeners.push(listener),
+      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) =>
+        listeners.splice(listeners.indexOf(listener), 1),
+    }));
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
+    renderAt("/app/worklist");
+    const user = userEvent.setup();
+
+    const menu = await screen.findByRole("button", { name: "Menu" });
+    await user.click(menu);
+    // Still narrow (a change between two narrow widths): the drawer stays open.
+    resize(true);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+
+    resize(false);
+
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector(".app-main")).not.toHaveAttribute("inert");
+    expect(listeners).toHaveLength(0);
   });
 
   it("closes the drawer when a link in it is followed", async () => {

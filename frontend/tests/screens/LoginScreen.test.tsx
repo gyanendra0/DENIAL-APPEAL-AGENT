@@ -181,4 +181,39 @@ describe("LoginScreen", () => {
 
     expect(router.state.location.pathname).toBe("/app/signup");
   });
+
+  it("shows a sentence under each empty field, focuses the first and sends nothing", async () => {
+    const fetchStub = stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/login");
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Log in" }));
+
+    const email = screen.getByLabelText("Email");
+    expect(email).toHaveAccessibleDescription("Enter your email.");
+    expect(email).toHaveAttribute("aria-invalid", "true");
+    expect(email).toHaveFocus();
+    expect(screen.getByLabelText("Password")).toHaveAccessibleDescription("Enter your password.");
+    expect(fetchStub.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("asks for an email with an @ before sending", async () => {
+    const fetchStub = stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/login");
+
+    await fillAndSubmit("ada", "a long made-up password");
+
+    expect(screen.getByLabelText("Email")).toHaveAccessibleDescription(
+      "Enter an email like name@example.com.",
+    );
+    expect(fetchStub.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("shows the password on request", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/login");
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Show password" }));
+
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
+  });
 });

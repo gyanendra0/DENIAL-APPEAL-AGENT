@@ -100,4 +100,33 @@ describe("SignupScreen", () => {
 
     expect(router.state.location.pathname).toBe("/app/login");
   });
+
+  it("shows a sentence under each empty field, focuses the first and sends nothing", async () => {
+    const fetchStub = stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/signup");
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Sign up" }));
+
+    const accountName = screen.getByLabelText("Account name");
+    expect(accountName).toHaveAccessibleDescription("Enter the account name.");
+    expect(accountName).toHaveFocus();
+    expect(screen.getByLabelText("Email")).toHaveAccessibleDescription("Enter your email.");
+    expect(fetchStub.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("refuses a short password before sending and keeps the rule in view", async () => {
+    const fetchStub = stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/signup");
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText("Account name"), "Made-up Clinic");
+    await user.type(screen.getByLabelText("Email"), ADMIN.email);
+    await user.type(screen.getByLabelText(/^Password/), "too short");
+    await user.click(screen.getByRole("button", { name: "Sign up" }));
+
+    const password = screen.getByLabelText(/^Password/);
+    expect(password).toHaveAccessibleDescription("12 to 128 characters. Use 12 to 128 characters.");
+    expect(password).toHaveFocus();
+    expect(fetchStub.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
 });

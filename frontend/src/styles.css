@@ -1,26 +1,47 @@
-/* Soft UI theme: calming teal palette; every text colour pair meets WCAG AA (4.5:1 or more). */
+/* Warm theme: cream page, warm near-black text, serif headings, a terracotta accent for actions,
+   links and focus. Every text colour pair meets WCAG AA (4.5:1 or more); the lowest is 4.96:1
+   (a link on the sidebar). Field borders and the focus ring are 3:1 or more. */
 :root {
-  --color-text: #1e3a3a;
-  --color-muted: #4f6b6a;
-  --color-background: #f4f8f7;
+  --color-text: #1f1e1b;
+  --color-muted: #5e5d59;
+  --color-background: #faf9f5;
+  --color-sidebar: #f0eee6;
   --color-card: #ffffff;
-  --color-surface: #eaf3f1;
-  --color-border: #c9dcd8;
-  --color-line: #e1ece9;
-  --color-accent: #26736f;
-  --color-accent-hover: #1f5f5c;
+  --color-surface: #f5f3ec;
+  --color-selected: #e6e2d6;
+  --color-border: #e5e2d9;
+  --color-border-strong: #d6d2c6;
+  --color-field-border: #8a8780;
+  --color-accent: #a9482a;
+  --color-accent-hover: #8f3b21;
   --color-on-accent: #ffffff;
-  --color-error: #b4373a;
-  --color-focus: rgba(38, 115, 111, 0.35);
+  --color-error: #b42318;
+  --color-focus: #a9482a;
+  --color-focus-glow: rgba(169, 72, 42, 0.16);
+  --color-hover: rgba(31, 30, 27, 0.06);
+  --color-logo: #1f1e1b;
+  --color-button-dark: #141413;
+  --color-button-dark-hover: #3d3b36;
+  --color-backdrop: rgba(31, 30, 27, 0.35);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 16px;
   --space-4: 24px;
-  --radius-field: 10px;
-  --radius-card: 14px;
-  --radius-pill: 999px;
-  --shadow-soft: 0 2px 6px rgba(30, 58, 58, 0.06), 0 8px 24px rgba(30, 58, 58, 0.06);
-  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius-control: 10px;
+  --radius-card: 16px;
+  --border-hairline: 1px;
+  --shadow-card: 0 1px 2px rgba(31, 30, 27, 0.04), 0 8px 24px rgba(31, 30, 27, 0.05);
+  --font-body: "Inter Variable", system-ui, sans-serif;
+  --font-display: "Source Serif 4 Variable", Georgia, serif;
+  --text-body: 16px;
+  --text-interface: 15px;
+  --text-small: 14px;
+  --text-metadata: 13px;
+  --leading-body: 1.6;
+  --motion-interaction: 150ms;
+  --motion-easing: ease-out;
+  --sidebar-width: 272px;
+  --sidebar-collapsed-width: 68px;
 }
 
 * {
@@ -30,9 +51,33 @@
 body {
   margin: 0;
   font-family: var(--font-body);
-  line-height: 1.5;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   color: var(--color-text);
   background: var(--color-background);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+h1 {
+  font-size: 32px;
+  margin: 0 0 var(--space-4);
+}
+
+h2 {
+  font-size: 22px;
+  margin: var(--space-4) 0 var(--space-3);
+}
+
+h3 {
+  font-size: 18px;
 }
 
 a {
@@ -42,7 +87,7 @@ a {
 .page {
   max-width: 1280px;
   margin: 0 auto;
-  padding: var(--space-4) var(--space-3);
+  padding: 32px var(--space-4);
 }
 
 .narrow {
@@ -57,18 +102,306 @@ a {
   color: var(--color-error);
 }
 
-.app-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  background: var(--color-card);
-  box-shadow: var(--shadow-soft);
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.app-header button {
-  margin-left: auto;
+/* The product's mark: a dark rounded square with a white page. */
+.logo-tile {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--color-logo);
+  color: #ffffff;
+}
+
+.logo-tile svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* A quiet square button holding one icon; its name is its aria-label. */
+.icon-button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+}
+
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+/* The frame: a sidebar on the left, the screen on the right. */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.app-topbar,
+.app-drawer-close,
+.app-backdrop {
+  display: none;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100vh;
+  padding: var(--space-3) 12px;
+  overflow-y: auto;
+  background: var(--color-sidebar);
+  border-right: var(--border-hairline) solid var(--color-border);
+}
+
+.app-sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 4px;
+}
+
+.app-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.app-name .logo-tile {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+.app-name .logo-tile svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* The first action, like "new chat": start an upload. */
+.new-upload {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--text-interface);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color var(--motion-interaction) var(--motion-easing);
+}
+
+.new-upload:hover {
+  background: var(--color-accent-hover);
+}
+
+.new-upload svg,
+.app-nav svg,
+.app-logout svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.app-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-2) 12px;
+  border-radius: var(--radius-control);
+  font-size: var(--text-interface);
+  color: var(--color-text);
+  text-decoration: none;
+  transition: background-color var(--motion-interaction) var(--motion-easing);
+}
+
+.app-nav a:hover {
+  background: var(--color-hover);
+}
+
+.app-nav a.active {
+  font-weight: 600;
+  background: var(--color-selected);
+}
+
+/* The newest denials, under the menu. */
+.recent {
+  flex: 1;
+  min-height: 0;
+}
+
+.recent-title {
+  margin: var(--space-2) 12px var(--space-2);
+  font-family: var(--font-body);
+  font-size: var(--text-metadata);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--color-muted);
+}
+
+.recent-note {
+  margin: 0 12px;
+  font-size: var(--text-metadata);
+  color: var(--color-muted);
+}
+
+.recent-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recent-list a {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 12px;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  text-decoration: none;
+  transition: background-color var(--motion-interaction) var(--motion-easing);
+}
+
+.recent-list a:hover {
+  background: var(--color-hover);
+}
+
+.recent-list a.active {
+  background: var(--color-selected);
+}
+
+.recent-name {
+  overflow: hidden;
+  font-size: var(--text-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.recent-status {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.app-account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 4px 0;
+  border-top: var(--border-hairline) solid var(--color-border);
+  font-size: var(--text-metadata);
+  overflow-wrap: anywhere;
+}
+
+.app-account-text {
+  padding: 0 8px;
+}
+
+button.app-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: var(--space-2) 12px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  box-shadow: none;
+}
+
+button.app-logout:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.app-main {
+  min-width: 0;
+}
+
+/* Collapsed (wide screens only): a narrow column of icons; names stay for screen readers. */
+@media (min-width: 761px) {
+  .app-shell.is-collapsed {
+    grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+  }
+
+  .is-collapsed .app-header {
+    align-items: center;
+    padding: var(--space-3) var(--space-2);
+  }
+
+  .is-collapsed .app-sidebar-top {
+    flex-direction: column;
+    padding: 0;
+  }
+
+  .is-collapsed .app-sidebar-top .app-name-text,
+  .is-collapsed .nav-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .is-collapsed .new-upload,
+  .is-collapsed .app-nav a,
+  .is-collapsed button.app-logout {
+    justify-content: center;
+    width: 44px;
+    height: 40px;
+    padding: 0;
+  }
+
+  .is-collapsed .recent,
+  .is-collapsed .app-account-text {
+    display: none;
+  }
+
+  .is-collapsed .app-account {
+    align-items: center;
+    margin-top: auto;
+    padding: var(--space-3) 0 0;
+  }
 }
 
 .form {
@@ -81,17 +414,29 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  font-size: var(--text-small);
+  font-weight: 600;
 }
 
 input,
 select,
 textarea {
   font: inherit;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-field);
+  font-size: var(--text-interface);
+  font-weight: 400;
+  padding: var(--space-2) 12px;
+  border: var(--border-hairline) solid var(--color-field-border);
+  border-radius: var(--radius-control);
   background: var(--color-card);
   color: var(--color-text);
+  transition:
+    border-color var(--motion-interaction) var(--motion-easing),
+    box-shadow var(--motion-interaction) var(--motion-easing);
+}
+
+input::placeholder {
+  color: var(--color-muted);
+  opacity: 1;
 }
 
 input:focus-visible,
@@ -100,20 +445,35 @@ textarea:focus-visible,
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--color-focus);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
-  border-color: var(--color-accent);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 4px var(--color-focus-glow);
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--color-error);
 }
 
 button {
   font: inherit;
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-pill);
+  font-size: var(--text-interface);
+  font-weight: 500;
+  min-height: 40px;
+  padding: var(--space-2) 18px;
+  border: var(--border-hairline) solid var(--color-accent);
+  border-radius: var(--radius-control);
   background: var(--color-accent);
   color: var(--color-on-accent);
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition:
+    background-color var(--motion-interaction) var(--motion-easing),
+    border-color var(--motion-interaction) var(--motion-easing);
 }
 
 button:hover:not(:disabled) {
@@ -128,41 +488,22 @@ button:disabled {
 
 button.secondary {
   background: var(--color-card);
-  color: var(--color-accent);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
 }
 
 button.secondary:hover:not(:disabled) {
   background: var(--color-surface);
-  border-color: var(--color-accent);
-}
-
-.app-nav {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.app-nav a {
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-pill);
-  color: var(--color-accent);
-  text-decoration: none;
-}
-
-.app-nav a:hover {
-  background: var(--color-surface);
-}
-
-.app-nav a.active {
-  font-weight: 600;
-  background: var(--color-surface);
+  border-color: var(--color-border-strong);
 }
 
 .status-box {
   margin-top: var(--space-4);
   padding: var(--space-4);
   background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-card);
 }
 
 .status-box h2 {
@@ -180,28 +521,32 @@ button.secondary:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  font-size: var(--text-small);
+  font-weight: 600;
 }
 
 .table-scroll {
   overflow-x: auto;
   margin-bottom: var(--space-3);
   background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-card);
 }
 
 .worklist,
 .counts {
   width: 100%;
   border-collapse: collapse;
+  font-size: var(--text-interface);
 }
 
 .worklist th,
 .worklist td,
 .counts th,
 .counts td {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--color-line);
+  padding: 10px var(--space-3);
+  border-bottom: var(--border-hairline) solid var(--color-border);
   text-align: left;
   vertical-align: top;
 }
@@ -213,6 +558,9 @@ button.secondary:hover:not(:disabled) {
 
 .worklist th,
 .counts th {
+  font-size: var(--text-metadata);
+  font-weight: 600;
+  color: var(--color-muted);
   background: var(--color-surface);
 }
 
@@ -234,9 +582,10 @@ button.secondary:hover:not(:disabled) {
 .links {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  gap: 12px;
 }
 
+/* The split view: the denial and what was read from it on the left, the appeal on the right. */
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -244,33 +593,54 @@ button.secondary:hover:not(:disabled) {
   align-items: start;
 }
 
-@media (max-width: 800px) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.letter-pane {
-  position: sticky;
-  top: var(--space-3);
+.split h2:first-child {
+  margin-top: 0;
 }
 
 .letter-text {
   margin: 0;
   padding: var(--space-4);
-  max-height: 80vh;
+  max-height: 70vh;
   overflow: auto;
   white-space: pre-wrap;
   font-family: var(--font-body);
+  font-size: var(--text-interface);
+  line-height: var(--leading-body);
   background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
   border-radius: var(--radius-card);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-card);
+}
+
+/* The appeal stays in view while the left column scrolls; it scrolls itself when long. */
+.appeal-pane {
+  position: sticky;
+  top: var(--space-4);
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow: auto;
+  padding: var(--space-4);
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.appeal-pane h2 {
+  margin-top: 0;
+}
+
+/* A box inside the appeal card is a quiet pale field, not a second card. */
+.appeal-pane .status-box {
+  background: var(--color-surface);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: var(--space-1) var(--space-3);
+  font-size: var(--text-interface);
 }
 
 .facts dt {
@@ -289,19 +659,54 @@ button.secondary:hover:not(:disabled) {
   margin-bottom: var(--space-3);
 }
 
+/* Citations: ruled rows with a plus that turns into a cross when opened. */
 .citations {
-  padding-left: var(--space-3);
+  list-style: none;
+  padding-left: 0;
+  font-size: var(--text-small);
+}
+
+.citations details {
+  border-bottom: var(--border-hairline) solid var(--color-border);
 }
 
 .citations summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
   color: var(--color-accent);
   cursor: pointer;
+  list-style: none;
+}
+
+.citations summary::-webkit-details-marker {
+  display: none;
+}
+
+.citations summary::after {
+  content: "+";
+  font-size: 18px;
+  line-height: 1;
+  transition: transform var(--motion-interaction) var(--motion-easing);
+}
+
+.citations details[open] summary::after {
+  transform: rotate(45deg);
+}
+
+.citations blockquote {
+  margin: 0 0 var(--space-2);
+  padding-left: 12px;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-muted);
 }
 
 textarea {
   display: block;
   width: 100%;
   margin-bottom: var(--space-2);
+  line-height: var(--leading-body);
 }
 
 .draft-editor .citations li {
@@ -323,4 +728,382 @@ textarea {
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-1);
+}
+
+/* Login and sign-up: two columns, the headline and the form card on the left, a framed panel on
+   the right. */
+.auth-page {
+  position: relative;
+  min-height: 100vh;
+  background: var(--color-background);
+}
+
+.auth-brand {
+  position: absolute;
+  top: 28px;
+  left: 40px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-brand .logo-tile {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.auth-brand .logo-tile svg {
+  width: 19px;
+  height: 19px;
+}
+
+.auth-brand-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+/* Equal space above and below, so both columns sit in the middle of the window. */
+.auth-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 64px;
+  align-items: center;
+  max-width: 1320px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 104px 40px;
+}
+
+.auth-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.auth-headline {
+  max-width: 520px;
+  margin: 0;
+  font-size: 64px;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.auth-tagline {
+  max-width: 440px;
+  margin: 16px 0 32px;
+  font-size: 19px;
+  color: var(--color-muted);
+}
+
+.auth-card {
+  width: 420px;
+  max-width: 100%;
+  padding: 28px 24px 24px;
+  text-align: center;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.auth-card h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.auth-intro {
+  margin: 0 auto;
+  font-size: var(--text-small);
+  color: var(--color-muted);
+}
+
+.auth-form {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.auth-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  height: clamp(480px, 72vh, 760px);
+  padding: 48px;
+  text-align: center;
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: 20px;
+}
+
+.auth-panel-text {
+  max-width: 520px;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 48px;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+}
+
+.auth-panel-note {
+  margin: 0;
+  font-size: var(--text-body);
+  color: var(--color-muted);
+}
+
+.auth-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth-input input {
+  width: 100%;
+  height: 46px;
+  padding: 0 52px 0 44px;
+  font-size: var(--text-body);
+}
+
+.auth-input-icon {
+  position: absolute;
+  left: 14px;
+  display: flex;
+  color: var(--color-muted);
+  pointer-events: none;
+}
+
+.auth-input-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* The show/hide password button: a quiet icon inside the input. */
+.auth-reveal {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+}
+
+.auth-reveal svg {
+  width: 18px;
+  height: 18px;
+}
+
+.auth-reveal:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.auth-hint,
+.field-error {
+  margin: 6px 0 0;
+  font-size: var(--text-small);
+}
+
+.auth-hint {
+  color: var(--color-muted);
+}
+
+.field-error {
+  color: var(--color-error);
+}
+
+/* The main login button is black, as in the reference; the terracotta stays for the app. */
+.auth-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 46px;
+  margin-top: var(--space-1);
+  font-size: var(--text-body);
+  border-color: var(--color-button-dark);
+  background: var(--color-button-dark);
+}
+
+.auth-submit:hover:not(:disabled) {
+  border-color: var(--color-button-dark-hover);
+  background: var(--color-button-dark-hover);
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.auth-switch {
+  margin: 20px 0 0;
+  color: var(--color-muted);
+}
+
+@media (max-width: 1050px) {
+  :root {
+    --sidebar-width: 232px;
+  }
+
+  .split {
+    gap: var(--space-3);
+  }
+}
+
+/* Narrow screens: a bar on top with a menu button; the sidebar slides in as a drawer. */
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) 12px;
+    background: var(--color-sidebar);
+    border-bottom: var(--border-hairline) solid var(--color-border);
+  }
+
+  .app-header {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(300px, 85vw);
+    height: auto;
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition:
+      transform 200ms var(--motion-easing),
+      visibility 200ms;
+  }
+
+  .drawer-open .app-header {
+    visibility: visible;
+    transform: none;
+    box-shadow: 0 0 40px rgba(31, 30, 27, 0.2);
+  }
+
+  .app-collapse {
+    display: none;
+  }
+
+  .app-drawer-close {
+    display: inline-grid;
+  }
+
+  .app-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: block;
+    background: var(--color-backdrop);
+  }
+
+  .page {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .appeal-pane {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* Medium screens: one column, the panel under the form and smaller. */
+@media (max-width: 900px) {
+  .auth-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+    padding: 96px 24px 48px;
+  }
+
+  .auth-headline {
+    font-size: 48px;
+  }
+
+  .auth-panel {
+    height: auto;
+    padding: 40px 24px;
+  }
+
+  .auth-panel-text {
+    font-size: 34px;
+  }
+}
+
+/* Phones: the card fills the width, the brand shrinks, the panel is left out. */
+@media (max-width: 640px) {
+  .auth-brand {
+    top: 20px;
+    left: 20px;
+  }
+
+  .auth-brand-name {
+    font-size: 19px;
+  }
+
+  .auth-main {
+    padding: 80px 16px 40px;
+  }
+
+  .auth-headline {
+    font-size: 38px;
+  }
+
+  .auth-tagline {
+    margin-bottom: 24px;
+    font-size: 17px;
+  }
+
+  .auth-card {
+    padding: 24px 18px 20px;
+  }
+
+  .auth-panel {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+
+  .spinner {
+    animation-duration: 2.4s;
+  }
 }

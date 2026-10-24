@@ -34,7 +34,8 @@ function NotFound() {
   );
 }
 
-// The split view of one denial: the letter on the left, what the agent made of it on the right.
+// The split view of one denial: the letter and what the agent read from it on the left, the
+// appeal draft on the right.
 export function JobDetailScreen() {
   const jobId = readJobId(useParams().id);
   if (jobId === null) {
@@ -88,15 +89,17 @@ function SplitView({ detail }: { detail: JobDetail }) {
         Job {detail.job_id}: {detail.file_name}
       </h1>
       <div className="split">
-        <section aria-label="Letter" className="letter-pane">
-          <h2>Letter</h2>
-          {detail.file_type === "pdf" && <p className="muted">Text read from the PDF.</p>}
-          <pre className="letter-text">{detail.text}</pre>
-        </section>
         <div>
+          <section aria-label="Letter">
+            <h2>Letter</h2>
+            {detail.file_type === "pdf" && <p className="muted">Text read from the PDF.</p>}
+            <pre className="letter-text">{detail.text}</pre>
+          </section>
           <JobFacts detail={detail} />
           <ExtractionTable extraction={detail.extraction} />
           <AnalysisSection trace={detail.trace} />
+        </div>
+        <div className="appeal-pane">
           <DraftView jobId={detail.job_id} draft={detail.draft} endState={detail.end_state} />
         </div>
       </div>

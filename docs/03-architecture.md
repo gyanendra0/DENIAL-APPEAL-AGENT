@@ -4401,10 +4401,12 @@ screen:
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms) |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login or sign-up is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
+| `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval or rejection refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `AppLayout` (account, email, role, menu, Log out), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
-| `frontend/src/styles.css` | Plain CSS with variables; soft UI theme (calming teal palette, all text pairs WCAG AA) |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password; `icons.tsx`, inline icons), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
 ### The screens
@@ -4458,8 +4460,12 @@ account, so everything but the session is removed (`clearAccountData`) when the 
 opens, at login, at sign-up and at logout: a second user who logs in on the same browser never
 sees the first one's rows, even for a moment.
 
-The sign-up form checks the password length (12 to 128) in the browser too; the API checks
-it again.
+The login and sign-up forms check their fields in the browser before anything is sent
+(`credentialCheck.ts`): an empty field, an email without the shape `something@something`, and
+at sign-up a password outside 12 to 128 characters get one sentence under that field, and the
+focus moves to the first one. The API checks everything again; a login password is not
+checked for length, as the API answers a wrong length like a wrong password. There is no
+"Forgot password?" link and no social login: the API has neither.
 
 ### An upload, step by step
 
@@ -4606,13 +4612,15 @@ denial". The menu has an Overview link for every role.
    `404` (no such job, or another account's) shows the same.
 2. While the job is `queued` or `running`, its status is polled as on the upload screen
    (3.21). Once it is finished, the detail is read once.
-3. Left: the letter's text (for a PDF, the text read from it, and the screen says so).
-4. Right, from top to bottom: the job facts (where it is, uploaded when and by whom, started,
+3. Left, from top to bottom: the letter's text (for a PDF, the text read from it, and the screen
+   says so); the job facts (where it is, uploaded when and by whom, started,
    finished, the model cost as the API's decimal string); the fifteen extracted fields, each
    with its confidence as a percentage, marked "Check this" when it is below `LOW_CONFIDENCE`
    (0.80) or the field is empty; the rules' verdict and reasons as sentences; the score beside
-   the threshold a draft needs; the evidence matches with their similarity; the draft.
-5. Under 800 pixels wide the two columns become one.
+   the threshold a draft needs; the evidence matches with their similarity.
+4. Right: the appeal draft with its review actions. It stays in view while the left column
+   scrolls and scrolls by itself when it is longer than the window.
+5. Under 760 pixels wide the two columns become one, the draft after the left column.
 
 ### The draft review, step by step
 

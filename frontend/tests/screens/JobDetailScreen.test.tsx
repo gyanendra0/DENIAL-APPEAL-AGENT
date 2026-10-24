@@ -259,7 +259,7 @@ describe("JobDetailScreen", () => {
     renderAt("/app/jobs/abc");
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Not found.");
-    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls.some(([path]) => String(path).startsWith("/jobs"))).toBe(false);
   });
 
   it("shows a server error on the detail in plain words", async () => {

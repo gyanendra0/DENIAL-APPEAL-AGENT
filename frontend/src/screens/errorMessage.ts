@@ -13,6 +13,7 @@ const MESSAGE_BY_KIND: Readonly<Record<ApiError["kind"], string>> = {
   length_required: "The upload had no size; try again.",
   too_large: "The file is too large.",
   invalid: "Some fields are not valid.",
+  too_many: "Too many tries. Try again in a few minutes.",
   server: "Something went wrong on the server. Try again later.",
   network: "The API could not be reached. Check your connection and try again.",
 };

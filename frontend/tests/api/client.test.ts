@@ -67,6 +67,7 @@ describe("apiRequest", () => {
     [409, "conflict"],
     [411, "length_required"],
     [413, "too_large"],
+    [429, "too_many"],
   ] as const)("maps a %i answer to the kind %s with the server's detail", async (status, kind) => {
     stubFetch(jsonResponse(status, { detail: "job not found" }));
 

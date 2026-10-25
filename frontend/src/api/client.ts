@@ -11,6 +11,7 @@ export type ApiErrorKind =
   | "length_required" // 411: the upload had no plain Content-Length
   | "too_large" // 413: the upload is over the size limit
   | "invalid" // 422: the request did not pass validation
+  | "too_many" // 429: too many failed tries; wait and try again
   | "server" // any other answer, or a body that is not the API's JSON
   | "network"; // no answer at all
 
@@ -43,6 +44,7 @@ const KIND_BY_STATUS: Readonly<Record<number, ApiErrorKind>> = {
   411: "length_required",
   413: "too_large",
   422: "invalid",
+  429: "too_many",
 };
 
 export class ApiError extends Error {

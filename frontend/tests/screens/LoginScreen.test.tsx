@@ -143,6 +143,22 @@ describe("LoginScreen", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Email or password is wrong.");
   });
 
+  it("says to wait after too many failed logins on a 429", async () => {
+    stubApi({
+      ...EMPTY_WORKLIST,
+      "GET /me": NO_SESSION,
+      "POST /auth/login": () =>
+        jsonResponse(429, { detail: "too many failed logins; try again later" }),
+    });
+    renderAt("/app/login");
+
+    await fillAndSubmit(ADMIN.email, "a long made-up password");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Too many failed logins. Try again in a few minutes.");
+    expect(alert).not.toHaveTextContent("Something went wrong");
+  });
+
   it("names the refused field on a 422 without the text typed into it", async () => {
     stubApi({
       ...EMPTY_WORKLIST,

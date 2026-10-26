@@ -36,7 +36,8 @@ def upgrade() -> None:
     op.execute(f"ALTER TYPE audit_action ADD VALUE '{NEW_AUDIT_ACTION}'")
     op.drop_constraint(JOB_CHECK_NAME, "audit_events", type_="check")
     op.create_check_constraint(JOB_CHECK_NAME, "audit_events", JOB_MATCHES_ACTION)
-    # Existing users start at 0; their tokens carry no version yet and are read as 0.
+    # Existing users start at 0. Tokens issued before this change carry no version and are
+    # refused (`ver` is a required claim), so each user logs in once more.
     op.add_column(
         "users",
         sa.Column("token_version", sa.Integer(), server_default="0", nullable=False),

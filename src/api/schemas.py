@@ -1,4 +1,4 @@
-"""Request and response bodies of the auth routes.
+"""Request and response bodies of the auth and account routes.
 
 A response never carries the password or its hash.
 """
@@ -69,6 +69,20 @@ class LoginRequest(BaseModel):
 
     email: Email
     password: str
+
+
+class PasswordChangeRequest(BaseModel):
+    """The current password and a new one. The account and user come from the login, never from
+    the body.
+
+    The current password's length is not checked here, so a wrong length is the same 400 as a
+    wrong password; the route refuses one over `MAX_LOGIN_PASSWORD_CHARACTERS` without hashing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str
+    new_password: Password
 
 
 class UserResponse(BaseModel):

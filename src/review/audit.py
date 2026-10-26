@@ -31,7 +31,8 @@ def record_audit_event(
 ) -> None:
     """Add one event of `account_id`. Does not commit: the caller owns the transaction.
 
-    `job_id` is `None` exactly for `account_created`; the table refuses anything else.
+    `job_id` is `None` exactly for `account_created` and `password_changed`; the table refuses
+    anything else.
     """
     session.add(
         AuditEvent(

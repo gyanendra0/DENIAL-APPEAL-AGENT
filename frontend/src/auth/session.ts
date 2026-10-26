@@ -6,8 +6,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 
-import { fetchMe, login, logout, signup } from "../api/auth";
-import type { LoginInput, SignupInput } from "../api/auth";
+import { changePassword, fetchMe, login, logout, signup } from "../api/auth";
+import type { LoginInput, PasswordChangeInput, SignupInput } from "../api/auth";
 import type { UserResponse } from "../api/types";
 
 export const SESSION_KEY = ["me"] as const;
@@ -56,5 +56,12 @@ export function useLogout() {
       queryClient.setQueryData(SESSION_KEY, null);
       clearAccountData(queryClient);
     },
+  });
+}
+
+// The user stays the same and the API sends a new cookie itself, so the cache is left as it is.
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (input: PasswordChangeInput) => changePassword(input),
   });
 }

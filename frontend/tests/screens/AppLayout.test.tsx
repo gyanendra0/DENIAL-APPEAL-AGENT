@@ -79,6 +79,18 @@ describe("AppLayout", () => {
     expect(await screen.findByRole("link", { name: "Worklist" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Upload" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/app/overview");
+    expect(screen.getByRole("link", { name: "Account" })).toHaveAttribute("href", "/app/account");
+  });
+
+  it("opens the account screen from the sidebar for a viewer", async () => {
+    const user = userEvent.setup();
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, VIEWER) });
+    const { router } = renderAt("/app/worklist");
+
+    await user.click(await screen.findByRole("link", { name: "Account" }));
+
+    expect(await screen.findByRole("heading", { name: "Change password" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/account");
   });
 
   it("collapses the sidebar and remembers it in this browser", async () => {

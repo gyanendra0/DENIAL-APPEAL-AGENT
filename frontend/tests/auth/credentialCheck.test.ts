@@ -4,6 +4,7 @@ import {
   MAX_PASSWORD_CHARACTERS,
   MIN_PASSWORD_CHARACTERS,
   checkLogin,
+  checkPasswordChange,
   checkSignup,
   focusFirstError,
 } from "../../src/auth/credentialCheck";
@@ -68,6 +69,38 @@ describe("checkSignup", () => {
     // Six emoji are twelve UTF-16 units but six characters in Python.
     expect(checkSignup({ ...VALID, password: "😀".repeat(6) }).password).toBeDefined();
     expect(checkSignup({ ...VALID, password: "😀".repeat(12) })).toEqual({});
+  });
+});
+
+describe("checkPasswordChange", () => {
+  const VALID = { currentPassword: "pw", newPassword: PASSWORD };
+
+  it("accepts a change, leaving the current password's length to the API", () => {
+    expect(checkPasswordChange(VALID)).toEqual({});
+  });
+
+  it("names both empty fields in screen order", () => {
+    const errors = checkPasswordChange({ currentPassword: "", newPassword: "" });
+
+    expect(Object.keys(errors)).toEqual(["currentPassword", "newPassword"]);
+    expect(errors.currentPassword).toBe("Enter your current password.");
+  });
+
+  it("refuses a new password one character outside the API's limits", () => {
+    const sentence = `Use ${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`;
+    const of = (length: number) =>
+      checkPasswordChange({ ...VALID, newPassword: "x".repeat(length) });
+
+    expect(of(MIN_PASSWORD_CHARACTERS)).toEqual({});
+    expect(of(MAX_PASSWORD_CHARACTERS)).toEqual({});
+    expect(of(MIN_PASSWORD_CHARACTERS - 1).newPassword).toBe(sentence);
+    expect(of(MAX_PASSWORD_CHARACTERS + 1).newPassword).toBe(sentence);
+  });
+
+  it("never repeats what was typed", () => {
+    expect(checkPasswordChange({ ...VALID, newPassword: "secret" }).newPassword).not.toContain(
+      "secret",
+    );
   });
 });
 

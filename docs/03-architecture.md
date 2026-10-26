@@ -3801,7 +3801,8 @@ About the rubric:
 ## 3.18 API and auth
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
-logout, the logged-in user's own record, one admin route and a health check. The upload and
+logout, the logged-in user's own record and their password change, one admin route and a
+health check. The upload and
 job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
 3.20.
 
@@ -3824,10 +3825,11 @@ place money is spent is the background job an upload queues, after its answer is
 | File | Holds |
 |---|---|
 | `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_now` (the time in UTC; tests override it), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
-| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
+| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
+| `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by sign-up, login and the password change |
 | `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
 | `src/api/login.py` | `authenticate`, the login lookup by email |
 | `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS` |
@@ -3836,6 +3838,7 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
 | `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
+| `src/db/migrations/versions/rev_0019_password_changed_and_token_version.py` | Migration 0019: `users.token_version` (default 0, never below 0) and the audit action `password_changed` (no job, 3.20); the downgrade deletes that action's events, rebuilds the type without it and drops the column |
 
 ### The routes
 
@@ -3845,6 +3848,7 @@ place money is spent is the background job an upload queues, after its answer is
 | `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `429` with `Retry-After` while the email or the client IP has too many recent failures (see "The login limit"); `422` for a body that does not fit |
 | `POST /auth/logout` | anyone | `204`; the cookie is cleared |
 | `GET /me` | a logged-in user | `200` with the user and their account's name; `401` when not logged in |
+| `POST /me/password` | a logged-in user of any role | `204` with a new login cookie (every other session ends); `400` "the current password is wrong"; `429` with `Retry-After` while the user's email or the client IP has too many recent failures; `401` when not logged in; `422` for a body that does not fit (a new password outside 12 to 128 characters, say) |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
 | `GET /health` | anyone | `200` with `{"status": "ok"}`; it touches no database |
 
@@ -3900,6 +3904,38 @@ to a `viewer`.
 Hashing and checking take tens of milliseconds on purpose: that is what makes a stolen hash
 slow to guess.
 
+### Changing the password, step by step
+
+`POST /me/password` takes the current password and a new one. The account and the user come
+from the login, never from the body (`extra="forbid"` refuses any other field).
+
+1. The body is checked: the new password is 12 to 128 characters, as at sign-up. The current
+   password's length is not checked, so a wrong length is the same `400` as a wrong password;
+   one over 1,024 characters gets that `400` without being hashed. The new password may be
+   the same as the old one.
+2. The user is read through `current_user_short`: the same check as `current_user`, in a
+   transaction that ends before the route runs.
+3. The try is counted against the login limit, exactly as at login (see "The login limit"),
+   with the keys of the **user's** email and the client IP. The failure row is written and
+   committed first; over the limit, the try's own rows are deleted and the answer is `429`
+   with `Retry-After`, without checking the password. So someone holding a stolen session
+   cannot guess the password faster than at the login screen, and wrong guesses here count
+   toward the same limit as wrong logins.
+4. In a second transaction the user row is locked (`SELECT ... FOR UPDATE`, filtered by
+   `account_id`), so two changes at the same moment are served one after the other.
+5. A wrong current password keeps the failure rows and is `400` "the current password is
+   wrong", raised after the transaction has ended. A right one, in the same transaction:
+   stores the new hash, raises `users.token_version` by one, deletes the failures of the
+   email's key and the try's own IP row (as a good login does), writes a `password_changed`
+   audit event (3.20) and sets a new login cookie carrying the new version.
+6. Every token issued before the change carries the old version, so `current_user` refuses
+   it from the next request on: every other session ends. This browser keeps working with the
+   new cookie.
+
+**Why `current_user_short`.** `current_user` reads the user in the route's `DbSession`, which
+rolls back on any error, and the `400` is an error. The route instead opens its own two
+transactions (as login does) and must hold no other session while it does.
+
 ### The login limit
 
 The limit slows down someone guessing passwords, for one account or across many.
@@ -3949,7 +3985,7 @@ The limit slows down someone guessing passwords, for one account or across many.
 | Part | Value |
 |---|---|
 | Format | JWT signed with HS256 (`PyJWT`); a token of any other algorithm is refused |
-| Claims | `sub` (the user id, as text), `acct` (the account id), `iat`, `exp`; all four are required |
+| Claims | `sub` (the user id, as text), `acct` (the account id), `ver` (the user's `token_version` when the token was issued, a whole number 0 or above), `iat`, `exp`; all five are required |
 | Lifetime | `AUTH_TOKEN_TTL_MINUTES`, 60 by default; there is no refresh token |
 | Cookie | `access_token`, HttpOnly, SameSite=Strict, path `/`, `max_age` equal to the lifetime, `Secure` unless `AUTH_COOKIE_SECURE` is false |
 
@@ -3960,6 +3996,9 @@ not say which check failed. The error message never repeats the token.
 SameSite=Strict means the browser does not send the cookie with a request started from
 another site, which is what stops a forged cross-site request.
 
+Tokens issued before migration 0019 have no `ver` and are refused, so every user logged in
+then has to log in once more (tokens last at most 60 minutes anyway).
+
 ### How one account is kept apart from another
 
 `current_user` runs on every route that needs a login:
@@ -3967,7 +4006,9 @@ another site, which is what stops a forged cross-site request.
 1. It reads the cookie and checks the token.
 2. It looks the user up with `for_account(User, acct).where(User.id == sub)`: the user is
    searched only inside the token's account. A token whose user and account do not belong
-   together finds nobody and gets `401`, like a missing token.
+   together finds nobody and gets `401`, like a missing token. A token whose `ver` is not the
+   user's current `token_version` (it was issued before a password change) gets the same
+   `401`.
 3. It returns `CurrentUser` (user id, account id, email, role), read from the database on
    every request, so a deleted user is logged out at once.
 
@@ -4002,7 +4043,7 @@ the model file must be there too. Tests call `create_app(api_settings, session_f
 job_runner)` with their own values instead, the runner a stub. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
-Every route except login takes its session through `DbSession`, which closes the session (and commits)
+Every route except login and the password change takes its session through `DbSession`, which closes the session (and commits)
 when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
 closes it after the answer, so a client could be told `201` for a sign-up whose commit then
 failed. A failed commit is now a `500` with no login cookie (tested).
@@ -4011,7 +4052,9 @@ failed. A failed commit is now a `500` with no login cookie (tested).
 
 Sign-up and login log the account id and the user id. A failed login logs only that it
 failed, and a login refused by the limit only "login refused: too many failures"; neither
-logs the email, the IP or their hashes. The email, the password, its hash and the token are never logged, and no response
+logs the email, the IP or their hashes. A password change logs the account id and the user
+id when it succeeds, and only "wrong current password" or "too many failures" when it does
+not. The email, the password, its hash and the token are never logged, and no response
 carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
 never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
 password would be the password, so `create_app` replaces it with `answer_validation_error`.
@@ -4022,7 +4065,10 @@ not carry the email or the hash. This holds for the pipelines too.
 ### Known limits
 
 - **No server-side logout.** `POST /auth/logout` clears the cookie, but a copied token stays
-  valid until it expires (at most `AUTH_TOKEN_TTL_MINUTES`).
+  valid until it expires (at most `AUTH_TOKEN_TTL_MINUTES`). A password change does end every
+  other session at once (`token_version`); a logout does not.
+- **No password reset yet.** A user who forgot their password cannot change it, and an admin
+  cannot set another user's password. "Forgot password?" by email is the next branch.
 - **Anyone who knows an email can lock its user out.** Five wrong passwords every 15
   minutes keep that email refused. The fix (an unlock link by email, or a challenge) needs
   a mail sender, which comes with the password reset branch.
@@ -4346,7 +4392,8 @@ The kind `edit_not_allowed` comes from the edit check.
 
 | Action | Written by | Detail |
 |---|---|---|
-| `account_created` | sign-up (3.18) | none; the only event with no job |
+| `account_created` | sign-up (3.18) | none; no job |
+| `password_changed` | `POST /me/password` (3.18) | none; no job (migration 0019) |
 | `upload_created` | `POST /uploads` (3.19) | none |
 | `draft_edited` | an edit | the new version |
 | `draft_approved` | an approve | the approved version |
@@ -4354,8 +4401,8 @@ The kind `edit_not_allowed` comes from the edit check.
 
 An event holds the account, the user, the action, the job, the time and a detail with fixed
 keys only (`AuditDetail`: `version`, `reject_reason`). It never holds document text, letter
-text or a file name. Sign-up and the upload write their event in the same transaction as
-their rows. The code only inserts events; nothing updates or deletes one.
+text or a file name. Sign-up, the password change and the upload write their event in the
+same transaction as their rows. The code only inserts events; nothing updates or deletes one.
 
 The links from an event to its user and its job have no cascade, so an audited user or job
 cannot be deleted on its own: the database refuses it. `GET /audit` gives the events with the
@@ -4385,7 +4432,7 @@ All three are business tables with `account_id`.
 |---|---|---|
 | `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
 | `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
-| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`), `detail` as a JSON object |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created` and `password_changed`, a check since migration 0019), `detail` as a JSON object |
 
 As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
 `job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
@@ -4471,17 +4518,17 @@ screen:
 | `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session (the login screen then empties the cache) |
 | `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
-| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
-| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `clearAccountData`; the session is the cache key `["me"]` |
+| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `clearAccountData`; the session is the cache key `["me"]` |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login or sign-up is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up or password change is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password; `icons.tsx`, inline icons), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4493,6 +4540,7 @@ screen:
 | `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
 | `/app/worklist` | a logged-in user of any role | `GET /worklist` |
 | `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
+| `/app/account` | a logged-in user of any role | `POST /me/password` |
 | any other path | | sends to `/app/worklist` |
 
 Every screen under `/app/` other than login and sign-up asks for the session first
@@ -4542,6 +4590,22 @@ at sign-up a password outside 12 to 128 characters get one sentence under that f
 focus moves to the first one. The API checks everything again; a login password is not
 checked for length, as the API answers a wrong length like a wrong password. There is no
 "Forgot password?" link and no social login: the API has neither.
+
+### Changing the password
+
+`/app/account` has one form: the current password and a new one, each a `PasswordField`.
+There is no "repeat the new password" field; the show button lets the user see what they
+typed.
+
+1. The browser checks first (`checkPasswordChange`): an empty current password gets "Enter
+   your current password."; a new password outside 12 to 128 characters gets "Use 12 to 128
+   characters.". The current password's length is not checked, as at login.
+2. `POST /me/password` is sent. A `400` shows the screen's own sentence, "The current password
+   is wrong."; a `429` and every other error use the general sentences (`describeError`), so
+   nothing typed is ever shown.
+3. On `204` both fields are cleared and the screen says the password is changed and other
+   sessions are logged out. The API's answer carries a new login cookie, so this browser stays
+   logged in; the user does not change, so the cache is left as it is.
 
 ### An upload, step by step
 

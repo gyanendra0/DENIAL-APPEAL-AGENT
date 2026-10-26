@@ -152,6 +152,7 @@ class AuditAction(StrEnum):
     DRAFT_EDITED = "draft_edited"
     DRAFT_APPROVED = "draft_approved"
     DRAFT_REJECTED = "draft_rejected"
+    PASSWORD_CHANGED = "password_changed"  # noqa: S105  (an audit action, not a password)
 
 
 class LoginKeyKind(StrEnum):
@@ -186,6 +187,7 @@ class User(AccountScopedMixin, TimestampMixin, Base):
         CheckConstraint(
             "email = lower(email) AND email !~ '^\\s|\\s$'", name="ck_users_email_normalized"
         ),
+        CheckConstraint("token_version >= 0", name="ck_users_token_version_not_negative"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -195,6 +197,10 @@ class User(AccountScopedMixin, TimestampMixin, Base):
         Enum(UserRole, name="user_role", values_callable=_values),
         nullable=False,
         default=UserRole.VIEWER,
+    )
+    # Carried in every login token; a password change adds 1, so the older tokens stop working.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
     )
 
 
@@ -1181,9 +1187,9 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
 
     Business table, written in the same transaction as the change; the code only inserts.
     `detail` holds fixed keys only (a version number, a reject reason), never document text.
-    `job_id` is empty exactly for `account_created`. The links to the user and the job carry
-    `account_id` and have no cascade, so an audited job cannot be deleted on its own;
-    deleting the account removes everything.
+    `job_id` is empty exactly for `account_created` and `password_changed`. The links to the
+    user and the job carry `account_id` and have no cascade, so an audited job cannot be
+    deleted on its own; deleting the account removes everything.
     """
 
     __tablename__ = "audit_events"
@@ -1195,7 +1201,7 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
             ["account_id", "job_id"], ["jobs.account_id", "jobs.id"], name="fk_audit_events_job"
         ),
         CheckConstraint(
-            "(action = 'account_created') = (job_id IS NULL)",
+            "(action::text IN ('account_created', 'password_changed')) = (job_id IS NULL)",
             name="ck_audit_events_job_matches_action",
         ),
         CheckConstraint("jsonb_typeof(detail) = 'object'", name="ck_audit_events_detail_is_object"),

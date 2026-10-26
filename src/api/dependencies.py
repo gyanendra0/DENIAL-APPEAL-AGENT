@@ -79,15 +79,12 @@ def get_db_session(request: Request) -> Iterator[Session]:
 DbSession = Annotated[Session, Depends(get_db_session, scope="function")]
 
 
-def current_user(
-    request: Request,
-    settings: Annotated[ApiSettings, Depends(get_api_settings)],
-    session: DbSession,
-) -> CurrentUser:
+def _user_from_cookie(request: Request, settings: ApiSettings, session: Session) -> CurrentUser:
     """Return the user named by the login cookie, or answer 401.
 
     The user is looked up inside the token's account, so a token whose user and account do not
-    belong together is refused like a missing one.
+    belong together is refused like a missing one. A token issued before the user's last
+    password change carries an older version and is refused the same way.
     """
     token = request.cookies.get(AUTH_COOKIE_NAME)
     if not token:
@@ -99,11 +96,35 @@ def current_user(
     user = session.scalars(
         for_account(User, claims.account_id).where(User.id == claims.user_id)
     ).one_or_none()
-    if user is None:
+    if user is None or user.token_version != claims.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN)
     return CurrentUser(
         user_id=user.id, account_id=user.account_id, email=user.email, role=user.role
     )
+
+
+def current_user(
+    request: Request,
+    settings: Annotated[ApiSettings, Depends(get_api_settings)],
+    session: DbSession,
+) -> CurrentUser:
+    """Return the logged-in user (see `_user_from_cookie`), read in the route's own session."""
+    return _user_from_cookie(request, settings, session)
+
+
+def current_user_short(
+    request: Request,
+    settings: Annotated[ApiSettings, Depends(get_api_settings)],
+    factory: Annotated[sessionmaker[Session], Depends(get_session_factory)],
+) -> CurrentUser:
+    """Return the logged-in user like `current_user`, read in a transaction that ends before
+    the route runs.
+
+    For a route that opens its own transactions (the login limit commits its count in one and
+    must keep it when a later one fails): the route then holds no other session or connection.
+    """
+    with session_scope(factory) as session:
+        return _user_from_cookie(request, settings, session)
 
 
 def require_role(*roles: UserRole) -> Callable[[CurrentUser], CurrentUser]:

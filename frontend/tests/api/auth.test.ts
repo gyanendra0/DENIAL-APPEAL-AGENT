@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fetchMe, login, logout, signup } from "../../src/api/auth";
+import { changePassword, fetchMe, login, logout, signup } from "../../src/api/auth";
 import { ApiError } from "../../src/api/client";
 import { ADMIN, jsonResponse, sentBody, stubApi } from "../helpers";
 
@@ -35,6 +35,24 @@ describe("auth calls", () => {
 
     await expect(logout()).resolves.toBeUndefined();
     expect(fetchStub.mock.calls[0]?.[1]?.body).toBeUndefined();
+  });
+
+  it("changes the password with a JSON body and accepts the 204", async () => {
+    const fetchStub = stubApi({ "POST /me/password": () => new Response(null, { status: 204 }) });
+    const input = { current_password: "made-up current", new_password: "a long made-up password" };
+
+    await expect(changePassword(input)).resolves.toBeUndefined();
+    expect(sentBody(fetchStub, "POST /me/password")).toEqual(input);
+  });
+
+  it("raises the API's 400 for a wrong current password", async () => {
+    stubApi({
+      "POST /me/password": () => jsonResponse(400, { detail: "the current password is wrong" }),
+    });
+
+    await expect(
+      changePassword({ current_password: "wrong", new_password: "a long made-up password" }),
+    ).rejects.toMatchObject({ status: 400, message: "the current password is wrong" });
   });
 });
 

@@ -1,4 +1,5 @@
-"""Login tokens: a JWT signed with HS256 that names the user and the user's account."""
+"""Login tokens: a JWT signed with HS256 that names the user, the user's account and the user's
+token version (raised by a password change, so older tokens stop working)."""
 
 from datetime import datetime, timedelta
 
@@ -6,7 +7,7 @@ import jwt
 from pydantic import BaseModel, ConfigDict
 
 TOKEN_ALGORITHM = "HS256"  # noqa: S105  (an algorithm name, not a password)
-REQUIRED_CLAIMS = ("sub", "acct", "iat", "exp")
+REQUIRED_CLAIMS = ("sub", "acct", "ver", "iat", "exp")
 
 
 class InvalidTokenError(Exception):
@@ -14,16 +15,24 @@ class InvalidTokenError(Exception):
 
 
 class TokenClaims(BaseModel):
-    """What a verified token says: who the user is and which account they belong to."""
+    """What a verified token says: who the user is, which account they belong to, and the
+    user's token version when it was issued."""
 
     model_config = ConfigDict(frozen=True)
 
     user_id: int
     account_id: int
+    token_version: int
 
 
 def issue_token(
-    *, user_id: int, account_id: int, secret: str, ttl_minutes: int, now: datetime
+    *,
+    user_id: int,
+    account_id: int,
+    token_version: int,
+    secret: str,
+    ttl_minutes: int,
+    now: datetime,
 ) -> str:
     """Return a signed token for one user, valid `ttl_minutes` after `now` (timezone-aware)."""
     if now.tzinfo is None:
@@ -32,6 +41,7 @@ def issue_token(
         # PyJWT requires `sub` to be a string.
         "sub": str(user_id),
         "acct": account_id,
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=ttl_minutes),
     }
@@ -52,8 +62,13 @@ def read_token(token: str, *, secret: str) -> TokenClaims:
         )
     except jwt.PyJWTError as error:
         raise InvalidTokenError("the login token is not valid") from error
-    sub, acct = payload["sub"], payload["acct"]
+    sub, acct, ver = payload["sub"], payload["acct"], payload["ver"]
     # A JSON number is never a bool in the token we issue; refuse one so `true` is not user 1.
-    if not (isinstance(sub, str) and sub.isdecimal()) or type(acct) is not int:
+    if (
+        not (isinstance(sub, str) and sub.isdecimal())
+        or type(acct) is not int
+        or type(ver) is not int
+        or ver < 0
+    ):
         raise InvalidTokenError("the login token is not valid")
-    return TokenClaims(user_id=int(sub), account_id=acct)
+    return TokenClaims(user_id=int(sub), account_id=acct, token_version=ver)

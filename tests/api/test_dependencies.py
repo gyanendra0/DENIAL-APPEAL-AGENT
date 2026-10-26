@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import (
     AUTH_COOKIE_NAME,
@@ -17,7 +17,9 @@ from src.api.dependencies import (
     NOT_LOGGED_IN,
     CurrentUser,
     current_user,
+    current_user_short,
     get_db_session,
+    get_session_factory,
     require_role,
 )
 from src.api.tokens import issue_token
@@ -29,6 +31,9 @@ SECRET = "a-made-up-test-secret-of-forty-characters"  # noqa: S105  (made up, no
 OTHER_SECRET = "another-made-up-secret-of-forty-characters"  # noqa: S105  (made up)
 FAKE_HASH = "not-used-here"  # noqa: S105  (these tests never check a password)
 
+# Every session the app's factory opened, so a test can see whether one is still in a transaction.
+_opened: list[Session] = []
+
 
 def _build_app() -> FastAPI:
     app = FastAPI()
@@ -38,6 +43,12 @@ def _build_app() -> FastAPI:
 
     @app.get("/whoami")
     def whoami(user: Annotated[CurrentUser, Depends(current_user)]) -> CurrentUser:
+        return user
+
+    @app.get("/whoami-short")
+    def whoami_short(user: Annotated[CurrentUser, Depends(current_user_short)]) -> CurrentUser:
+        # The route body runs after the dependency's transaction has ended.
+        assert _opened and not any(opened.in_transaction() for opened in _opened)
         return user
 
     @app.get("/admin-only")
@@ -62,7 +73,19 @@ def client(session: Session) -> Iterator[TestClient]:
     def _session() -> Iterator[Session]:
         yield session
 
+    factory = sessionmaker(bind=session.connection(), join_transaction_mode="create_savepoint")
+
+    def _factory() -> sessionmaker[Session]:
+        def opened_session() -> Session:
+            new_session = factory()
+            _opened.append(new_session)
+            return new_session
+
+        return opened_session  # type: ignore[return-value]
+
+    _opened.clear()
     app.dependency_overrides[get_db_session] = _session
+    app.dependency_overrides[get_session_factory] = _factory
     with TestClient(app) as test_client:
         yield test_client
 
@@ -84,10 +107,12 @@ def _login(
     account_id: int,
     now: datetime | None = None,
     secret: str = SECRET,
+    token_version: int = 0,
 ) -> None:
     token = issue_token(
         user_id=user_id,
         account_id=account_id,
+        token_version=token_version,
         secret=secret,
         ttl_minutes=60,
         now=now or datetime.now(UTC),
@@ -143,6 +168,26 @@ def test_token_signed_with_another_secret_is_401(client: TestClient, session: Se
         secret=OTHER_SECRET,
     )
     assert client.get("/whoami").status_code == 401
+
+
+def test_token_of_an_older_version_is_401(client: TestClient, session: Session) -> None:
+    user = _user(session, "Clinic A", "a@example.com", UserRole.ADMIN)
+    _login(client, user_id=user.id, account_id=user.account_id, token_version=0)
+    user.token_version = 1
+    session.flush()
+
+    response = client.get("/whoami")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": NOT_LOGGED_IN}
+
+
+def test_token_of_the_current_version_passes(client: TestClient, session: Session) -> None:
+    user = _user(session, "Clinic A", "a@example.com", UserRole.ADMIN)
+    user.token_version = 3
+    session.flush()
+    _login(client, user_id=user.id, account_id=user.account_id, token_version=3)
+    assert client.get("/whoami").status_code == 200
 
 
 def test_deleted_user_is_401(client: TestClient, session: Session) -> None:
@@ -206,6 +251,27 @@ def test_reviewer_passes_a_check_naming_reviewer(client: TestClient, session: Se
     user = _user(session, "Clinic A", "a@example.com", UserRole.REVIEWER)
     _login(client, user_id=user.id, account_id=user.account_id)
     assert client.get("/reviewers").status_code == 200
+
+
+def test_short_dependency_gives_the_same_user(client: TestClient, session: Session) -> None:
+    user = _user(session, "Clinic A", "a@example.com", UserRole.REVIEWER)
+    _login(client, user_id=user.id, account_id=user.account_id)
+
+    short = client.get("/whoami-short")
+
+    assert short.status_code == 200
+    assert short.json() == client.get("/whoami").json()
+
+
+def test_short_dependency_refuses_like_current_user(client: TestClient, session: Session) -> None:
+    assert client.get("/whoami-short").status_code == 401
+    user_a = _user(session, "Clinic A", "a@example.com", UserRole.ADMIN)
+    user_b = _user(session, "Clinic B", "b@example.com", UserRole.ADMIN)
+    _login(client, user_id=user_a.id, account_id=user_b.account_id)
+    assert client.get("/whoami-short").status_code == 401
+    _login(client, user_id=user_a.id, account_id=user_a.account_id, token_version=1)
+    response = client.get("/whoami-short")
+    assert (response.status_code, response.json()) == (401, {"detail": NOT_LOGGED_IN})
 
 
 def test_require_role_refuses_no_roles() -> None:

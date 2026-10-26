@@ -139,6 +139,7 @@ def test_routes_are_registered() -> None:
         "/auth/login",
         "/auth/logout",
         "/me",
+        "/me/password",
         "/users/{user_id}",
         "/uploads",
         "/jobs/{job_id}",

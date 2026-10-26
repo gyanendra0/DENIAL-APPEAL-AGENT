@@ -14,6 +14,7 @@ import {
   MenuIcon,
   PlusIcon,
   SidebarIcon,
+  UserIcon,
 } from "./icons";
 import { RecentDenials } from "./RecentDenials";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarPreference";
@@ -170,6 +171,10 @@ export function AppLayout() {
           <NavLink to="/app/overview">
             <ChartIcon />
             <span className="nav-text">Overview</span>
+          </NavLink>
+          <NavLink to="/app/account">
+            <UserIcon />
+            <span className="nav-text">Account</span>
           </NavLink>
         </nav>
         <RecentDenials />

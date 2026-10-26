@@ -12,10 +12,15 @@ from src.api.login_limit import (
     FailureIds,
     LoginKeys,
     clear_email_failures,
+    ip_key,
+    ip_over_limit,
+    ip_retry_after_seconds,
     login_keys,
     over_limit,
     release_failure,
+    release_ip_failure,
     reserve_failure,
+    reserve_ip_failure,
     retry_after_seconds,
 )
 from src.config.settings import ApiSettings
@@ -155,7 +160,7 @@ def test_clearing_the_email_keeps_the_earlier_ip_failures_but_not_the_own_one(
     _fail(session, keys, NOW, times=2)
     _fail(session, _keys(email="other@x.org", host="198.51.100.1"), NOW)
     own = _fail(session, keys, NOW)
-    clear_email_failures(session, keys, own)
+    clear_email_failures(session, keys.email_hash, own.ip_id)
     session.flush()
     remaining = _rows(session)
     assert (LoginKeyKind.EMAIL, keys.email_hash) not in remaining
@@ -205,3 +210,48 @@ def test_releasing_deletes_only_the_two_rows_of_that_try(session: Session) -> No
     release_failure(session, _fail(session, _keys(), NOW))
     session.flush()
     assert len(_rows(session)) == 4
+
+
+# --- by IP only (the password reset routes) ---
+
+
+def test_the_ip_key_alone_equals_the_ip_part_of_the_login_keys() -> None:
+    assert ip_key("203.0.113.7", SECRET) == _keys().ip_hash
+    assert ip_key("2001:db8::1", SECRET) == ip_key("2001:db8::2", SECRET)
+
+
+def test_an_ip_try_writes_one_ip_row_and_counts_with_login_failures(session: Session) -> None:
+    keys = _keys()
+    row_id = reserve_ip_failure(session, keys.ip_hash, now=NOW, window_minutes=WINDOW)
+    assert _rows(session) == [(LoginKeyKind.IP, keys.ip_hash)]
+    assert session.get(LoginFailure, row_id) is not None
+    _fail(session, keys, NOW, times=2)
+    settings = _settings(per_ip=3)
+    assert not ip_over_limit(session, keys.ip_hash, now=NOW, settings=settings)
+    reserve_ip_failure(session, keys.ip_hash, now=NOW, window_minutes=WINDOW)
+    assert ip_over_limit(session, keys.ip_hash, now=NOW, settings=settings)
+
+
+def test_an_ip_try_deletes_rows_older_than_the_window(session: Session) -> None:
+    _fail(session, _keys(), NOW - timedelta(minutes=16))
+    reserve_ip_failure(session, _keys().ip_hash, now=NOW, window_minutes=WINDOW)
+    assert len(_rows(session)) == 1
+
+
+def test_the_ip_wait_runs_until_the_oldest_counted_failure_leaves(session: Session) -> None:
+    ip_hash = _keys().ip_hash
+    settings = _settings(per_ip=2)
+    reserve_ip_failure(session, ip_hash, now=NOW - timedelta(minutes=5), window_minutes=WINDOW)
+    assert ip_retry_after_seconds(session, ip_hash, now=NOW, settings=settings) is None
+    reserve_ip_failure(session, ip_hash, now=NOW, window_minutes=WINDOW)
+    assert ip_retry_after_seconds(session, ip_hash, now=NOW, settings=settings) == 10 * 60
+
+
+def test_releasing_an_ip_try_deletes_only_its_row(session: Session) -> None:
+    ip_hash = _keys().ip_hash
+    kept = reserve_ip_failure(session, ip_hash, now=NOW, window_minutes=WINDOW)
+    released = reserve_ip_failure(session, ip_hash, now=NOW, window_minutes=WINDOW)
+    release_ip_failure(session, released)
+    session.flush()
+    session.expire_all()
+    assert [row.id for row in session.scalars(select(LoginFailure))] == [kept]

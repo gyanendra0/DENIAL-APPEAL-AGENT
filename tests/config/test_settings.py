@@ -435,12 +435,31 @@ def _is_placeholder(key: SecretStr) -> bool:
 TOKEN_SECRET = "test-token-secret-not-real-32chr"  # noqa: S105  (made up, not a real secret)
 LOGIN_LIMIT_KEYS = ("LOGIN_LIMIT_WINDOW_MINUTES", "LOGIN_LIMIT_PER_EMAIL", "LOGIN_LIMIT_PER_IP")
 API_KEYS = ("AUTH_TOKEN_SECRET", "AUTH_TOKEN_TTL_MINUTES", "AUTH_COOKIE_SECURE", *LOGIN_LIMIT_KEYS)
+MAIL_KEYS = (
+    "APP_PUBLIC_URL",
+    "MAIL_BACKEND",
+    "MAIL_OUTBOX_DIR",
+    "MAIL_SMTP_HOST",
+    "MAIL_SMTP_PORT",
+    "MAIL_SMTP_USERNAME",
+    "MAIL_SMTP_PASSWORD",
+    "MAIL_FROM",
+    "PASSWORD_RESET_TTL_MINUTES",
+    "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
+)
+SMTP_ENV = {
+    "MAIL_BACKEND": "smtp",
+    "MAIL_SMTP_HOST": "smtp.example.test",
+    "MAIL_SMTP_USERNAME": "made-up-user",
+    "MAIL_SMTP_PASSWORD": "made-up-mail-password",
+    "MAIL_FROM": "sender@example.test",
+}
 
 
 @pytest.fixture
 def api_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Set the token secret and clear the optional API keys."""
-    for key in API_KEYS:
+    for key in (*API_KEYS, *MAIL_KEYS):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", TOKEN_SECRET)
     return monkeypatch
@@ -576,3 +595,72 @@ def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     # Worked out before the assert, so a failure never prints the value of a real secret.
     secret_is_placeholder = _is_placeholder(settings.auth_token_secret)
     assert secret_is_placeholder, "AUTH_TOKEN_SECRET in .env.example is not a placeholder"
+
+
+def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert settings.app_public_url is None
+    assert (settings.mail_backend, settings.mail_outbox_dir) == ("outbox", Path("var/outbox"))
+    assert settings.mail_smtp_port == 587
+    assert settings.password_reset_ttl_minutes == 30
+    assert settings.password_reset_per_email_per_hour == 3
+
+
+def test_smtp_settings_are_read_from_the_environment(api_env: pytest.MonkeyPatch) -> None:
+    for key, value in SMTP_ENV.items():
+        api_env.setenv(key, value)
+    api_env.setenv("MAIL_SMTP_PORT", "2525")
+
+    settings = load_api_settings(env_file=None)
+
+    assert settings.mail_backend == "smtp"
+    assert (settings.mail_smtp_host, settings.mail_smtp_port) == ("smtp.example.test", 2525)
+    assert settings.mail_smtp_password is not None
+    assert settings.mail_smtp_password.get_secret_value() == "made-up-mail-password"
+    assert "made-up-mail-password" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "key", ["MAIL_SMTP_HOST", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD", "MAIL_FROM"]
+)
+def test_smtp_without_one_of_its_keys_fails_naming_it(
+    api_env: pytest.MonkeyPatch, key: str
+) -> None:
+    for name, value in SMTP_ENV.items():
+        api_env.setenv(name, value)
+    api_env.setenv(key, "")
+
+    with pytest.raises(ValidationError, match=key) as caught:
+        load_api_settings(env_file=None)
+    assert "made-up-mail-password" not in str(caught.value)
+
+
+def test_the_public_url_must_be_http_and_loses_a_trailing_slash(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    api_env.setenv("APP_PUBLIC_URL", "https://app.example.test/")
+    assert load_api_settings(env_file=None).app_public_url == "https://app.example.test"
+
+    api_env.setenv("APP_PUBLIC_URL", "app.example.test")
+    with pytest.raises(ValidationError, match="app_public_url"):
+        load_api_settings(env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MAIL_BACKEND", "carrier-pigeon"),
+        ("MAIL_SMTP_PORT", "0"),
+        ("PASSWORD_RESET_TTL_MINUTES", "0"),
+        ("PASSWORD_RESET_PER_EMAIL_PER_HOUR", "0"),
+    ],
+)
+def test_rejects_a_bad_mail_or_reset_value_naming_the_key(
+    api_env: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    api_env.setenv(key, value)
+    with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)

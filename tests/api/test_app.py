@@ -16,12 +16,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import src.api.app as app_module
 from src.api.app import answer_validation_error, create_app
+from src.api.mail import SmtpSender
 from src.config.settings import ApiSettings, get_settings
 from src.db.models import DatasetSplit, Job, JobFailure, JobStatus
 from src.jobs.run import JobContext
 from src.jobs.store import create_upload_job, start_job
 from src.ml.training import SplitFacts, save_win_model, train_win_model
-from tests.api.conftest import BASE_URL
+from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender
 from tests.jobs.helpers import add_member, new_upload
 from tests.ml.made_up_rows import training_rows
 
@@ -40,6 +41,14 @@ LLM_ENV = {
     "LLM_EMBEDDING_USD_PER_MTOK": "0.02",
 }
 
+MAIL_ENV = {
+    "MAIL_BACKEND": "smtp",
+    "MAIL_SMTP_HOST": "smtp.example.test",
+    "MAIL_SMTP_USERNAME": "made-up-user",
+    "MAIL_SMTP_PASSWORD": "made-up-mail-password",
+    "MAIL_FROM": "sender@example.test",
+}
+
 
 def _no_job(account_id: int, job_id: int) -> None:
     raise AssertionError("no job is expected")
@@ -49,9 +58,14 @@ def _no_job(account_id: int, job_id: int) -> None:
 def no_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Run where no `.env` exists, so only the variables set by the test count."""
     monkeypatch.chdir(tmp_path)
-    for key in ("AUTH_TOKEN_SECRET", "AUTH_TOKEN_TTL_MINUTES", "AUTH_COOKIE_SECURE"):
+    for key in (
+        "AUTH_TOKEN_SECRET",
+        "AUTH_TOKEN_TTL_MINUTES",
+        "AUTH_COOKIE_SECURE",
+        "APP_PUBLIC_URL",
+    ):
         monkeypatch.delenv(key, raising=False)
-    for key in [name for name in os.environ if name.startswith("LLM_")]:
+    for key in [name for name in os.environ if name.startswith(("LLM_", "MAIL_"))]:
         monkeypatch.delenv(key)
     get_settings.cache_clear()
     yield
@@ -72,6 +86,9 @@ def full_env(no_env_file: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("DATABASE_URL", URL)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", SECRET)
+    monkeypatch.setenv("APP_PUBLIC_URL", PUBLIC_URL)
+    for key, value in MAIL_ENV.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setenv("MODEL_DIR", str(model_dir))
     monkeypatch.setenv("PROMPT_DIR", str(PROMPT_DIR))
 
@@ -84,6 +101,25 @@ def test_builds_from_the_environment() -> None:
     assert settings.upload_max_bytes == 1_000_000
     assert app.state.session_factory.kw["bind"].url.database == "none"
     assert callable(app.state.job_runner)
+    assert isinstance(app.state.mail_sender, SmtpSender)
+    assert app.state.mail_sender.host == "smtp.example.test"
+    assert app.state.public_url == PUBLIC_URL
+
+
+@pytest.mark.usefixtures("full_env")
+def test_a_missing_public_url_fails_at_startup_naming_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("APP_PUBLIC_URL")
+    with pytest.raises(ValueError, match="APP_PUBLIC_URL"):
+        create_app()
+
+
+@pytest.mark.usefixtures("full_env")
+def test_the_outbox_with_secure_cookies_fails_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAIL_BACKEND", "outbox")
+    with pytest.raises(ValueError, match="MAIL_BACKEND=outbox"):
+        create_app()
 
 
 @pytest.mark.usefixtures("full_env")
@@ -129,15 +165,17 @@ def test_short_secret_fails_at_startup_without_showing_it(
 
 def test_routes_are_registered() -> None:
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), _env_file=None
+        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
     )
-    app = create_app(settings, sessionmaker(), _no_job)
+    app = create_app(settings, sessionmaker(), _no_job, RecordingSender())
     # Included routers are nested in `app.routes`; the published schema lists every path.
     assert set(app.openapi()["paths"]) == {
         "/health",
         "/auth/signup",
         "/auth/login",
         "/auth/logout",
+        "/auth/password-reset",
+        "/auth/password-reset/confirm",
         "/me",
         "/me/password",
         "/users/{user_id}",
@@ -170,9 +208,9 @@ def test_startup_fails_the_jobs_a_stopped_process_left_unfinished(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), _env_file=None
+        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
     )
-    with TestClient(create_app(settings, factory, _no_job), base_url=BASE_URL):
+    with TestClient(create_app(settings, factory, _no_job, RecordingSender()), base_url=BASE_URL):
         pass
     db_session.expire_all()
     for job_id in (queued, running):

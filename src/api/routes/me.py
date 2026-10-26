@@ -28,6 +28,7 @@ from src.api.login_limit import (
     retry_after_seconds,
 )
 from src.api.passwords import hash_password, verify_password
+from src.api.reset_tokens import delete_reset_tokens
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS, PasswordChangeRequest, UserResponse
 from src.api.user_lookup import find_user_response
 from src.config.settings import ApiSettings
@@ -74,8 +75,8 @@ def change_password(
     A wrong current password is a 400 and counts toward the login limit of the user's email and
     the client IP, so a stolen session cannot guess the password faster than login could; over
     the limit, 429 without checking. The answer carries a new login cookie, so this session stays
-    logged in while every older token stops working. Takes tens of milliseconds on purpose (two
-    password hashes).
+    logged in while every older token stops working; every reset link of the user stops working
+    too. Takes tens of milliseconds on purpose (two password hashes).
     """
     client_host = request.client.host if request.client is not None else None
     keys = login_keys(user.email, client_host, settings.auth_token_secret.get_secret_value())
@@ -104,7 +105,9 @@ def change_password(
             ):
                 row.password_hash = hash_password(body.new_password)
                 row.token_version += 1
-                clear_email_failures(session, keys, ids)
+                # A reset link asked for before the change must not undo it.
+                delete_reset_tokens(session, account_id=row.account_id, user_id=row.id)
+                clear_email_failures(session, keys.email_hash, ids.ip_id)
                 record_audit_event(
                     session, row.account_id, row.id, AuditAction.PASSWORD_CHANGED, None
                 )

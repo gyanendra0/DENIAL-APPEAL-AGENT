@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import JobRunner
-from src.api.routes import audit, auth, health, jobs, me, overview, review, users
+from src.api.mail import MailSender, build_mail_sender
+from src.api.routes import audit, auth, health, jobs, me, overview, password_reset, review, users
 from src.api.upload_limit import UploadSizeLimit
 from src.config.settings import (
     ApiSettings,
@@ -71,14 +72,19 @@ def create_app(
     api_settings: ApiSettings | None = None,
     session_factory: sessionmaker[Session] | None = None,
     job_runner: JobRunner | None = None,
+    mail_sender: MailSender | None = None,
 ) -> FastAPI:
     """Build the API app.
 
-    With no arguments the settings, the database and the job runner come from the environment,
-    so a missing or short `AUTH_TOKEN_SECRET`, a missing `DATABASE_URL`, a missing LLM key or a
-    missing model file fails here, at startup.
+    With no arguments the settings, the database, the job runner and the mail sender come from
+    the environment, so a missing or short `AUTH_TOKEN_SECRET`, a missing `DATABASE_URL`, a
+    missing LLM key, a missing model file or a mail setup that cannot send fails here, at
+    startup. A missing `APP_PUBLIC_URL` fails here too, whatever is passed in.
     """
     settings = api_settings if api_settings is not None else load_api_settings()
+    if settings.app_public_url is None:
+        raise ValueError("APP_PUBLIC_URL is not set; password reset links are built from it")
+    sender = mail_sender if mail_sender is not None else build_mail_sender(settings)
     factory = (
         session_factory
         if session_factory is not None
@@ -89,11 +95,14 @@ def create_app(
     app.state.api_settings = settings
     app.state.session_factory = factory
     app.state.job_runner = runner
+    app.state.mail_sender = sender
+    app.state.public_url = settings.app_public_url
     app.add_exception_handler(RequestValidationError, answer_validation_error)
     app.add_middleware(UploadSizeLimit)
     for router in (
         health.router,
         auth.router,
+        password_reset.router,
         me.router,
         users.router,
         jobs.router,

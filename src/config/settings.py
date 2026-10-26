@@ -138,6 +138,9 @@ class ApiSettings(BaseSettings):
     cookie flag is set false only for local development over plain HTTP. The upload limit is
     the largest file, in bytes, one upload may send. The login limit refuses a login when the
     typed email or the client IP has this many failed logins inside the window (in minutes).
+    The mail keys say how password reset emails leave the app; a reset link lives
+    `password_reset_ttl_minutes`, and one email address gets at most
+    `password_reset_per_email_per_hour` links an hour.
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -156,6 +159,44 @@ class ApiSettings(BaseSettings):
     login_limit_window_minutes: int = Field(default=15, ge=1)
     login_limit_per_email: int = Field(default=5, ge=1)
     login_limit_per_ip: int = Field(default=20, ge=1)
+    # The address the browser opens the app at; reset links are built from it, never from the
+    # request's `Host` header. Optional here so that settings load without it; `create_app`
+    # refuses to start without it.
+    app_public_url: str | None = None
+    # `outbox` writes each email as a file (local development only); `smtp` sends it.
+    mail_backend: Literal["outbox", "smtp"] = "outbox"
+    mail_outbox_dir: Path = Path("var/outbox")
+    mail_smtp_host: str | None = None
+    mail_smtp_port: int = Field(default=587, ge=1, le=65535)
+    mail_smtp_username: str | None = None
+    mail_smtp_password: SecretStr | None = None
+    mail_from: str | None = None
+    password_reset_ttl_minutes: int = Field(default=30, ge=1)
+    password_reset_per_email_per_hour: int = Field(default=3, ge=1)
+
+    @field_validator("app_public_url")
+    @classmethod
+    def _public_url_must_be_http(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("the public URL must start with http:// or https://")
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _smtp_needs_its_keys(self) -> Self:
+        if self.mail_backend != "smtp":
+            return self
+        values = {
+            "MAIL_SMTP_HOST": self.mail_smtp_host,
+            "MAIL_SMTP_USERNAME": self.mail_smtp_username,
+            "MAIL_SMTP_PASSWORD": self.mail_smtp_password,
+            "MAIL_FROM": self.mail_from,
+        }
+        missing = [key for key, value in values.items() if value is None]
+        if missing:
+            raise ValueError(f"MAIL_BACKEND=smtp needs {', '.join(missing)}")
+        return self
 
     @field_validator("auth_token_secret")
     @classmethod

@@ -18,7 +18,7 @@ from src.api.routes import auth as auth_module
 from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN, LOGIN_FAILED
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
 from src.db.models import Account, LoginFailure, LoginKeyKind, User, UserRole
-from tests.api.conftest import API_TTL_MINUTES, BASE_URL, api_settings
+from tests.api.conftest import API_TTL_MINUTES, BASE_URL, RecordingSender, api_settings
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 WRONG = "a-made-up-wrong-password"  # noqa: S105  (made up)
@@ -221,6 +221,7 @@ def test_signup_whose_commit_fails_is_not_answered_201(api_connection: Connectio
         api_settings=api_settings(),
         session_factory=factory,
         job_runner=lambda account_id, job_id: None,
+        mail_sender=RecordingSender(),
     )
     # Not entered with `with`, so the startup sweep (whose commit would fail too) does not run.
     client = TestClient(app, base_url=BASE_URL, raise_server_exceptions=False)

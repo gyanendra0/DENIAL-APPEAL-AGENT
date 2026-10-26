@@ -49,23 +49,26 @@ export function AuthField({ label, icon, hint, error, trailing, ...inputProps }:
   );
 }
 
-type PasswordFieldProps = Omit<AuthFieldProps, "label" | "icon" | "type" | "trailing">;
+type PasswordFieldProps = Omit<AuthFieldProps, "label" | "icon" | "type" | "trailing"> & {
+  label?: string;
+};
 
 // The password input with a button that shows or hides what was typed. The button keeps one
-// name and says its state with aria-pressed.
-export function PasswordField(props: PasswordFieldProps) {
+// name, taken from the label so two password fields on one form have different buttons, and says
+// its state with aria-pressed.
+export function PasswordField({ label = "Password", ...props }: PasswordFieldProps) {
   const [shown, setShown] = useState(false);
   return (
     <AuthField
       {...props}
-      label="Password"
+      label={label}
       icon={<LockIcon />}
       type={shown ? "text" : "password"}
       trailing={
         <button
           type="button"
           className="auth-reveal"
-          aria-label="Show password"
+          aria-label={`Show ${label.toLowerCase()}`}
           aria-pressed={shown}
           onClick={() => setShown(!shown)}
         >

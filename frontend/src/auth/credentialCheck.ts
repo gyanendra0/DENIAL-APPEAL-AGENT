@@ -11,6 +11,7 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+$/;
 
 export type LoginField = "email" | "password";
 export type SignupField = "accountName" | "email" | "password";
+export type PasswordChangeField = "currentPassword" | "newPassword";
 
 // One fixed sentence per wrong field, in the order the fields are on the screen. A sentence never
 // repeats what was typed.
@@ -29,6 +30,14 @@ function checkEmail(email: string): string | undefined {
 // Python's `len` counts code points, so the length is counted the same way here.
 function passwordLength(password: string): number {
   return [...password].length;
+}
+
+// A new password must have the API's length; the sentence names the limits.
+function checkNewPassword(password: string): string | undefined {
+  const length = passwordLength(password);
+  return length < MIN_PASSWORD_CHARACTERS || length > MAX_PASSWORD_CHARACTERS
+    ? `Use ${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`
+    : undefined;
 }
 
 function withoutEmpty<Field extends string>(
@@ -57,14 +66,22 @@ export function checkSignup(values: {
   email: string;
   password: string;
 }): FieldErrors<SignupField> {
-  const length = passwordLength(values.password);
   return withoutEmpty<SignupField>({
     accountName: values.accountName.trim() === "" ? "Enter the account name." : undefined,
     email: checkEmail(values.email),
-    password:
-      length < MIN_PASSWORD_CHARACTERS || length > MAX_PASSWORD_CHARACTERS
-        ? `Use ${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`
-        : undefined,
+    password: checkNewPassword(values.password),
+  });
+}
+
+// The current password's length is not checked, as at login: the API answers a wrong length like
+// a wrong password.
+export function checkPasswordChange(values: {
+  currentPassword: string;
+  newPassword: string;
+}): FieldErrors<PasswordChangeField> {
+  return withoutEmpty<PasswordChangeField>({
+    currentPassword: values.currentPassword === "" ? "Enter your current password." : undefined,
+    newPassword: checkNewPassword(values.newPassword),
   });
 }
 

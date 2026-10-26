@@ -43,4 +43,11 @@ describe("PasswordField", () => {
     expect(input).toHaveAttribute("type", "password");
     expect(toggle).toHaveAttribute("aria-pressed", "false");
   });
+
+  it("names the input and its show button after a given label", () => {
+    render(<PasswordField label="New password" />);
+
+    expect(screen.getByLabelText("New password")).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: "Show new password" })).toBeInTheDocument();
+  });
 });

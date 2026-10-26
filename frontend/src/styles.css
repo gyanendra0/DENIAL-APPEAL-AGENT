@@ -828,6 +828,11 @@ textarea {
   text-align: left;
 }
 
+/* The change password form on the account screen keeps the login form's width. */
+.account-form {
+  max-width: 420px;
+}
+
 .auth-panel {
   display: flex;
   flex-direction: column;

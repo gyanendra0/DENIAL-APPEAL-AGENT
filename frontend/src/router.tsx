@@ -3,6 +3,7 @@ import type { RouteObject } from "react-router";
 
 import { RequireSession } from "./auth/RequireSession";
 import { HOME_PATH } from "./auth/redirect";
+import { AccountScreen } from "./screens/AccountScreen";
 import { AppLayout } from "./screens/AppLayout";
 import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { LoginScreen } from "./screens/LoginScreen";
@@ -28,6 +29,7 @@ export const routes: RouteObject[] = [
       { path: "upload", element: <UploadScreen /> },
       { path: "jobs/:id", element: <JobDetailScreen /> },
       { path: "overview", element: <OverviewScreen /> },
+      { path: "account", element: <AccountScreen /> },
     ],
   },
   { path: "*", element: <Navigate to={HOME_PATH} replace /> },

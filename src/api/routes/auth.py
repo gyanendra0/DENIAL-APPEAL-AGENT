@@ -1,7 +1,7 @@
 """Sign-up, login and logout. The login token travels only in an HttpOnly cookie."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -15,6 +15,7 @@ from src.api.dependencies import (
     get_session_factory,
 )
 from src.api.login import authenticate
+from src.api.login_cookie import set_login_cookie
 from src.api.login_limit import (
     TOO_MANY_LOGINS,
     clear_email_failures,
@@ -26,7 +27,6 @@ from src.api.login_limit import (
 )
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS, LoginRequest, SignupRequest, UserResponse
 from src.api.signup import AccountNameTakenError, EmailTakenError, create_account_with_admin
-from src.api.tokens import issue_token
 from src.api.user_lookup import find_user_response
 from src.config.settings import ApiSettings
 from src.db.models import AuditAction
@@ -45,27 +45,6 @@ EMAIL_TAKEN = "the email is taken"
 Settings = Annotated[ApiSettings, Depends(get_api_settings)]
 SessionFactory = Annotated[sessionmaker[Session], Depends(get_session_factory)]
 Now = Annotated[datetime, Depends(get_now)]
-
-
-def _set_login_cookie(
-    response: Response, settings: ApiSettings, *, user_id: int, account_id: int
-) -> None:
-    token = issue_token(
-        user_id=user_id,
-        account_id=account_id,
-        secret=settings.auth_token_secret.get_secret_value(),
-        ttl_minutes=settings.auth_token_ttl_minutes,
-        now=datetime.now(UTC),
-    )
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        token,
-        max_age=settings.auth_token_ttl_minutes * 60,
-        path="/",
-        secure=settings.auth_cookie_secure,
-        httponly=True,
-        samesite="strict",
-    )
 
 
 def _user_response(session: Session, *, account_id: int, user_id: int) -> UserResponse:
@@ -90,7 +69,13 @@ def signup(
     except EmailTakenError:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from None
     record_audit_event(session, user.account_id, user.id, AuditAction.ACCOUNT_CREATED, None)
-    _set_login_cookie(response, settings, user_id=user.id, account_id=user.account_id)
+    set_login_cookie(
+        response,
+        settings,
+        user_id=user.id,
+        account_id=user.account_id,
+        token_version=user.token_version,
+    )
     logger.info("signup: account %d, user %d", user.account_id, user.id)
     return _user_response(session, account_id=user.account_id, user_id=user.id)
 
@@ -139,7 +124,13 @@ def login(
             )
             if user is not None:
                 clear_email_failures(session, keys, ids)
-                _set_login_cookie(response, settings, user_id=user.id, account_id=user.account_id)
+                set_login_cookie(
+                    response,
+                    settings,
+                    user_id=user.id,
+                    account_id=user.account_id,
+                    token_version=user.token_version,
+                )
                 logger.info("login: account %d, user %d", user.account_id, user.id)
                 return _user_response(session, account_id=user.account_id, user_id=user.id)
     if retry_after is not None:

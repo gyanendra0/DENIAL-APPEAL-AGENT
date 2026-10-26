@@ -15,6 +15,7 @@ def _token(now: datetime | None = None, ttl_minutes: int = 60) -> str:
     return issue_token(
         user_id=7,
         account_id=3,
+        token_version=2,
         secret=SECRET,
         ttl_minutes=ttl_minutes,
         now=now or datetime.now(UTC),
@@ -30,6 +31,7 @@ def _payload(**changes: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "sub": "7",
         "acct": 3,
+        "ver": 2,
         "iat": now,
         "exp": now + timedelta(minutes=5),
     }
@@ -37,8 +39,10 @@ def _payload(**changes: Any) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def test_token_round_trip_gives_user_and_account() -> None:
-    assert read_token(_token(), secret=SECRET) == TokenClaims(user_id=7, account_id=3)
+def test_token_round_trip_gives_user_account_and_version() -> None:
+    assert read_token(_token(), secret=SECRET) == TokenClaims(
+        user_id=7, account_id=3, token_version=2
+    )
 
 
 def test_token_carries_the_lifetime() -> None:
@@ -50,7 +54,14 @@ def test_token_carries_the_lifetime() -> None:
 
 def test_issue_refuses_a_naive_time() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
-        issue_token(user_id=1, account_id=1, secret=SECRET, ttl_minutes=60, now=datetime.now())
+        issue_token(
+            user_id=1,
+            account_id=1,
+            token_version=0,
+            secret=SECRET,
+            ttl_minutes=60,
+            now=datetime.now(),
+        )
 
 
 def test_rejects_an_expired_token() -> None:
@@ -85,7 +96,7 @@ def test_rejects_an_unsigned_token() -> None:
         read_token(token, secret=SECRET)
 
 
-@pytest.mark.parametrize("missing", ["sub", "acct", "iat", "exp"])
+@pytest.mark.parametrize("missing", ["sub", "acct", "ver", "iat", "exp"])
 def test_rejects_a_token_missing_a_claim(missing: str) -> None:
     payload = _payload()
     del payload[missing]
@@ -102,6 +113,10 @@ def test_rejects_a_token_missing_a_claim(missing: str) -> None:
         {"acct": "3"},
         {"acct": True},
         {"acct": 3.0},
+        {"ver": "2"},
+        {"ver": True},
+        {"ver": 2.0},
+        {"ver": -1},
     ],
 )
 def test_rejects_claims_of_the_wrong_shape(changes: dict[str, Any]) -> None:

@@ -169,6 +169,26 @@ def test_rejects_the_same_email_in_two_accounts(session: Session) -> None:
         session.flush()
 
 
+def test_a_new_user_starts_at_token_version_zero(session: Session) -> None:
+    user = _user(_account(session, "a"), "new@example.com")
+    session.add(user)
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(User, user.id)
+    assert stored is not None
+    assert stored.token_version == 0
+
+
+def test_rejects_a_negative_token_version(session: Session) -> None:
+    user = _user(_account(session, "a"), "new@example.com")
+    user.token_version = -1
+    session.add(user)
+
+    with pytest.raises(IntegrityError, match="ck_users_token_version_not_negative"):
+        session.flush()
+
+
 def test_rejects_a_user_without_a_password_hash(session: Session) -> None:
     session.add(User(account_id=_account(session, "a").id, email="a@example.com"))
 
@@ -2292,6 +2312,7 @@ def test_rejects_a_revision_naming_a_draft_or_an_editor_of_another_account(
     ("action", "with_job"),
     [
         (AuditAction.ACCOUNT_CREATED, False),
+        (AuditAction.PASSWORD_CHANGED, False),
         (AuditAction.UPLOAD_CREATED, True),
         (AuditAction.DRAFT_EDITED, True),
         (AuditAction.DRAFT_APPROVED, True),
@@ -2316,6 +2337,7 @@ def test_stores_an_audit_event_with_a_job_exactly_when_the_action_needs_one(
     ("bad", "constraint"),
     [
         ({"action": AuditAction.ACCOUNT_CREATED}, "ck_audit_events_job_matches_action"),
+        ({"action": AuditAction.PASSWORD_CHANGED}, "ck_audit_events_job_matches_action"),
         ({"job_id": None}, "ck_audit_events_job_matches_action"),
         ({"detail": ["version", 1]}, "ck_audit_events_detail_is_object"),
         ({"detail": "text"}, "ck_audit_events_detail_is_object"),

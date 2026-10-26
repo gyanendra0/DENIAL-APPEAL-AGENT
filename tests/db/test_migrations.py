@@ -4,6 +4,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import CheckConstraint, Engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from src.db.base import Base
 from src.db.migrations.versions import rev_0002_issuer_denial_stats as migration_0002
@@ -23,6 +24,9 @@ from src.db.migrations.versions import rev_0015_users_password_and_global_email 
 from src.db.migrations.versions import rev_0016_uploads_and_jobs as migration_0016
 from src.db.migrations.versions import rev_0017_draft_review_and_audit as migration_0017
 from src.db.migrations.versions import rev_0018_login_failures as migration_0018
+from src.db.migrations.versions import (
+    rev_0019_password_changed_and_token_version as migration_0019,
+)
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -627,7 +631,10 @@ def test_migration_0015_has_the_same_check_rule_as_the_model() -> None:
         if isinstance(constraint, CheckConstraint)
     }
 
-    assert model_checks == {"ck_users_email_normalized": migration_0015.EMAIL_NORMALIZED}
+    assert model_checks == {
+        "ck_users_email_normalized": migration_0015.EMAIL_NORMALIZED,
+        "ck_users_token_version_not_negative": migration_0019.TOKEN_VERSION_NOT_NEGATIVE,
+    }
 
 
 def test_users_has_the_global_email_key_and_the_normalized_check(engine: Engine) -> None:
@@ -638,7 +645,8 @@ def test_users_has_the_global_email_key_and_the_normalized_check(engine: Engine)
         "uq_users_account_id",
     }
     assert {check["name"] for check in inspector.get_check_constraints("users")} == {
-        "ck_users_email_normalized"
+        "ck_users_email_normalized",
+        "ck_users_token_version_not_negative",
     }
 
 
@@ -883,15 +891,21 @@ def test_migration_0017_lists_the_same_values_as_the_models() -> None:
     assert tuple(member.value for member in DraftRejectReason) == (
         migration_0017.DRAFT_REJECT_REASON
     )
-    assert tuple(member.value for member in AuditAction) == migration_0017.AUDIT_ACTION
+    # 0019 added one audit action; the rest are the ones 0017 made.
+    assert migration_0017.AUDIT_ACTION == migration_0019.AUDIT_ACTION_BEFORE
 
 
 def test_migration_0017_has_the_same_check_rules_as_the_models() -> None:
     model_checks = _model_checks((*UPLOAD_TABLES, *REVIEW_TABLES))
+    # 0019 replaced one rule of 0017; the test of 0019 compares the new one.
+    kept = {
+        name: rule
+        for name, rule in MIGRATION_0017_CHECKS.items()
+        if name != migration_0019.JOB_CHECK_NAME
+    }
 
-    assert {
-        name: rule for name, rule in model_checks.items() if name in MIGRATION_0017_CHECKS
-    } == MIGRATION_0017_CHECKS
+    assert {name: rule for name, rule in model_checks.items() if name in kept} == kept
+    assert migration_0017.JOB_MATCHES_ACTION == migration_0019.JOB_MATCHES_ACTION_BEFORE
     assert set(_model_checks(REVIEW_TABLES)) <= set(MIGRATION_0017_CHECKS)
 
 
@@ -915,6 +929,40 @@ def test_migration_0018_lists_the_same_values_and_check_rule_as_the_model() -> N
     assert _model_checks((LOGIN_FAILURE_TABLE,)) == {
         "ck_login_failures_key_hash_format": migration_0018.KEY_HASH_FORMAT
     }
+
+
+def test_migration_0019_lists_the_same_audit_actions_and_check_rules_as_the_models() -> None:
+    assert tuple(member.value for member in AuditAction) == (
+        *migration_0019.AUDIT_ACTION_BEFORE,
+        migration_0019.NEW_AUDIT_ACTION,
+    )
+    assert _model_checks(REVIEW_TABLES)[migration_0019.JOB_CHECK_NAME] == (
+        migration_0019.JOB_MATCHES_ACTION
+    )
+    assert _model_checks(("users",))["ck_users_token_version_not_negative"] == (
+        migration_0019.TOKEN_VERSION_NOT_NEGATIVE
+    )
+
+
+def test_users_token_version_starts_at_zero_and_refuses_a_negative_number(
+    engine: Engine,
+) -> None:
+    insert_user = text(
+        "INSERT INTO users (account_id, email, password_hash, role)"
+        " VALUES (:a, 'v@example.com', 'x', 'viewer') RETURNING token_version"
+    )
+    try:
+        with engine.begin() as conn:
+            account_id = conn.scalar(text("INSERT INTO accounts (name) VALUES ('v') RETURNING id"))
+            assert conn.scalar(insert_user, {"a": account_id}) == 0
+        with (
+            pytest.raises(IntegrityError, match="ck_users_token_version_not_negative"),
+            engine.begin() as conn,
+        ):
+            conn.execute(text("UPDATE users SET token_version = -1"))
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
 
 
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
@@ -1002,6 +1050,74 @@ def test_upgrade_to_0017_makes_existing_drafts_pending_and_existing_jobs_cost_no
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM accounts"))
         command.upgrade(alembic_config, "head")
+
+
+def _audit_action_values(engine: Engine) -> list[str]:
+    with engine.connect() as conn:
+        return list(conn.scalars(text("SELECT unnest(enum_range(NULL::audit_action))::text")))
+
+
+def _store_audit_events_with_sql(engine: Engine) -> None:
+    # One event of each kind without a job: the old one stays, the new one goes on downgrade.
+    with engine.begin() as conn:
+        account_id = conn.scalar(text("INSERT INTO accounts (name) VALUES ('p') RETURNING id"))
+        user_id = conn.scalar(
+            text(
+                "INSERT INTO users (account_id, email, password_hash, role)"
+                " VALUES (:a, 'p@example.com', 'x', 'admin') RETURNING id"
+            ),
+            {"a": account_id},
+        )
+        for action in ("account_created", "password_changed"):
+            conn.execute(
+                text(
+                    "INSERT INTO audit_events (account_id, user_id, action)"
+                    " VALUES (:a, :u, CAST(:action AS audit_action))"
+                ),
+                {"a": account_id, "u": user_id, "action": action},
+            )
+
+
+def test_downgrade_to_0018_removes_password_changed_its_rows_and_the_token_version(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine)
+        command.downgrade(alembic_config, "0018")
+
+        assert _audit_action_values(engine) == list(migration_0019.AUDIT_ACTION_BEFORE)
+        inspector = inspect(engine)
+        assert "token_version" not in {c["name"] for c in inspector.get_columns("users")}
+        assert {c["name"] for c in inspector.get_check_constraints("users")} == {
+            "ck_users_email_normalized"
+        }
+        with engine.connect() as conn:
+            actions = list(conn.scalars(text("SELECT action::text FROM audit_events")))
+            rule = conn.scalar(
+                text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
+                {"name": migration_0019.JOB_CHECK_NAME},
+            )
+        assert actions == ["account_created"]
+        assert "password_changed" not in rule
+        assert _type_names(engine, (migration_0019.OLD_TYPE_NAME,)) == set()
+        # The old rule is back: an upload event still needs its job.
+        with (
+            pytest.raises(IntegrityError, match=migration_0019.JOB_CHECK_NAME),
+            engine.begin() as conn,
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO audit_events (account_id, user_id, action)"
+                    " SELECT account_id, id, 'upload_created' FROM users"
+                )
+            )
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+    assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    assert "token_version" in {c["name"] for c in inspect(engine).get_columns("users")}
 
 
 def test_downgrade_to_0017_removes_the_login_failures_table_and_its_enum(

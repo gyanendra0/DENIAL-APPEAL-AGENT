@@ -895,13 +895,14 @@ def test_migration_0017_has_the_same_check_rules_as_the_models() -> None:
     assert set(_model_checks(REVIEW_TABLES)) <= set(MIGRATION_0017_CHECKS)
 
 
-def test_login_failures_has_its_lookup_index_and_hash_check_and_no_links(engine: Engine) -> None:
+def test_login_failures_has_its_two_indexes_and_hash_check_and_no_links(engine: Engine) -> None:
     inspector = inspect(engine)
     indexes = {i["name"]: i["column_names"] for i in inspector.get_indexes(LOGIN_FAILURE_TABLE)}
     unique, foreign, checks = _keys_links_and_checks(engine, LOGIN_FAILURE_TABLE)
 
     assert indexes == {
-        "ix_login_failures_key_kind_key_hash_created_at": ["key_kind", "key_hash", "created_at"]
+        "ix_login_failures_key_kind_key_hash_created_at": ["key_kind", "key_hash", "created_at"],
+        "ix_login_failures_created_at": ["created_at"],
     }
     assert unique == {}
     assert inspector.get_foreign_keys(LOGIN_FAILURE_TABLE) == []

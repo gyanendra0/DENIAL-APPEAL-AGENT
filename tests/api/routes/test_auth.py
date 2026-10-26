@@ -1,5 +1,6 @@
 """Sign-up, login and logout through the real app on `app_test`."""
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
@@ -332,3 +333,42 @@ def test_a_password_over_the_cap_counts_as_a_failure(
     too_long = "p" * (MAX_LOGIN_PASSWORD_CHARACTERS + 1)
     assert _login(api_client, password=too_long) == 401
     assert len(_failure_rows(db_session)) == 2
+
+
+def test_a_try_is_counted_before_its_password_is_checked(
+    api_client: TestClient, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The server runs tries in parallel threads; a try that is counted only after its password
+    # check is invisible to the tries that run beside it, and they all pass the limit.
+    seen: list[int] = []
+    real_authenticate = login_module.authenticate
+
+    def authenticate(session: Session, *, email: str, password: str) -> User | None:
+        seen.append(len(_failure_rows(session)))
+        return real_authenticate(session, email=email, password=password)
+
+    monkeypatch.setattr(auth_module, "authenticate", authenticate)
+    assert _login(api_client) == 401
+    assert seen == [2]
+
+
+def test_a_429_and_its_log_lines_never_hold_the_email_password_or_ip(
+    api_client: TestClient, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    _signup(api_client)
+    api_client.cookies.clear()
+    caplog.set_level(logging.INFO)
+    responses = [
+        api_client.post("/auth/login", json={"email": "ann@x.org", "password": WRONG})
+        for _ in range(5)
+    ]
+    responses.append(
+        api_client.post("/auth/login", json={"email": "ann@x.org", "password": PASSWORD})
+    )
+    assert [response.status_code for response in responses] == [401] * 5 + [429]
+    shown = caplog.text + "".join(
+        response.text + str(dict(response.headers)) for response in responses
+    )
+    assert "login refused: too many failures" in caplog.text and "login failed" in caplog.text
+    for secret in ("ann@x.org", WRONG, PASSWORD, "testclient"):
+        assert secret not in shown

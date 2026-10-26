@@ -606,6 +606,8 @@ class LoginFailure(TimestampMixin, Base):
         Index(
             "ix_login_failures_key_kind_key_hash_created_at", "key_kind", "key_hash", "created_at"
         ),
+        # Every try deletes the rows older than the window by `created_at`.
+        Index("ix_login_failures_created_at", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

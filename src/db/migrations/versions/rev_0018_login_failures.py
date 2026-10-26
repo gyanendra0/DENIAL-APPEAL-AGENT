@@ -40,9 +40,12 @@ def upgrade() -> None:
         "login_failures",
         ["key_kind", "key_hash", "created_at"],
     )
+    # Every try deletes the rows older than the window; without this it would scan the table.
+    op.create_index("ix_login_failures_created_at", "login_failures", ["created_at"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_login_failures_created_at", table_name="login_failures")
     op.drop_index("ix_login_failures_key_kind_key_hash_created_at", table_name="login_failures")
     op.drop_table("login_failures")
     for enum_name in NEW_ENUMS:

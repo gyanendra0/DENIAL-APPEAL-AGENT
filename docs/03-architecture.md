@@ -3830,12 +3830,12 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
 | `src/api/login.py` | `authenticate`, the login lookup by email |
-| `src/api/login_limit.py` | The login limit: `login_keys`, `retry_after_seconds`, `record_failure`, `clear_email_failures`, the message `TOO_MANY_LOGINS` |
+| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS` |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
 | `src/api/routes/` | `auth.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
-| `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` and the type `login_key_kind`; the downgrade drops both |
+| `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
 
 ### The routes
 
@@ -3874,12 +3874,14 @@ to a `viewer`.
 
 1. The email is trimmed and lowercased, as at sign-up. A body that does not fit is a `422`
    and is not counted as a failure.
-2. The login limit is checked first, before any password work: the email and the client IP
-   are turned into two keyed hashes, and if either key has too many failures inside the
-   window, the answer is `429` "too many failed logins; try again later" with a
+2. The login limit comes first, before any password work. The email and the client IP are
+   turned into two keyed hashes, and the try is written as one failure row per key and
+   committed. Then the rows inside the window are counted, the try's own included. If either
+   key has more than its limit, the try deletes its own rows again (a refused try is not
+   counted) and the answer is `429` "too many failed logins; try again later" with a
    `Retry-After` header. This happens even when the password is right, so a guesser cannot
    tell a right password from a wrong one while they are refused. A refused try costs no
-   hashing and writes nothing.
+   hashing.
 3. The password length is not checked against 12-128, so a password of the wrong length
    gets the same `401` as a wrong one. A password over 1,024 characters
    (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401` without being hashed, so a huge
@@ -3890,9 +3892,9 @@ to a `viewer`.
    password matches.
 5. For an unknown email the password is still checked against a fixed dummy hash, so that
    case takes about as long as a wrong password and the time does not tell which emails exist.
-6. A match clears the failures of the email's key (not the IP's) and sets the login cookie.
-   Anything else writes one failure row per key, in a second transaction of its own, and is
-   `401` with the message "email or password is wrong". An unknown email is counted the same
+6. A match deletes the failures of the email's key and the try's own IP row (earlier IP
+   failures stay) and sets the login cookie. Anything else keeps the rows written in step 2
+   and is `401` with the message "email or password is wrong". An unknown email is counted the same
    way as a wrong password, so the limit does not tell which emails exist either.
 
 Hashing and checking take tens of milliseconds on purpose: that is what makes a stolen hash
@@ -3908,8 +3910,9 @@ The limit slows down someone guessing passwords, for one account or across many.
 | The client IP (`request.client.host`) | failures from that address, over every email | 20 in 15 minutes |
 
 - **Where the counts are.** In the operational table `login_failures` (migration 0018):
-  one row per failed login per key, with `key_kind` (`email` or `ip`, the type
-  `login_key_kind`), `key_hash` and the timestamps; an index on kind, hash and `created_at`.
+  one row per try per key, kept when the login fails, with `key_kind` (`email` or `ip`, the type
+  `login_key_kind`), `key_hash` and the timestamps; an index on kind, hash and `created_at`
+  for the count, and one on `created_at` alone for deleting old rows.
   It has no `account_id`: a failure on an unknown email has no account. Because the counts
   are in the database, a restart does not reset them.
 - **No plain email or IP is stored.** `key_hash` is an HMAC-SHA256 in lowercase hex (a check
@@ -3920,17 +3923,24 @@ The limit slows down someone guessing passwords, for one account or across many.
   by its /64 network, because one home or server usually gets a whole /64. An IPv4 address
   written as IPv6 (`::ffff:1.2.3.4`) counts as the IPv4 address. A host that is not an IP
   address is hashed as text, and a request with no known host counts as `unknown`.
-- **The window slides.** A key is refused when its newest `limit` failures are all inside
-  the last 15 minutes. `Retry-After` is the number of seconds until the oldest of them
-  leaves the window (rounded up, at least 1); when both keys are refused, the longer wait.
-- **Why two transactions.** Every error raised in a transaction rolls it back, and the `401`
-  is an error. So the route reads the limit and checks the password in one transaction, and
-  writes the failure in a second one after the first has ended; the row survives the `401`
-  (tested). This route does not use `DbSession` for that reason.
+- **The window slides.** A try is refused when its key has more than `limit` failures inside
+  the last 15 minutes, its own row included. `Retry-After` is the number of seconds until
+  the oldest of the newest `limit` other failures leaves the window (rounded up, at least
+  1); when both keys are refused, the longer wait.
+- **Why the row comes first.** The server runs tries in parallel threads (up to 40). If a
+  try were counted only after its password check, a burst of tries would all see the same
+  count and all be checked. Written and committed first, each try sees the rows of every try
+  that started before it, so at most `limit` per key reach the password check (tested: the
+  try's own rows are there when the password is checked).
+- **Why two transactions.** Other tries see a row only once it is committed, so the first
+  transaction writes it and ends. Every error raised in a transaction rolls it back, and the
+  `401` and `429` are errors; so the second transaction (count, password, the deletes)
+  decides the answer and the route raises it after the transaction has ended. The failure
+  rows survive the `401` (tested). This route does not use `DbSession` for that reason.
 - **Why a good login keeps the IP count.** Otherwise an attacker could reset their IP's count
   by logging in to their own account between guesses.
-- **Old rows go away.** Every new failure also deletes all rows older than the window, so the
-  table stays small without a cleanup job.
+- **Old rows go away.** Every try also deletes all rows older than the window, so the table
+  stays small without a cleanup job.
 - **Tests do not wait.** The time comes from `get_now`, which the tests replace with a fixed
   time and then move 15 minutes on.
 
@@ -4020,8 +4030,10 @@ not carry the email or the hash. This holds for the pipelines too.
   gets 20 failures per 15 minutes for everyone behind it.
 - **A spread-out attack is not stopped.** Many addresses trying many emails, a few tries
   each, keep every key under its limit.
-- **The counts are approximate under load.** Two tries at the same moment can both see 4
-  failures and both go ahead, so a few more than the limit can get through.
+- **A burst can refuse more than it must.** Tries at the same moment each count every row
+  committed before them, so no more than the limit get through; but a try that counts after
+  later tries have written their rows may be refused although it was among the first
+  `limit`. It errs on the side of refusing.
 - **Behind a proxy the IP is the proxy's.** The limit sees the real client only if uvicorn
   trusts the proxy (`--forwarded-allow-ips`); otherwise 20 failures from anyone would block
   every login. This is set and checked with the containers (Stage 6).

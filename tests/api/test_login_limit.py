@@ -9,10 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.api.login_limit import (
+    FailureIds,
     LoginKeys,
     clear_email_failures,
     login_keys,
-    record_failure,
+    over_limit,
+    release_failure,
+    reserve_failure,
     retry_after_seconds,
 )
 from src.config.settings import ApiSettings
@@ -38,10 +41,9 @@ def _keys(email: str = "ann@x.org", host: str | None = "203.0.113.7") -> LoginKe
     return login_keys(email, host, SECRET)
 
 
-def _fail(session: Session, keys: LoginKeys, at: datetime, times: int = 1) -> None:
-    for _ in range(times):
-        record_failure(session, keys, now=at, window_minutes=WINDOW)
-    session.flush()
+def _fail(session: Session, keys: LoginKeys, at: datetime, times: int = 1) -> FailureIds:
+    ids = [reserve_failure(session, keys, now=at, window_minutes=WINDOW) for _ in range(times)]
+    return ids[-1]
 
 
 def _rows(session: Session) -> list[tuple[LoginKeyKind, str]]:
@@ -146,13 +148,60 @@ def test_a_new_failure_deletes_rows_older_than_the_window(session: Session) -> N
     assert all(row.created_at == NOW for row in session.scalars(select(LoginFailure)))
 
 
-def test_clearing_the_email_keeps_the_ip_failures(session: Session) -> None:
+def test_clearing_the_email_keeps_the_earlier_ip_failures_but_not_the_own_one(
+    session: Session,
+) -> None:
     keys = _keys()
     _fail(session, keys, NOW, times=2)
     _fail(session, _keys(email="other@x.org", host="198.51.100.1"), NOW)
-    clear_email_failures(session, keys)
+    own = _fail(session, keys, NOW)
+    clear_email_failures(session, keys, own)
     session.flush()
     remaining = _rows(session)
     assert (LoginKeyKind.EMAIL, keys.email_hash) not in remaining
     assert remaining.count((LoginKeyKind.IP, keys.ip_hash)) == 2
     assert len(remaining) == 4
+
+
+def test_a_reserved_failure_returns_the_ids_of_its_two_rows(session: Session) -> None:
+    keys = _keys()
+    ids = _fail(session, keys, NOW)
+    email_row = session.get(LoginFailure, ids.email_id)
+    ip_row = session.get(LoginFailure, ids.ip_id)
+    assert email_row is not None and (email_row.key_kind, email_row.key_hash) == (
+        LoginKeyKind.EMAIL,
+        keys.email_hash,
+    )
+    assert ip_row is not None and (ip_row.key_kind, ip_row.key_hash) == (
+        LoginKeyKind.IP,
+        keys.ip_hash,
+    )
+
+
+def test_the_own_row_counts_so_only_a_try_past_the_limit_is_over(session: Session) -> None:
+    _fail(session, _keys(), NOW, times=5)
+    assert not over_limit(session, _keys(), now=NOW, settings=_settings())
+    sixth = _fail(session, _keys(), NOW)
+    assert over_limit(session, _keys(), now=NOW, settings=_settings())
+    release_failure(session, sixth)
+    session.flush()
+    assert not over_limit(session, _keys(), now=NOW, settings=_settings())
+    assert retry_after_seconds(session, _keys(), now=NOW, settings=_settings()) == WINDOW * 60
+
+
+def test_the_ip_is_over_its_limit_on_its_own(session: Session) -> None:
+    for number in range(4):
+        _fail(session, _keys(email=f"user{number}@x.org"), NOW)
+    assert over_limit(session, _keys(email="fresh@x.org"), now=NOW, settings=_settings(per_ip=3))
+
+
+def test_failures_outside_the_window_are_not_counted(session: Session) -> None:
+    _fail(session, _keys(), NOW - timedelta(minutes=WINDOW), times=6)
+    assert not over_limit(session, _keys(), now=NOW, settings=_settings())
+
+
+def test_releasing_deletes_only_the_two_rows_of_that_try(session: Session) -> None:
+    _fail(session, _keys(), NOW, times=2)
+    release_failure(session, _fail(session, _keys(), NOW))
+    session.flush()
+    assert len(_rows(session)) == 4

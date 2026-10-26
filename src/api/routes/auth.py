@@ -19,7 +19,9 @@ from src.api.login_limit import (
     TOO_MANY_LOGINS,
     clear_email_failures,
     login_keys,
-    record_failure,
+    over_limit,
+    release_failure,
+    reserve_failure,
     retry_after_seconds,
 )
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS, LoginRequest, SignupRequest, UserResponse
@@ -109,11 +111,23 @@ def login(
     """
     client_host = request.client.host if request.client is not None else None
     keys = login_keys(body.email, client_host, settings.auth_token_secret.get_secret_value())
-    # Two transactions one after the other, not one: the 401 is an error, and an error rolls back
-    # the transaction it is raised in, which would take the failure rows with it.
+    # The try is counted as a failure first and committed, then the count is read: tries running
+    # at the same time see each other's rows, so at most the limit reach the password check.
     with session_scope(factory) as session:
-        retry_after = retry_after_seconds(session, keys, now=now, settings=settings)
-        if retry_after is None:
+        ids = reserve_failure(
+            session, keys, now=now, window_minutes=settings.login_limit_window_minutes
+        )
+    # Every answer is decided inside the transaction and raised after it: an error rolls back the
+    # transaction it is raised in, which would undo the deletes below.
+    retry_after: int | None = None
+    with session_scope(factory) as session:
+        if over_limit(session, keys, now=now, settings=settings):
+            release_failure(session, ids)
+            session.flush()
+            # Without its own rows the count is at the limit again, so there is a wait; a good
+            # login of another try may have cleared the rows meanwhile, hence the floor.
+            retry_after = retry_after_seconds(session, keys, now=now, settings=settings) or 1
+        else:
             # A password longer than any sign-up allows can never match; refusing it here keeps a
             # huge body from being hashed. The length does not depend on the email, so this says
             # nothing.
@@ -124,7 +138,7 @@ def login(
                 else authenticate(session, email=body.email, password=body.password)
             )
             if user is not None:
-                clear_email_failures(session, keys)
+                clear_email_failures(session, keys, ids)
                 _set_login_cookie(response, settings, user_id=user.id, account_id=user.account_id)
                 logger.info("login: account %d, user %d", user.account_id, user.id)
                 return _user_response(session, account_id=user.account_id, user_id=user.id)
@@ -135,8 +149,7 @@ def login(
             TOO_MANY_LOGINS,
             headers={"Retry-After": str(retry_after)},
         )
-    with session_scope(factory) as session:
-        record_failure(session, keys, now=now, window_minutes=settings.login_limit_window_minutes)
+    # The failure rows were committed before the password check, so they stay.
     logger.info("login failed")
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)
 

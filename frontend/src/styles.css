@@ -966,6 +966,13 @@ textarea {
   color: var(--color-muted);
 }
 
+/* The "Forgot password?" link sits at the right under the password field. */
+.auth-forgot {
+  margin: -4px 0 0;
+  text-align: right;
+  font-size: 14px;
+}
+
 @media (max-width: 1050px) {
   :root {
     --sidebar-width: 232px;

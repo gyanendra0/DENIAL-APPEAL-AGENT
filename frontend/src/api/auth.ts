@@ -1,4 +1,4 @@
-// The auth calls: sign-up, login, logout, the logged-in user and a password change.
+// The auth calls: sign-up, login, logout, the logged-in user, a password change and a reset.
 // The API sets and clears the HttpOnly login cookie itself; these calls never see the token.
 
 import { ApiError, apiRequest, jsonRequest } from "./client";
@@ -20,6 +20,15 @@ export interface PasswordChangeInput {
   new_password: string;
 }
 
+export interface PasswordResetAskInput {
+  email: string;
+}
+
+export interface PasswordResetConfirmInput {
+  token: string;
+  new_password: string;
+}
+
 export function signup(input: SignupInput): Promise<UserResponse> {
   return apiRequest<UserResponse>("/auth/signup", jsonRequest("POST", input));
 }
@@ -35,6 +44,17 @@ export async function logout(): Promise<void> {
 // Answers 204 and a new login cookie: this browser stays logged in, every other session ends.
 export async function changePassword(input: PasswordChangeInput): Promise<void> {
   await apiRequest<undefined>("/me/password", jsonRequest("POST", input));
+}
+
+// Answers 202 and the same sentence whether or not the email has an account, so the body is not
+// read: the screen says it in its own words.
+export async function askPasswordReset(input: PasswordResetAskInput): Promise<void> {
+  await apiRequest<unknown>("/auth/password-reset", jsonRequest("POST", input));
+}
+
+// Answers 204 and no cookie: the user logs in with the new password. Every other session ends.
+export async function confirmPasswordReset(input: PasswordResetConfirmInput): Promise<void> {
+  await apiRequest<undefined>("/auth/password-reset/confirm", jsonRequest("POST", input));
 }
 
 // The logged-in user, or null when there is no session (a 401). Any other error is raised.

@@ -6,8 +6,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 
-import { changePassword, fetchMe, login, logout, signup } from "../api/auth";
-import type { LoginInput, PasswordChangeInput, SignupInput } from "../api/auth";
+import {
+  askPasswordReset,
+  changePassword,
+  confirmPasswordReset,
+  fetchMe,
+  login,
+  logout,
+  signup,
+} from "../api/auth";
+import type {
+  LoginInput,
+  PasswordChangeInput,
+  PasswordResetAskInput,
+  PasswordResetConfirmInput,
+  SignupInput,
+} from "../api/auth";
 import type { UserResponse } from "../api/types";
 
 export const SESSION_KEY = ["me"] as const;
@@ -63,5 +77,19 @@ export function useLogout() {
 export function useChangePassword() {
   return useMutation({
     mutationFn: (input: PasswordChangeInput) => changePassword(input),
+  });
+}
+
+// Asking for a reset link and setting the new password happen without a session; neither logs in,
+// so the cache is left as it is (the login screen empties it when the user goes there).
+export function useAskPasswordReset() {
+  return useMutation({
+    mutationFn: (input: PasswordResetAskInput) => askPasswordReset(input),
+  });
+}
+
+export function useConfirmPasswordReset() {
+  return useMutation({
+    mutationFn: (input: PasswordResetConfirmInput) => confirmPasswordReset(input),
   });
 }

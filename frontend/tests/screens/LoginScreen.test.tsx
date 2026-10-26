@@ -236,4 +236,23 @@ describe("LoginScreen", () => {
 
     expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
   });
+
+  it("links to the reset screen", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    const { router } = renderAt("/app/login");
+
+    await userEvent.setup().click(await screen.findByRole("link", { name: "Forgot password?" }));
+
+    expect(await screen.findByRole("heading", { name: "Reset your password" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/forgot-password");
+  });
+
+  it("says nothing about a reset when it was not sent from one", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/login");
+
+    await screen.findByRole("heading", { name: "Log in" });
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });

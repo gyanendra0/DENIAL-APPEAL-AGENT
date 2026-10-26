@@ -6,6 +6,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { checkLogin, focusFirstError } from "../auth/credentialCheck";
 import type { FieldErrors, LoginField } from "../auth/credentialCheck";
 import { afterLoginPath } from "../auth/redirect";
+import { FORGOT_PASSWORD_PATH, isPasswordSetState } from "../auth/resetLink";
 import { clearAccountData, useLogin } from "../auth/session";
 import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
@@ -52,6 +53,9 @@ export function LoginScreen() {
         </>
       }
     >
+      {isPasswordSetState(location.state) && (
+        <p role="status">Your password is set. Log in with it.</p>
+      )}
       <form className="form auth-form" noValidate onSubmit={onSubmit}>
         <AuthField
           label="Email"
@@ -72,6 +76,9 @@ export function LoginScreen() {
           error={errors.password}
           onChange={(event) => setPassword(event.target.value)}
         />
+        <p className="auth-forgot">
+          <Link to={FORGOT_PASSWORD_PATH}>Forgot password?</Link>
+        </p>
         {loginMutation.isError && (
           <p className="error" role="alert">
             {describeError(loginMutation.error, {

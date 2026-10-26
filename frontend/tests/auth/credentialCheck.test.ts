@@ -5,6 +5,8 @@ import {
   MIN_PASSWORD_CHARACTERS,
   checkLogin,
   checkPasswordChange,
+  checkResetAsk,
+  checkResetConfirm,
   checkSignup,
   focusFirstError,
 } from "../../src/auth/credentialCheck";
@@ -101,6 +103,29 @@ describe("checkPasswordChange", () => {
     expect(checkPasswordChange({ ...VALID, newPassword: "secret" }).newPassword).not.toContain(
       "secret",
     );
+  });
+});
+
+describe("checkResetAsk", () => {
+  it("accepts an email", () => {
+    expect(checkResetAsk({ email: "ada@example.test" })).toEqual({});
+  });
+
+  it("names an empty or malformed email", () => {
+    expect(checkResetAsk({ email: " " }).email).toBe("Enter your email.");
+    expect(checkResetAsk({ email: "ada" }).email).toBe("Enter an email like name@example.com.");
+  });
+});
+
+describe("checkResetConfirm", () => {
+  it("refuses a new password one character outside the API's limits", () => {
+    const sentence = `Use ${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`;
+    const of = (length: number) => checkResetConfirm({ newPassword: "x".repeat(length) });
+
+    expect(of(MIN_PASSWORD_CHARACTERS)).toEqual({});
+    expect(of(MAX_PASSWORD_CHARACTERS)).toEqual({});
+    expect(of(MIN_PASSWORD_CHARACTERS - 1).newPassword).toBe(sentence);
+    expect(of(MAX_PASSWORD_CHARACTERS + 1).newPassword).toBe(sentence);
   });
 });
 

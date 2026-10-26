@@ -203,7 +203,8 @@ def test_older_tokens_stop_working_and_this_session_stays(
     new_token = api_client.cookies[AUTH_COOKIE_NAME]
     assert new_token != old_token
     assert api_client.get("/me").status_code == 200
-    # Another browser still holding a token from before the change.
+    # Another browser still holding a token from before the change (and only that token).
+    api_client.cookies.clear()
     api_client.cookies.set(AUTH_COOKIE_NAME, old_token)
     assert api_client.get("/me").status_code == 401
 

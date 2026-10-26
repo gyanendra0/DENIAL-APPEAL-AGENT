@@ -8,6 +8,7 @@ describe("describeError", () => {
     [403, "forbidden", "Your role cannot do this."],
     [404, "not_found", "Not found."],
     [413, "too_large", "The file is too large."],
+    [429, "too_many", "Too many tries. Try again in a few minutes."],
     [500, "server", "Something went wrong on the server. Try again later."],
   ] as const)("gives one sentence for a %i", (status, kind, expected) => {
     expect(describeError(new ApiError(status, kind, "detail from the API"))).toBe(expected);

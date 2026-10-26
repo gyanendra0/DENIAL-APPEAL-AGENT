@@ -103,7 +103,8 @@ Every business table carries `account_id`, and every query filters on it. This i
 single most important rule in the codebase.
 
 Two kinds of table hold no customer data and have no `account_id`: public reference tables
-loaded from public sources, and operational tables such as `llm_calls` (see 3.8). The rule
+loaded from public sources, and operational tables such as `llm_calls` (see 3.8) and
+`login_failures` (see 3.18). The rule
 is in [conventions 6.4](06-conventions.md#64-database).
 
 `accounts` and `users` are the first business tables the product uses: sign-up writes one
@@ -3823,23 +3824,25 @@ place money is spent is the background job an upload queues, after its answer is
 | File | Holds |
 |---|---|
 | `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_now` (the time in UTC; tests override it), `current_user`, `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
 | `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
 | `src/api/login.py` | `authenticate`, the login lookup by email |
+| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS` |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
 | `src/api/routes/` | `auth.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
+| `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
 
 ### The routes
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
 | `POST /auth/signup` | anyone | `201` with the new user and the login cookie; `409` when the account name or the email is taken; `422` for a body that does not fit |
-| `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `422` for a body that does not fit |
+| `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `429` with `Retry-After` while the email or the client IP has too many recent failures (see "The login limit"); `422` for a body that does not fit |
 | `POST /auth/logout` | anyone | `204`; the cookie is cleared |
 | `GET /me` | a logged-in user | `200` with the user and their account's name; `401` when not logged in |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
@@ -3869,21 +3872,77 @@ to a `viewer`.
 
 ### Login, step by step
 
-1. The email is trimmed and lowercased, as at sign-up. The password length is not checked
-   against 12-128, so a password of the wrong length gets the same `401` as a wrong one. A
-   password over 1,024 characters (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401`
-   without being hashed, so a huge body costs no Argon2 work.
-2. The user is looked up by email alone. This is the one query on `users` without an
+1. The email is trimmed and lowercased, as at sign-up. A body that does not fit is a `422`
+   and is not counted as a failure.
+2. The login limit comes first, before any password work. The email and the client IP are
+   turned into two keyed hashes, and the try is written as one failure row per key and
+   committed. Then the rows inside the window are counted, the try's own included. If either
+   key has more than its limit, the try deletes its own rows again (a refused try is not
+   counted) and the answer is `429` "too many failed logins; try again later" with a
+   `Retry-After` header. This happens even when the password is right, so a guesser cannot
+   tell a right password from a wrong one while they are refused. A refused try costs no
+   hashing.
+3. The password length is not checked against 12-128, so a password of the wrong length
+   gets the same `401` as a wrong one. A password over 1,024 characters
+   (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401` without being hashed, so a huge
+   body costs no Argon2 work. It still counts as a failure.
+4. The user is looked up by email alone. This is the one query on `users` without an
    `account_id` filter: before login the account is not known. It is safe because an email
    belongs to exactly one account (`uq_users_email`) and nothing is returned unless the
    password matches.
-3. For an unknown email the password is still checked against a fixed dummy hash, so that
+5. For an unknown email the password is still checked against a fixed dummy hash, so that
    case takes about as long as a wrong password and the time does not tell which emails exist.
-4. A match sets the login cookie; anything else is `401` with the message "email or password
-   is wrong".
+6. A match deletes the failures of the email's key and the try's own IP row (earlier IP
+   failures stay) and sets the login cookie. Anything else keeps the rows written in step 2
+   and is `401` with the message "email or password is wrong". An unknown email is counted the same
+   way as a wrong password, so the limit does not tell which emails exist either.
 
 Hashing and checking take tens of milliseconds on purpose: that is what makes a stolen hash
 slow to guess.
+
+### The login limit
+
+The limit slows down someone guessing passwords, for one account or across many.
+
+| Key | Counts | Limit (default) |
+|---|---|---|
+| The typed email (after trimming and lowercasing) | failures for that email, also for an email no account has | 5 in 15 minutes |
+| The client IP (`request.client.host`) | failures from that address, over every email | 20 in 15 minutes |
+
+- **Where the counts are.** In the operational table `login_failures` (migration 0018):
+  one row per try per key, kept when the login fails, with `key_kind` (`email` or `ip`, the type
+  `login_key_kind`), `key_hash` and the timestamps; an index on kind, hash and `created_at`
+  for the count, and one on `created_at` alone for deleting old rows.
+  It has no `account_id`: a failure on an unknown email has no account. Because the counts
+  are in the database, a restart does not reset them.
+- **No plain email or IP is stored.** `key_hash` is an HMAC-SHA256 in lowercase hex (a check
+  constraint allows only 64 hex characters). Its key is derived from `AUTH_TOKEN_SECRET`
+  with the label `login-rate-limit`, so it is never the key that signs tokens, and the table
+  alone cannot be turned back into emails or addresses.
+- **How addresses are counted.** An IPv4 address counts on its own. An IPv6 address counts
+  by its /64 network, because one home or server usually gets a whole /64. An IPv4 address
+  written as IPv6 (`::ffff:1.2.3.4`) counts as the IPv4 address. A host that is not an IP
+  address is hashed as text, and a request with no known host counts as `unknown`.
+- **The window slides.** A try is refused when its key has more than `limit` failures inside
+  the last 15 minutes, its own row included. `Retry-After` is the number of seconds until
+  the oldest of the newest `limit` other failures leaves the window (rounded up, at least
+  1); when both keys are refused, the longer wait.
+- **Why the row comes first.** The server runs tries in parallel threads (up to 40). If a
+  try were counted only after its password check, a burst of tries would all see the same
+  count and all be checked. Written and committed first, each try sees the rows of every try
+  that started before it, so at most `limit` per key reach the password check (tested: the
+  try's own rows are there when the password is checked).
+- **Why two transactions.** Other tries see a row only once it is committed, so the first
+  transaction writes it and ends. Every error raised in a transaction rolls it back, and the
+  `401` and `429` are errors; so the second transaction (count, password, the deletes)
+  decides the answer and the route raises it after the transaction has ended. The failure
+  rows survive the `401` (tested). This route does not use `DbSession` for that reason.
+- **Why a good login keeps the IP count.** Otherwise an attacker could reset their IP's count
+  by logging in to their own account between guesses.
+- **Old rows go away.** Every try also deletes all rows older than the window, so the table
+  stays small without a cleanup job.
+- **Tests do not wait.** The time comes from `get_now`, which the tests replace with a fixed
+  time and then move 15 minutes on.
 
 ### The login token
 
@@ -3922,6 +3981,9 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `AUTH_TOKEN_SECRET` | yes | The key that signs the tokens; at least 32 characters after trimming; hidden in error messages |
 | `AUTH_TOKEN_TTL_MINUTES` | no (default 60) | How long one token stays valid, at least 1 |
 | `AUTH_COOKIE_SECURE` | no (default true) | Whether the cookie is sent only over HTTPS; set false only for local development over plain HTTP |
+| `LOGIN_LIMIT_WINDOW_MINUTES` | no (default 15) | How far back failed logins are counted, at least 1 |
+| `LOGIN_LIMIT_PER_EMAIL` | no (default 5) | Failures for one email inside the window before its logins are refused, at least 1 |
+| `LOGIN_LIMIT_PER_IP` | no (default 20) | Failures from one client IP inside the window before its logins are refused, at least 1 |
 
 The keys are in `ApiSettings`, not in `Settings`, and are loaded only when the app is built.
 The pipelines and their tests need no token secret. A missing or short secret fails when the
@@ -3940,7 +4002,7 @@ the model file must be there too. Tests call `create_app(api_settings, session_f
 job_runner)` with their own values instead, the runner a stub. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
-Every route takes its session through `DbSession`, which closes the session (and commits)
+Every route except login takes its session through `DbSession`, which closes the session (and commits)
 when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
 closes it after the answer, so a client could be told `201` for a sign-up whose commit then
 failed. A failed commit is now a `500` with no login cookie (tested).
@@ -3948,7 +4010,8 @@ failed. A failed commit is now a `500` with no login cookie (tested).
 ### Logging
 
 Sign-up and login log the account id and the user id. A failed login logs only that it
-failed. The email, the password, its hash and the token are never logged, and no response
+failed, and a login refused by the limit only "login refused: too many failures"; neither
+logs the email, the IP or their hashes. The email, the password, its hash and the token are never logged, and no response
 carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
 never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
 password would be the password, so `create_app` replaces it with `answer_validation_error`.
@@ -3960,8 +4023,21 @@ not carry the email or the hash. This holds for the pipelines too.
 
 - **No server-side logout.** `POST /auth/logout` clears the cookie, but a copied token stays
   valid until it expires (at most `AUTH_TOKEN_TTL_MINUTES`).
-- **No rate limit on login.** Argon2id makes each guess slow, but nothing stops many
-  guesses. Planned with the deployment (Stage 6).
+- **Anyone who knows an email can lock its user out.** Five wrong passwords every 15
+  minutes keep that email refused. The fix (an unlock link by email, or a challenge) needs
+  a mail sender, which comes with the password reset branch.
+- **People behind one shared address share the IP limit.** An office or a mobile carrier
+  gets 20 failures per 15 minutes for everyone behind it.
+- **A spread-out attack is not stopped.** Many addresses trying many emails, a few tries
+  each, keep every key under its limit.
+- **A burst can refuse more than it must.** Tries at the same moment each count every row
+  committed before them, so no more than the limit get through; but a try that counts after
+  later tries have written their rows may be refused although it was among the first
+  `limit`. It errs on the side of refusing.
+- **Behind a proxy the IP is the proxy's.** The limit sees the real client only if uvicorn
+  trusts the proxy (`--forwarded-allow-ips`); otherwise 20 failures from anyone would block
+  every login. This is set and checked with the containers (Stage 6).
+- **A new `AUTH_TOKEN_SECRET` resets every count**, because the hash key comes from it.
 - **One email, one account.** A person who works for two accounts needs two emails.
 - **No invite and no role change yet.** Every signed-up user is the `admin` of a new
   account; adding users to an account is a later branch.
@@ -4503,8 +4579,11 @@ the upload only for a role that can upload.
 
 `apiRequest` turns every answer that is not a success into an `ApiError` with a kind:
 `unauthorized` (401), `forbidden` (403), `not_found` (404), `conflict` (409),
-`length_required` (411), `too_large` (413), `invalid` (422), `server` (any other answer, or a
-body that is not the API's JSON) and `network` (no answer). Of a `422` with field problems
+`length_required` (411), `too_large` (413), `invalid` (422), `too_many` (429), `server` (any
+other answer, or a body that is not the API's JSON) and `network` (no answer). The login
+screen shows its own sentence for a `429`, "Too many failed logins. Try again in a few
+minutes."; any other screen shows the general "Too many tries. Try again in a few minutes."
+from `errorMessage.ts`. Neither reads `Retry-After`, so the screen never shows a countdown. Of a `422` with field problems
 only the position and the kind of each problem are kept; the API's message and any input are
 dropped, so text the user typed never reaches the screen through an error (3.18 already
 answers a `422` without the input).

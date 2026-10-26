@@ -74,7 +74,10 @@ export function LoginScreen() {
         />
         {loginMutation.isError && (
           <p className="error" role="alert">
-            {describeError(loginMutation.error, { 401: "Email or password is wrong." })}
+            {describeError(loginMutation.error, {
+              401: "Email or password is wrong.",
+              429: "Too many failed logins. Try again in a few minutes.",
+            })}
           </p>
         )}
         <button type="submit" className="auth-submit" disabled={loginMutation.isPending}>

@@ -136,7 +136,8 @@ class ApiSettings(BaseSettings):
     It is separate from `Settings` so that the pipelines and their tests need no token secret.
     The secret signs the login tokens; the lifetime is how long one token stays valid; the
     cookie flag is set false only for local development over plain HTTP. The upload limit is
-    the largest file, in bytes, one upload may send.
+    the largest file, in bytes, one upload may send. The login limit refuses a login when the
+    typed email or the client IP has this many failed logins inside the window (in minutes).
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -152,6 +153,9 @@ class ApiSettings(BaseSettings):
     auth_token_ttl_minutes: int = Field(default=60, ge=1)
     auth_cookie_secure: bool = True
     upload_max_bytes: int = Field(default=1_000_000, ge=1)
+    login_limit_window_minutes: int = Field(default=15, ge=1)
+    login_limit_per_email: int = Field(default=5, ge=1)
+    login_limit_per_ip: int = Field(default=20, ge=1)
 
     @field_validator("auth_token_secret")
     @classmethod

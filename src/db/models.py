@@ -1,5 +1,5 @@
-"""Core tables, uploads, jobs, draft review and audit (business), reference tables, and the
-operational tables `llm_calls` and `login_failures`."""
+"""Core tables, uploads, jobs, draft review, audit and password reset (business), reference
+tables, and the operational tables `llm_calls` and `login_failures`."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -153,6 +153,7 @@ class AuditAction(StrEnum):
     DRAFT_APPROVED = "draft_approved"
     DRAFT_REJECTED = "draft_rejected"
     PASSWORD_CHANGED = "password_changed"  # noqa: S105  (an audit action, not a password)
+    PASSWORD_RESET = "password_reset"  # noqa: S105  (an audit action, not a password)
 
 
 class LoginKeyKind(StrEnum):
@@ -1187,9 +1188,9 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
 
     Business table, written in the same transaction as the change; the code only inserts.
     `detail` holds fixed keys only (a version number, a reject reason), never document text.
-    `job_id` is empty exactly for `account_created` and `password_changed`. The links to the
-    user and the job carry `account_id` and have no cascade, so an audited job cannot be
-    deleted on its own; deleting the account removes everything.
+    `job_id` is empty exactly for `account_created`, `password_changed` and `password_reset`.
+    The links to the user and the job carry `account_id` and have no cascade, so an audited
+    job cannot be deleted on its own; deleting the account removes everything.
     """
 
     __tablename__ = "audit_events"
@@ -1201,7 +1202,8 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
             ["account_id", "job_id"], ["jobs.account_id", "jobs.id"], name="fk_audit_events_job"
         ),
         CheckConstraint(
-            "(action::text IN ('account_created', 'password_changed')) = (job_id IS NULL)",
+            "(action::text IN ('account_created', 'password_changed', 'password_reset'))"
+            " = (job_id IS NULL)",
             name="ck_audit_events_job_matches_action",
         ),
         CheckConstraint("jsonb_typeof(detail) = 'object'", name="ck_audit_events_detail_is_object"),
@@ -1216,3 +1218,40 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
     detail: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+
+
+class PasswordResetToken(AccountScopedMixin, TimestampMixin, Base):
+    """One emailed password reset link, stored only as the SHA-256 of its random part.
+
+    Business table. The link is signed and carries `account_id` and the user, so the row is
+    found with an `account_id` filter even though nobody is logged in. `token_hash` is the
+    SHA-256 (lowercase hex) of the random part; the link itself is never stored. A row works
+    once (deleted at use) until `expires_at`. The link to the user carries `account_id` and
+    cascades: a reset link means nothing once its user is gone.
+    """
+
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_password_reset_tokens_token_hash"),
+        ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["users.account_id", "users.id"],
+            name="fk_password_reset_tokens_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "token_hash ~ '^[0-9a-f]{64}$'", name="ck_password_reset_tokens_token_hash_format"
+        ),
+        # The per-email cap counts a user's rows of the last hour by `created_at`.
+        Index(
+            "ix_password_reset_tokens_account_id_user_id_created_at",
+            "account_id",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

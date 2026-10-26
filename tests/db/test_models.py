@@ -47,6 +47,7 @@ from src.db.models import (
     LoginFailure,
     LoginKeyKind,
     MetalLevel,
+    PasswordResetToken,
     PlanDenialStats,
     PlanType,
     StoredAppealDraft,
@@ -2313,6 +2314,7 @@ def test_rejects_a_revision_naming_a_draft_or_an_editor_of_another_account(
     [
         (AuditAction.ACCOUNT_CREATED, False),
         (AuditAction.PASSWORD_CHANGED, False),
+        (AuditAction.PASSWORD_RESET, False),
         (AuditAction.UPLOAD_CREATED, True),
         (AuditAction.DRAFT_EDITED, True),
         (AuditAction.DRAFT_APPROVED, True),
@@ -2338,6 +2340,7 @@ def test_stores_an_audit_event_with_a_job_exactly_when_the_action_needs_one(
     [
         ({"action": AuditAction.ACCOUNT_CREATED}, "ck_audit_events_job_matches_action"),
         ({"action": AuditAction.PASSWORD_CHANGED}, "ck_audit_events_job_matches_action"),
+        ({"action": AuditAction.PASSWORD_RESET}, "ck_audit_events_job_matches_action"),
         ({"job_id": None}, "ck_audit_events_job_matches_action"),
         ({"detail": ["version", 1]}, "ck_audit_events_detail_is_object"),
         ({"detail": "text"}, "ck_audit_events_detail_is_object"),
@@ -2477,3 +2480,91 @@ def test_rejects_unknown_login_key_kind(session: Session) -> None:
 
     with pytest.raises(DataError):
         session.execute(insert, {"key_hash": KEY_HASH})
+
+
+# A made-up SHA-256: 64 lowercase hex characters, as the reset link's stored part.
+TOKEN_HASH = "0123456789abcdef" * 4
+RESET_EXPIRES_AT = datetime(2026, 10, 26, 12, 30, tzinfo=UTC)
+
+
+def _user_of(session: Session, account: Account, email: str = "ada@example.test") -> User:
+    user = _user(account, email)
+    session.add(user)
+    session.flush()
+    return user
+
+
+def _reset_token(session: Session, user: User, **overrides: Any) -> PasswordResetToken:
+    fields: dict[str, Any] = {
+        "account_id": user.account_id,
+        "user_id": user.id,
+        "token_hash": TOKEN_HASH,
+        "expires_at": RESET_EXPIRES_AT,
+    }
+    token = PasswordResetToken(**(fields | overrides))
+    session.add(token)
+    session.flush()
+    return token
+
+
+def test_stores_a_password_reset_token_with_its_user_hash_expiry_and_timestamps(
+    session: Session,
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+    token = _reset_token(session, user)
+    session.expire_all()
+
+    stored = session.get(PasswordResetToken, token.id)
+    assert stored is not None
+    assert (stored.account_id, stored.user_id) == (user.account_id, user.id)
+    assert stored.token_hash == TOKEN_HASH
+    assert stored.expires_at == RESET_EXPIRES_AT
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+@pytest.mark.parametrize(
+    "token_hash",
+    [TOKEN_HASH[:63], TOKEN_HASH.upper(), "g" + TOKEN_HASH[1:], ""],
+    ids=["too-short", "uppercase", "not-hex", "empty"],
+)
+def test_rejects_a_password_reset_token_whose_hash_is_not_64_lowercase_hex(
+    session: Session, token_hash: str
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_password_reset_tokens_token_hash_format"):
+        _reset_token(session, user, token_hash=token_hash)
+
+
+def test_rejects_the_same_password_reset_hash_twice_even_in_another_account(
+    session: Session,
+) -> None:
+    _reset_token(session, _user_of(session, _account(session, "a")))
+    other = _user_of(session, _account(session, "other"), "bob@example.test")
+
+    with pytest.raises(IntegrityError, match="uq_password_reset_tokens_token_hash"):
+        _reset_token(session, other)
+
+
+def test_rejects_a_password_reset_token_naming_a_user_of_another_account(
+    session: Session,
+) -> None:
+    other = _user_of(session, _account(session, "other"), "bob@example.test")
+    account = _account(session, "a")
+
+    with pytest.raises(IntegrityError, match="fk_password_reset_tokens_user"):
+        _reset_token(session, other, account_id=account.id)
+
+
+def test_deleting_a_user_removes_their_password_reset_tokens_only(session: Session) -> None:
+    account = _account(session, "a")
+    user = _user_of(session, account)
+    kept = _user_of(session, account, "bob@example.test")
+    _reset_token(session, user)
+    kept_token = _reset_token(session, kept, token_hash="fedcba9876543210" * 4)
+
+    session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
+    session.expire_all()
+
+    assert [row.id for row in session.scalars(select(PasswordResetToken))] == [kept_token.id]

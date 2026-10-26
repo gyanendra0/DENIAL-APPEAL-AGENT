@@ -1,5 +1,5 @@
-// The auth calls: sign-up, login, logout, the logged-in user and a password change. The API sets and clears the
-// HttpOnly login cookie itself; these calls never see the token.
+// The auth calls: sign-up, login, logout, the logged-in user and a password change.
+// The API sets and clears the HttpOnly login cookie itself; these calls never see the token.
 
 import { ApiError, apiRequest, jsonRequest } from "./client";
 import type { UserResponse } from "./types";

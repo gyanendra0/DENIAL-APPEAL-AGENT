@@ -4524,7 +4524,7 @@ screen:
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login or sign-up is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up or password change is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |

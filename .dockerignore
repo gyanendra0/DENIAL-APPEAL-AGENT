@@ -1,0 +1,8 @@
+# Images get only what they need: everything is left out, then the needed paths are let back
+# in. So `.env*`, `data/`, `models/`, `.venv/`, `tests/` and `docs/` never reach an image.
+*
+!alembic.ini
+!config/prompts/
+!deploy/api/requirements.lock
+!src/
+**/__pycache__/

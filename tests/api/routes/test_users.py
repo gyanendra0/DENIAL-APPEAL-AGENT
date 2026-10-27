@@ -6,22 +6,24 @@ from sqlalchemy.orm import Session
 from src.api.passwords import hash_password
 from src.api.routes.users import USER_NOT_FOUND
 from src.db.models import User, UserRole
+from tests.api.conftest import VERIFIED_AT, signup_and_verify
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 
 
 def _signup(client: TestClient, name: str, email: str) -> dict[str, int]:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body: dict[str, int] = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body: dict[str, int] = signed_up
     return body
 
 
 def _add_user(session: Session, account_id: int, email: str, role: UserRole) -> User:
     user = User(
-        account_id=account_id, email=email, password_hash=hash_password(PASSWORD), role=role
+        account_id=account_id,
+        email=email,
+        password_hash=hash_password(PASSWORD),
+        role=role,
+        email_verified_at=VERIFIED_AT,
     )
     session.add(user)
     session.commit()

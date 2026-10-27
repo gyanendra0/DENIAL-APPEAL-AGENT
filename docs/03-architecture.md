@@ -3801,8 +3801,9 @@ About the rubric:
 ## 3.18 API and auth
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
-logout, the logged-in user's own record and their password change, the reset of a forgotten
-password by email, "Continue with Google", one admin route and a health check. The upload and
+logout, the emailed code that confirms a new sign-up's email, the logged-in user's own record
+and their password change, the reset of a forgotten password with an emailed code, "Continue
+with Google", one admin route and a health check. The upload and
 job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
 3.20.
 
@@ -3818,47 +3819,53 @@ Three things hold for every route:
 
 No route calls a model and no route spends money while the request is answered. The one
 place money is spent is the background job an upload queues, after its answer is sent
-(3.19). The password reset email goes out through the mail provider's free tier ($0), and
-Google sign-in is free ($0).
+(3.19). The code emails go out through the mail provider's free tier ($0, at most
+`MAIL_DAILY_LIMIT` a day), and Google sign-in is free ($0).
 
 ### Where the code is
 
 | File | Holds |
 |---|---|
 | `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_mail_sender`, `get_public_url`, `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_mail_sender`, `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
-| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetAnswer`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
-| `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by sign-up, login and the password change |
-| `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
-| `src/api/login.py` | `authenticate`; `find_user_by_email`, the lookup by email shared by login and the reset request |
-| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS`; the IP-only helpers the reset routes use: `ip_key`, `reserve_ip_failure`, `ip_over_limit`, `release_ip_failure`, `ip_retry_after_seconds` |
-| `src/api/reset_tokens.py` | The reset token: `issue_reset_token`, `read_reset_token`, `ResetClaims`, `InvalidResetTokenError`, `hash_token_id`; the rows: `add_reset_token`, `count_recent_reset_tokens`, `delete_stale_reset_tokens`, `delete_reset_tokens`, `usable_reset_token` |
-| `src/api/mail.py` | `MailMessage`, the `MailSender` protocol, `SmtpSender`, `OutboxSender`, `reset_email` (the text), `send_quietly`, `build_mail_sender` |
+| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetAnswer`, `VerifyEmailRequest`, `EmailNotVerifiedAnswer`, `CodeSentAnswer`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
+| `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by login, the sign-up code check, the password change and Google sign-in |
+| `src/api/signup.py` | `create_account_with_admin`, `remove_unverified_holder` (an unconfirmed holder of the email is replaced), `AccountNameTakenError`, `EmailTakenError` |
+| `src/api/login.py` | `authenticate`; `find_user_by_email`, the lookup by email shared by login, sign-up, the two reset routes and Google sign-in |
+| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS`, `too_many_tries` (the `429`); the IP-only helpers sign-up, the code routes and the reset routes use: `ip_key`, `reserve_ip_failure`, `ip_over_limit`, `release_ip_failure`, `ip_retry_after_seconds`, `count_ip_try` (write and commit the try's IP row), `refuse_over_ip_limit` |
+| `src/api/email_codes.py` | The 6-digit codes: `new_code`, `hash_code`, `add_code`, `resend_wait_seconds`, `check_code`, `delete_codes`; the sentence `CODE_INVALID` |
+| `src/api/email_verification.py` | `prepare_verify_email`: one new sign-up code with its limits checked and its email made, used by sign-up, login and "send a new code"; `CodeTooSoonError`, `MailCapReachedError`, the sentence `MAIL_UNAVAILABLE` |
+| `src/api/mail_cap.py` | `reserve_mail_send`: the daily send cap over every account |
+| `src/api/verify_cookie.py` | The signed `email_verify` cookie: `issue_verify_cookie`, `read_verify_cookie`, `VerifyClaims`, `InvalidVerifyCookieError`, `set_verify_cookie`, `delete_verify_cookie` |
+| `src/api/mail.py` | `MailMessage`, the `MailSender` protocol, `SmtpSender`, `OutboxSender`, `code_email` and `CODE_SUBJECTS` (the texts), `send_quietly`, `build_mail_sender` |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
 | `src/api/google_oidc.py` | Google's side of the sign-in: `GoogleOidc` (`authorization_url`, `swap_code`, `verify_id_token`; Google's public keys are fetched once and again only for an unknown key id), `GoogleIdentity`, `GoogleSignInError`, `code_challenge` (PKCE S256) |
 | `src/api/google_cookies.py` | The two short-lived signed cookies `google_flow` and `google_signup`: `new_flow`, `GoogleFlow`, `PendingSignup`, `issue_flow_cookie`, `read_flow_cookie`, `issue_signup_cookie`, `read_signup_cookie`, `InvalidGoogleCookieError`; `COOKIE_TTL` (10 minutes) |
 | `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_account`, `GoogleRefusal` (the six refusal codes), `GoogleRefusedError` |
-| `src/api/routes/` | `auth.py`, `password_reset.py`, `google.py`, `me.py`, `users.py`, `health.py`: one router each |
+| `src/api/routes/` | `auth.py`, `verify_email.py`, `password_reset.py`, `google.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
 | `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
 | `src/db/migrations/versions/rev_0019_password_changed_and_token_version.py` | Migration 0019: `users.token_version` (default 0, never below 0) and the audit action `password_changed` (no job, 3.20); the downgrade deletes that action's events, rebuilds the type without it and drops the column |
-| `src/db/migrations/versions/rev_0020_password_reset_tokens.py` | Migration 0020: the business table `password_reset_tokens` and the audit action `password_reset` (no job, 3.20); the downgrade drops the table, deletes that action's events, rebuilds the type without it and restores 0019's check |
+| `src/db/migrations/versions/rev_0020_password_reset_tokens.py` | Migration 0020: the business table `password_reset_tokens` and the audit action `password_reset` (no job, 3.20); the downgrade drops the table, deletes that action's events, rebuilds the type without it and restores 0019's check; the table is dropped again in 0022 |
 | `src/db/migrations/versions/rev_0021_user_identities_and_google_linked.py` | Migration 0021: the business table `user_identities`, the type `identity_provider` (`google`), the audit action `google_linked` (no job, 3.20) and `users.password_hash` allowed empty; the downgrade refuses while any user has no password (it names the count), and otherwise drops the table and the type, deletes that action's events, rebuilds the audit type without it, restores 0020's check and makes the hash required again |
+| `src/db/migrations/versions/rev_0022_email_codes_and_mail_sends.py` | Migration 0022: the type `email_code_purpose` (`verify_email`, `password_reset`), the business table `email_codes`, the operational table `mail_sends`, `users.email_verified_at` (every existing user set to their `created_at`), the audit action `email_verified` (no job, 3.20); `password_reset_tokens` dropped. The downgrade re-creates `password_reset_tokens` empty as in 0020, drops both tables, the type and the column, deletes that action's events, rebuilds the audit type without it and restores 0021's check |
 
 ### The routes
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /auth/signup` | anyone | `201` with the new user and the login cookie; `409` when the account name or the email is taken; `422` for a body that does not fit |
-| `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `429` with `Retry-After` while the email or the client IP has too many recent failures (see "The login limit"); `422` for a body that does not fit |
+| `POST /auth/signup` | anyone | `201` with the new user and the `email_verify` cookie, but **no login cookie** (a code is emailed, see "Confirming the email"); `409` when the account name or the email is taken; `429` with `Retry-After` while the client IP has too many recent tries; `503` "we cannot send email right now; try again later" when today's emails are at `MAIL_DAILY_LIMIT` (nothing is created); `422` for a body that does not fit |
+| `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `403` `{"detail": ..., "code": "EMAIL_NOT_VERIFIED"}` with the `email_verify` cookie and no login cookie for the right password of a user whose email is not confirmed yet; `429` with `Retry-After` while the email or the client IP has too many recent failures (see "The login limit"); `422` for a body that does not fit |
+| `POST /auth/verify-email` | a browser with the `email_verify` cookie | `200` with the user and the login cookie (the email is confirmed); `400` "the code is wrong or has expired"; `401` "the code screen has expired; log in again to get a new code" without a usable cookie; `429` with `Retry-After` while the client IP has too many recent tries; `422` for a code that is not six digits |
+| `POST /auth/verify-email/resend` | a browser with the `email_verify` cookie | `202` "a new code is on its way"; `429` with `Retry-After` within `EMAIL_CODE_RESEND_SECONDS` of the last code, after `EMAIL_CODE_PER_USER_PER_HOUR` codes in an hour, or while the client IP has too many recent tries; `503` at the daily cap; `409` "the email is already confirmed; log in"; `401` as above |
 | `POST /auth/logout` | anyone | `204`; the cookie is cleared |
 | `GET /me` | a logged-in user | `200` with the user and their account's name; `401` when not logged in |
 | `POST /me/password` | a logged-in user of any role | `204` with a new login cookie (every other session ends); `400` "the current password is wrong"; `429` with `Retry-After` while the user's email or the client IP has too many recent failures; `401` when not logged in; `422` for a body that does not fit (a new password outside 12 to 128 characters, say) |
-| `POST /auth/password-reset` | anyone | `202` with the same body whether the email has an account, has none or already got its links this hour; the email goes out after the answer; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
-| `POST /auth/password-reset/confirm` | anyone with a reset link | `204` (no login cookie; every session of the user ends); `400` "the reset link is not valid or has expired" for every token problem; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
+| `POST /auth/password-reset` | anyone | `202` with the same body whether the email has an account, has none, already got its codes this hour or today's emails are at the cap; the email goes out after the answer; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
+| `POST /auth/password-reset/confirm` | anyone with a reset code | `204` (no login cookie; every session of the user ends); `400` "the code is wrong or has expired" for a wrong, expired, replaced or used-up code and for an email with no account; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
 | `GET /auth/options` | anyone | `200` with `{"google": true}` or `{"google": false}`: whether "Continue with Google" is on |
 | `GET /auth/google/start` | anyone, while Google is on | `303` to Google, with the `google_flow` cookie; `404` while Google is off (as are the three routes below) |
 | `GET /auth/google/callback` | the browser, sent back by Google | always a `303`: to `/app/worklist` with the login cookie, to `/app/google/name-account` with the `google_signup` cookie, or to `/app/login?google=<code>` when refused (see "Signing in with Google") |
@@ -3881,13 +3888,26 @@ to a `viewer`.
    trimmed, lowercased and must look like an email (one `@`, text on both sides, no
    whitespace, at most 320 characters); the password is 12 to 128 characters and is not
    trimmed. Only the length is checked, following NIST SP 800-63B.
-2. The password is hashed with Argon2id (`argon2-cffi`). The hash is salted, so two users
+2. The try is counted against the client IP's limit, as a reset request is (see "The login
+   limit"): its IP row is written and committed first; over the limit the row is deleted again
+   and the answer is `429` with `Retry-After`. Otherwise the row stays, so one address cannot
+   sign up (and send code emails) without end.
+3. The password is hashed with Argon2id (`argon2-cffi`). The hash is salted, so two users
    with the same password get different hashes.
-3. The account and its first user, an `admin`, are written inside one savepoint. When the
-   name or the email is taken, the database's unique key refuses the row
-   (`accounts_name_key` or `uq_users_email`), both rows are rolled back and the answer is
-   `409`. Sign-up never searches other accounts' rows to find out.
-4. The user is logged in: the login cookie is set in the same answer.
+4. If a user who never confirmed it holds the email, their account is deleted first
+   (`remove_unverified_holder`, which finds them with `find_user_by_email`, 6.4). Such an
+   account is brand new: it was never logged in and no route adds users to an account.
+   Without this, anyone could block an address by signing up with it. A confirmed holder is
+   left alone.
+5. The account and its first user, an `admin` with `email_verified_at` empty, are written
+   inside one savepoint. When the name or the email is taken, the database's unique key
+   refuses the row (`accounts_name_key` or `uq_users_email`), both rows are rolled back and
+   the answer is `409`. Sign-up never searches other accounts' rows to find out.
+6. An `account_created` audit event is written and a sign-up code is made (see "Email
+   codes"). Over the daily email cap the answer is `503` and nothing of the sign-up is kept.
+7. The answer is `201` with the user and the `email_verify` cookie, and **no login cookie**:
+   the user is logged in once they type the code (see "Confirming the email"). The email goes
+   out after the answer.
 
 ### Login, step by step
 
@@ -3908,9 +3928,8 @@ to a `viewer`.
 4. The user is looked up by email alone (`find_user_by_email`). This is the one query on
    `users` without an `account_id` filter: before login the account is not known. It is safe
    because an email belongs to exactly one account (`uq_users_email`) and nothing is
-   returned unless the password matches. The password reset request uses the same lookup
-   and returns nothing at all (see "Resetting a forgotten password"), and Google sign-in uses
-   it with an email Google has verified (see "Signing in with Google").
+   returned unless the password matches. Sign-up, the two reset routes and Google sign-in use
+   the same lookup; why each is safe is in [conventions 6.4](06-conventions.md#64-database).
 5. For an unknown email the password is still checked against a fixed dummy hash, so that
    case takes about as long as a wrong password and the time does not tell which emails exist.
    A user with no password yet (signed up with Google) is checked the same way: no password
@@ -3919,6 +3938,12 @@ to a `viewer`.
    failures stay) and sets the login cookie. Anything else keeps the rows written in step 2
    and is `401` with the message "email or password is wrong". An unknown email is counted the same
    way as a wrong password, so the limit does not tell which emails exist either.
+7. A match whose email is not confirmed yet (`email_verified_at` empty) clears the failures
+   in the same way but sets no login cookie. The answer is `403` `{"detail": "confirm your
+   email first; we sent you a code", "code": "EMAIL_NOT_VERIFIED"}` with the `email_verify`
+   cookie, and a new sign-up code is emailed unless the user got one too recently or the
+   daily cap is reached (the last code may still work). The password matched, so this answer
+   tells a stranger nothing.
 
 Hashing and checking take tens of milliseconds on purpose: that is what makes a stolen hash
 slow to guess.
@@ -3946,11 +3971,11 @@ from the login, never from the body (`extra="forbid"` refuses any other field).
    wrong", raised after the transaction has ended. A right one, in the same transaction:
    stores the new hash, raises `users.token_version` by one, deletes the failures of the
    email's key and the try's own IP row (as a good login does), deletes the user's password
-   reset tokens (so an emailed link no longer works), writes a `password_changed` audit
-   event (3.20) and sets a new login cookie carrying the new version. A user with no password
-   yet (signed up with Google) gets `400` "this login has no password yet; use Forgot password
-   to set one"; the try's rows are deleted, so it does not count as a failure. A password
-   reset is how such a user sets a first password.
+   reset codes (so a code asked for before the change cannot undo it), writes a
+   `password_changed` audit event (3.20) and sets a new login cookie carrying the new version.
+   A user with no password yet (signed up with Google) gets `400` "this login has no password
+   yet; use Forgot password to set one"; the try's rows are deleted, so it does not count as a
+   failure. A password reset is how such a user sets a first password.
 6. Every token issued before the change carries the old version, so `current_user` refuses
    it from the next request on: every other session ends. This browser keeps working with the
    new cookie.
@@ -3959,14 +3984,88 @@ from the login, never from the body (`extra="forbid"` refuses any other field).
 rolls back on any error, and the `400` is an error. The route instead opens its own two
 transactions (as login does) and must hold no other session while it does.
 
+### Email codes
+
+A 6-digit code by email confirms a new sign-up's address and lets a user who forgot their
+password set a new one. It is the same code for both, with the purpose (`verify_email` or
+`password_reset`) in its row. Normal login and Google sign-in ask for no code.
+
+| Part | Value |
+|---|---|
+| Code | Six digits from `secrets` (leading zeros kept), so one million possible codes |
+| Lifetime | `EMAIL_CODE_TTL_MINUTES`, 10 by default; checked against `get_now` |
+| Wrong tries | A wrong code counts one try against the user's newest code; at `EMAIL_CODE_MAX_WRONG_TRIES` (5) that code is dead. A dead code is kept, not deleted: it stays the newest (so an older code never works again) and still counts toward the resend gap and the hourly cap. Five tries out of a million cannot guess a code, and every try also counts against the client IP's limit |
+| Works | Only the user's newest code of that purpose, and only once: a new code makes the older one useless, and so does a dead newer one |
+| Stored | Only an HMAC-SHA256 over purpose, user id and code (`email_codes.code_hash`), with a key derived from `AUTH_TOKEN_SECRET` plus the label `email-code`. A plain hash would not do: a million codes are tried in a moment. Without the secret, a copy of the table gives nothing, and a code for one user or purpose never matches another. Compared in constant time |
+| A new sign-up code | At most one per `EMAIL_CODE_RESEND_SECONDS` (60) and `EMAIL_CODE_PER_USER_PER_HOUR` (5) an hour; more is `429` with `Retry-After` |
+| A new reset code | At most `PASSWORD_RESET_PER_EMAIL_PER_HOUR` (3) an hour and no gap; more gets the same `202` and no email |
+
+**The daily cap.** Every email the app sends first takes a row in the operational table
+`mail_sends` (only the purpose and the time; no account, no address). When the UTC day
+already has `MAIL_DAILY_LIMIT` (250) rows, nothing is sent: sign-up and "send a new code"
+answer `503`, a reset request the same silent `202`. 250 stays below Brevo's free 300 a day.
+Rows older than two days are deleted at the next send.
+
+**The table** `email_codes` (migration 0022) is a business table: `account_id`, `user_id`,
+`purpose` (the type `email_code_purpose`), `code_hash` (`String(64)`, a check allows only 64
+lowercase hex characters), `wrong_tries` (default 0, never below 0), `expires_at` and the
+timestamps. It links to the user on (`account_id`, `user_id`) with `ON DELETE CASCADE`. An
+index on (`account_id`, `user_id`, `purpose`, `created_at`) serves the hourly cap. A used
+code is deleted at use (with every other code of that purpose); a dead or expired one stays
+until the user's next code finds it expired and more than an hour old, so there is no cleanup
+job.
+
+Every code route locks the user row (`FOR UPDATE`, with the `account_id`) before it counts or
+checks, so two requests at the same moment cannot both pass a cap or skip a wrong try.
+
+### Confirming the email, step by step
+
+A new account starts with `users.email_verified_at` empty and cannot log in. Nobody is logged
+in, so the screen's requests carry the **`email_verify` cookie** instead, set by sign-up and
+by a login refused with `EMAIL_NOT_VERIFIED`:
+
+| Cookie | Holds | Path | SameSite | Lifetime |
+|---|---|---|---|---|
+| `email_verify` | the user id and the account id | `/auth/verify-email` | Strict: every request comes from the code screen's own `fetch` | 24 hours |
+
+It is an HttpOnly HS256 JWT (`Secure` unless `AUTH_COOKIE_SECURE` is false), signed with a key
+made from `AUTH_TOKEN_SECRET` plus the label `email-verify` and naming its kind
+(`typ` = `emailverify`), so it can never pass as a login or Google token. The account comes
+from the signed cookie, never from the body, so every query keeps its `account_id`.
+
+**Typing the code** (`POST /auth/verify-email`, body `{"code": "123456"}`, `extra="forbid"`,
+six digits or `422`):
+
+1. No cookie, or a damaged or expired one: `401` "the code screen has expired; log in again
+   to get a new code".
+2. The try's IP row is written and committed first; over the IP limit, `429` without checking.
+3. The user row is locked. Gone (the account was replaced by a new sign-up for the same
+   email): the same `401`.
+4. A wrong, expired or replaced code is `400` "the code is wrong or has expired" and counts a
+   wrong try (see "Email codes"); the IP row stays.
+5. The right code, in one transaction: `email_verified_at` set, the user's sign-up codes
+   deleted, the try's IP row deleted (a good try does not count, as at login), an
+   `email_verified` audit event (3.20), the login cookie set and `email_verify` cleared. The
+   answer is `200` with the user.
+
+**Asking for a new code** (`POST /auth/verify-email/resend`, no body): the cookie and the IP
+limit as above, then the user row is locked. An email already confirmed is `409` "the email
+is already confirmed; log in". Inside the resend gap or the hourly cap the answer is `429`
+"a code was sent a moment ago; wait before asking for another" with `Retry-After`; at the
+daily cap `503`. Otherwise a new code is stored (the older one stops working) and the answer
+is `202` "a new code is on its way"; the email goes out after it. Every try keeps its IP row.
+
+Every user who existed before migration 0022 counts as confirmed (`email_verified_at` set
+to their `created_at`), and so does every user who signed up through Google.
+
 ### Resetting a forgotten password, step by step
 
-A user who cannot log in asks for a link by email, opens it and sets a new password. Nobody
+A user who cannot log in asks for a code by email and types it with a new password. Nobody
 is logged in on either route, so both use the two-transaction pattern of login and count
-every try against the **client IP only** (`reserve_ip_failure`, the same IP limit as login).
+every try against the **client IP only** (`count_ip_try`, the same IP limit as login).
 The email is never a limit key here, so no answer depends on it.
 
-**Asking for a link** (`POST /auth/password-reset`, body `{"email": ...}`):
+**Asking for a code** (`POST /auth/password-reset`, body `{"email": ...}`):
 
 1. The body is checked; the email is trimmed and lowercased as at login.
 2. The try's IP row is written and committed first. Over the IP limit, the row is deleted
@@ -3974,64 +4073,44 @@ The email is never a limit key here, so no answer depends on it.
    address one try, so the route cannot be used to send many emails.
 3. The user is looked up with `find_user_by_email`. No user: nothing more happens.
 4. The user row is locked (`FOR UPDATE`, with the user's `account_id`), so two requests at
-   the same moment cannot both pass the cap. The user's reset rows that are expired and older
-   than one hour are deleted.
-5. If the user got `PASSWORD_RESET_PER_EMAIL_PER_HOUR` (3) links in the last hour, nothing is
-   sent. Otherwise a new token is issued and its row stored.
-6. The answer is `202` `{"detail": "if the email belongs to an account, a link is on its
-   way"}` in every case: unknown email, over the cap, or a link made. A `429` for the cap would
-   only ever happen for real accounts, so the cap is silent.
+   the same moment cannot both pass the cap.
+5. If the user got `PASSWORD_RESET_PER_EMAIL_PER_HOUR` (3) codes in the last hour, or the day
+   is at the daily cap, nothing is sent. Otherwise a new `password_reset` code is stored (see
+   "Email codes").
+6. The answer is `202` `{"detail": "if the email belongs to an account, a code is on its
+   way"}` in every case: unknown email, over a cap, or a code made. A `429` for the hourly cap
+   would only ever happen for real accounts, so the caps are silent.
 7. The email is sent after the answer (`BackgroundTasks`, `send_quietly`), so the slow SMTP
    call does not make a known email take longer than an unknown one.
 
-**The link and its token.** The link is `APP_PUBLIC_URL` + `/app/reset-password#token=...`.
-It is built from the setting, never from the request's `Host` header, which a client can
-forge. The token is in the **fragment** (after `#`), which browsers never send to a server, so
-it stays out of server and proxy logs and `Referer` headers.
+**Setting the new password** (`POST /auth/password-reset/confirm`, body `{"email": ...,
+"code": ..., "new_password": ...}`, `extra="forbid"`):
 
-| Part | Value |
-|---|---|
-| Format | JWT signed with HS256, but with its own key: an HMAC of `AUTH_TOKEN_SECRET` with the label `password-reset`. A reset token can never pass as a login token, nor the other way round |
-| Claims | `sub` (user id), `acct` (account id), `jti` (32 random bytes), `typ` = `pwreset`, `iat`, `exp`; all six required |
-| Lifetime | `PASSWORD_RESET_TTL_MINUTES`, 30 by default; checked against `get_now`, so tests can move the clock |
-| Stored | Only the SHA-256 of `jti` (`password_reset_tokens.token_hash`). A fast hash is enough: 32 random bytes cannot be guessed, unlike a password |
-| Works | Once, and only while it is the user's newest row: asking again makes older links useless |
-
-**Why a signed token and not only a random one.** At confirm time nobody is logged in, so
-the account is not known. A plain random token looked up by its hash alone would be a second
-query on a business table without `account_id` ([conventions 6.4](06-conventions.md#64-database)).
-The signed claims name the account, so the row is found with `for_account`, just as
-`current_user` takes the account from the signed login cookie.
-
-**Setting the new password** (`POST /auth/password-reset/confirm`, body `{"token": ...,
-"new_password": ...}`, `extra="forbid"`):
-
-1. The body is checked: the new password is 12 to 128 characters, as at sign-up; the token
-   1 to `MAX_RESET_TOKEN_CHARACTERS`.
+1. The body is checked: the email as at login, the code six digits, the new password 12 to
+   128 characters, as at sign-up.
 2. The try's IP row is written and committed first; over the IP limit, `429` without checking
-   the token.
-3. The token is checked (signature, `typ`, the claims' types, expiry). The user row is locked,
-   found with the token's `account_id` and user id. The token's hash must match the user's
-   newest row, and that row must not have expired.
-4. Any failure is `400` "the reset link is not valid or has expired": one sentence for a
-   damaged, expired, used or replaced token, or a login token sent in its place. The IP row
-   stays, so guessing counts toward the limit.
+   the code.
+3. The user is found with `find_user_by_email` (6.4) and their row locked with its
+   `account_id`. For an email with no account the code is still hashed with the same key, so
+   that case takes about as long.
+4. Any failure is `400` "the code is wrong or has expired": one sentence for an unknown email
+   and for a wrong, expired, replaced or used-up code. A wrong code counts a wrong try, and the
+   IP row stays, so guessing counts toward both limits.
 5. Success, in one transaction: the new hash, `users.token_version` + 1 (every session of the
-   user ends, see "The login token"), **every** reset row of the user deleted, the failures of
+   user ends, see "The login token"), **every** code of the user deleted (both purposes),
+   `email_verified_at` set if it was empty (the code proved the mailbox), the failures of
    the email's login key and the try's own IP row deleted (so a user locked out by wrong
    passwords can log in at once), and a `password_reset` audit event (3.20).
-6. The answer is `204` with **no login cookie**: the screen sends the user to login. Whoever
-   has the link still has to type the new password once more.
+6. The answer is `204` with **no login cookie**: the screen sends the user to login.
 
-The password change (`POST /me/password`) also deletes the user's reset rows, so a password
-change makes every emailed link useless.
+The password change (`POST /me/password`) also deletes the user's reset codes, so a code
+asked for before a change cannot undo it.
 
-**The table** `password_reset_tokens` (migration 0020) is a business table: `account_id`,
-`user_id`, `token_hash` (`String(64)`, unique, a check allows only 64 lowercase hex
-characters), `expires_at` and the timestamps. It links to the user on (`account_id`,
-`user_id`) with `ON DELETE CASCADE`. An index on (`account_id`, `user_id`, `created_at`)
-serves the hourly cap. Used rows are deleted at use and stale ones at the user's next request,
-so there is no cleanup job.
+**Why the email and not a signed token.** Until migration 0022 the reset was a signed link
+whose claims named the account. A 6-digit code names nothing, so the confirm body carries the
+email and the user is found with `find_user_by_email`, the one lookup allowed without
+`account_id` (6.4). It is safe for the same reasons as at login: an email belongs to exactly
+one account, and nothing changes unless the code matches.
 
 ### Signing in with Google, step by step
 
@@ -4060,7 +4139,9 @@ is off. No model is called and no Google token is stored.
    trimmed and lowercased.
 5. **The user.** An email Google has not verified is refused (`not_verified`). The user is
    found with `find_user_by_email` (the same lookup as login, 6.4); their Google identity is
-   then read with the user's `account_id`.
+   then read with the user's `account_id`. A user whose email is not confirmed yet counts as no
+   user (step 7): otherwise whoever signed up first with someone else's address would get that
+   person's Google login.
    - Already linked to this Google account (same `sub`): logged in.
    - Linked to a different Google account: refused (`use_password`).
    - Not linked yet: linked only when Google vouches for the email today, that is a Gmail
@@ -4081,14 +4162,15 @@ is off. No model is called and no Google token is stored.
    the verified email. That screen reads
    the email (`GET /auth/google/signup`) and sends only the account name
    (`POST /auth/google/signup`): the email and the Google account come from the cookie, never
-   from the body. In one savepoint the route creates the account, its `admin` user with **no
-   password**, and the identity, then writes `account_created`, deletes `google_signup` and
-   sets the login cookie. A taken name or email, or a Google account linked meanwhile to
-   another user, is `409` and leaves nothing behind.
+   from the body. In one savepoint the route replaces an unconfirmed holder of the email (as
+   at sign-up), creates the account, its `admin` user with **no password** and the email
+   confirmed (Google vouches for it), and the identity, then writes `account_created`, deletes
+   `google_signup` and sets the login cookie. A taken name or email, or a Google account linked
+   meanwhile to another user, is `409` and leaves nothing behind.
 
 Every refusal is a `303` to `/app/login?google=<code>`, one of `failed`, `not_verified`,
-`use_password`, `use_signup`, `linked_elsewhere`, `expired`; nothing is written. The login screen shows a
-fixed sentence per code (3.21) and never what Google sent.
+`use_password`, `use_signup`, `linked_elsewhere`, `expired`; nothing is written. The login
+screen shows a fixed sentence per code (3.21) and never what Google sent.
 
 | Cookie | Holds | Path | SameSite | Lifetime |
 |---|---|---|---|---|
@@ -4097,7 +4179,7 @@ fixed sentence per code (3.21) and never what Google sent.
 
 Both are HttpOnly HS256 JWTs (`Secure` unless `AUTH_COOKIE_SECURE` is false), signed with a key
 made from `AUTH_TOKEN_SECRET` plus the label `google-sign-in`, so neither can pass as a login
-or reset token, and each names its kind (`typ`), so one cannot pass as the other.
+or `email_verify` token, and each names its kind (`typ`), so one cannot pass as the other.
 
 | Table | One row per | Holds |
 |---|---|---|
@@ -4114,22 +4196,34 @@ senders. `build_mail_sender` picks one from `MAIL_BACKEND` when the app starts.
 | Sender | `MAIL_BACKEND` | What it does |
 |---|---|---|
 | `SmtpSender` | `smtp` | Connects to `MAIL_SMTP_HOST`:`MAIL_SMTP_PORT` (587), upgrades to TLS (STARTTLS), logs in and sends; 10-second timeout. Works with any provider's SMTP server; this project uses Brevo's free tier, so a change of provider changes `.env` only |
-| `OutboxSender` | `outbox` (the default) | Writes each message as a `.eml` file into `MAIL_OUTBOX_DIR` (`var/outbox`, git-ignored); the names sort by time, so the newest is last. For local development: open the file to click the link. The app refuses to start with it while `AUTH_COOKIE_SECURE` is true, so a deployed app cannot silently drop emails |
+| `OutboxSender` | `outbox` (the default) | Writes each message as a `.eml` file into `MAIL_OUTBOX_DIR` (`var/outbox`, git-ignored); the names sort by time, so the newest is last. For local development: open the file to read the code. The app refuses to start with it while `AUTH_COOKIE_SECURE` is true, so a deployed app cannot silently drop emails |
 
-The email is plain text, with no HTML, no tracking and nothing about the account:
+Each email is plain text, with no HTML, no tracking and nothing about the account. The code
+is never in the subject, so a lock-screen preview does not show it:
 
 ```
-Subject: Reset your password
+Subject: Your sign-up code
 
-Someone asked to reset the password for this email address.
+Your code to confirm this email address is:
 
-To choose a new password, open this link within 30 minutes:
-<APP_PUBLIC_URL>/app/reset-password#token=<token>
+    <code>
 
-The link works once. If you did not ask for this, ignore this email; your password stays the same.
+It works for <minutes> minutes. If you did not sign up, ignore this email; without the code no
+account can use this address.
 ```
 
-The text is a constant in the code, not a prompt (no model writes it). `send_quietly` runs
+```
+Subject: Your password reset code
+
+Your code to reset your password is:
+
+    <code>
+
+It works for <minutes> minutes. If you did not ask for this, ignore this email; your password
+stays the same.
+```
+
+The texts are constants in the code, not prompts (no model writes them). `send_quietly` runs
 after the answer, so a failed send has nobody to tell: it logs "email failed" with the error's
 class only. Tests replace the sender with a stub that records the messages, and the SMTP
 sender's tests replace `smtplib.SMTP`, so no test sends mail.
@@ -4141,7 +4235,7 @@ The limit slows down someone guessing passwords, for one account or across many.
 | Key | Counts | Limit (default) |
 |---|---|---|
 | The typed email (after trimming and lowercasing) | failures for that email, also for an email no account has | 5 in 15 minutes |
-| The client IP (`request.client.host`) | failures from that address, over every email, plus every reset request and every failed reset confirm | 20 in 15 minutes |
+| The client IP (`request.client.host`) | failures from that address, over every email, plus every sign-up, every reset request, every "send a new code" and every failed code check (sign-up or reset) | 20 in 15 minutes |
 
 - **Where the counts are.** In the operational table `login_failures` (migration 0018):
   one row per try per key, kept when the login fails, with `key_kind` (`email` or `ip`, the type
@@ -4223,7 +4317,7 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `LOGIN_LIMIT_WINDOW_MINUTES` | no (default 15) | How far back failed logins are counted, at least 1 |
 | `LOGIN_LIMIT_PER_EMAIL` | no (default 5) | Failures for one email inside the window before its logins are refused, at least 1 |
 | `LOGIN_LIMIT_PER_IP` | no (default 20) | Failures from one client IP inside the window before its logins are refused, at least 1 |
-| `APP_PUBLIC_URL` | yes | The address the browser opens the app at (`http://127.0.0.1:5173` locally); reset links are built from it. Must start with `http://` or `https://`; a trailing `/` is dropped |
+| `APP_PUBLIC_URL` | yes | The address the browser opens the app at (`http://127.0.0.1:5173` locally); Google sign-in's return address is built from it. Must start with `http://` or `https://`; a trailing `/` is dropped |
 | `MAIL_BACKEND` | no (default `outbox`) | `outbox` (write `.eml` files; only with `AUTH_COOKIE_SECURE=false`) or `smtp` (send) |
 | `MAIL_OUTBOX_DIR` | no (default `var/outbox`) | Where the outbox writes |
 | `MAIL_SMTP_HOST` | with `smtp` | The provider's SMTP server |
@@ -4231,8 +4325,12 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `MAIL_SMTP_USERNAME` | with `smtp` | The SMTP login |
 | `MAIL_SMTP_PASSWORD` | with `smtp` | The SMTP password or key; a secret, hidden in error messages |
 | `MAIL_FROM` | with `smtp` | The sender address, verified at the provider; also written into outbox files when set |
-| `PASSWORD_RESET_TTL_MINUTES` | no (default 30) | How long a reset link works, at least 1 |
-| `PASSWORD_RESET_PER_EMAIL_PER_HOUR` | no (default 3) | Links one user gets in one hour; more requests get the same `202` and no email; at least 1 |
+| `PASSWORD_RESET_PER_EMAIL_PER_HOUR` | no (default 3) | Reset codes one user gets in one hour; more requests get the same `202` and no email; at least 1 |
+| `EMAIL_CODE_TTL_MINUTES` | no (default 10) | How long an emailed code works, at least 1 |
+| `EMAIL_CODE_MAX_WRONG_TRIES` | no (default 5) | Wrong tries before a code is dead, at least 1 |
+| `EMAIL_CODE_RESEND_SECONDS` | no (default 60) | The wait between two sign-up codes for one user, at least 1 |
+| `EMAIL_CODE_PER_USER_PER_HOUR` | no (default 5) | Sign-up codes one user gets in one hour, at least 1 |
+| `MAIL_DAILY_LIMIT` | no (default 250) | Emails the app sends in one UTC day, over every account; below Brevo's free 300; at least 1 |
 | `GOOGLE_CLIENT_ID` | for Google | The OAuth client ID from Google Cloud; Google sign-in is off unless this and the secret are set |
 | `GOOGLE_CLIENT_SECRET` | for Google | The OAuth client secret; a secret, hidden in error messages |
 | `GOOGLE_AUTH_URL` | no (default Google's) | Google's sign-in page, `https://accounts.google.com/o/oauth2/v2/auth`; must start with `https://` |
@@ -4266,10 +4364,11 @@ the prompt files, the model file and `APP_PUBLIC_URL` must be there too. Tests c
 instead, the runner and the sender stubs. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
-Every route except login, the password change and the two reset routes takes its session through `DbSession`, which closes the session (and commits)
-when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
-closes it after the answer, so a client could be told `201` for a sign-up whose commit then
-failed. A failed commit is now a `500` with no login cookie (tested).
+Every route except sign-up, login, the password change, the two code routes and the two reset
+routes takes its session through `DbSession`, which closes the session (and commits) when the
+route returns, before the answer is sent (`scope="function"`). FastAPI's default closes it
+after the answer, so a client could be told `201` for a sign-up whose commit then failed. A
+failed commit is now a `500` with no login cookie (tested).
 
 ### Logging
 
@@ -4277,21 +4376,24 @@ Sign-up and login log the account id and the user id. A failed login logs only t
 failed, and a login refused by the limit only "login refused: too many failures"; neither
 logs the email, the IP or their hashes. A password change logs the account id and the user
 id when it succeeds, and only "wrong current password" or "too many failures" when it does
-not. The reset routes log the account id and the user id when a link is made or a password
-is reset, the user id when the hourly cap stops a link, and otherwise only "password reset
-asked", "too many tries" or "link not valid"; the mail senders log only "email written to the
-outbox", "email sent" or "email failed" with the error's class. No reset log line holds the
-email, the link or the token. Google sign-in logs the account id and the user id when a user
-is logged in or signed up, "no user yet" when it asks for an account name, the refusal code
-when it refuses, and only the error's class or the HTTP status when a call to Google fails; it
-never logs the email, the code, the state, the nonce, the ID token or what Google sent back
-with a cancel. The email, the password, its hash and the token are never logged, and no response
-carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
-never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
-password would be the password, so `create_app` replaces it with `answer_validation_error`.
-A database error never shows the values of its query either: the engine is created with
-`hide_parameters=True` (`create_db_engine`), so a logged traceback of a failed sign-up does
-not carry the email or the hash. This holds for the pipelines too.
+not. The reset routes log the account id and the user id when a code is made or a password
+is reset, the user id when the hourly cap stops a code, and otherwise only "password reset
+asked", "too many tries" or "code not valid". The sign-up code logs the account id and the
+user id when a code is made or the email is confirmed, a replaced unconfirmed account by its
+id, and otherwise only why it refused ("too soon", "too many tries", "code not valid", "user
+no longer exists"); the daily cap logs only that its limit is reached. The mail senders log
+only "email written to the outbox", "email sent" or "email failed" with the error's class. No
+code or reset log line holds the email, the code or a cookie. Google sign-in logs the account
+id and the user id when a user is logged in or signed up, "no user yet" when it asks for an
+account name, the refusal code when it refuses, and only the error's class or the HTTP status
+when a call to Google fails; it never logs the email, the code, the state, the nonce, the ID
+token or what Google sent back with a cancel. The email, the password, its hash and the token
+are never logged, and no response carries the password or the hash. A `422` names each bad
+field (`loc`, `type`, `msg`) but never repeats the value that was sent: FastAPI's own answer
+does (`input`), which for a password would be the password, so `create_app` replaces it with
+`answer_validation_error`. A database error never shows the values of its query either: the
+engine is created with `hide_parameters=True` (`create_db_engine`), so a logged traceback of a
+failed sign-up does not carry the email or the hash. This holds for the pipelines too.
 
 ### Known limits
 
@@ -4303,14 +4405,25 @@ not carry the email or the hash. This holds for the pipelines too.
 - **Anyone who knows an email can lock its user out of login.** Five wrong passwords every 15
   minutes keep that email refused. A password reset clears the email's failures, so the user
   gets in at once, but the attacker can start again.
-- **A known email takes a little more work to ask for.** It writes a token row and an unknown
-  one does not. The gap is milliseconds, far below network noise, but not zero.
-- **Reset emails may land in spam.** The sender is one Gmail address verified at Brevo, not a
+- **A known email takes a little more work to ask for.** It locks the user row, counts the
+  hourly cap and writes a `mail_sends` row and a code row; an unknown one does one lookup. The
+  gap is milliseconds, far below network noise, but not zero (and sign-up's `409` already
+  tells a confirmed email apart).
+- **Code emails may land in spam.** The sender is one Gmail address verified at Brevo, not a
   domain of our own; a domain sender comes with the deployment (Stage 6), a `.env` change.
-- **A reset email can be lost.** It is sent after the answer in the one API process (3.19);
-  a restart at that moment drops it, and the user asks again.
+- **A code email can be lost.** It is sent after the answer in the one API process (3.19);
+  a restart at that moment drops it, and the user asks for a new code.
 - **Whoever reads the mailbox can reset the password.** That is how email reset works.
-- **The sign-up email is not checked.** A user who typed it wrong can never get a reset link.
+- **The daily cap is shared by every account.** Past `MAIL_DAILY_LIMIT` emails in a UTC day,
+  sign-ups are refused (`503`) and reset codes are not sent until midnight UTC. Two requests
+  at the same moment may both pass at the cap, so one or two more may go out.
+- **An unconfirmed account is taken over by the next sign-up for its email.** It holds
+  nothing yet (it was never logged in), so nothing is lost but the name.
+- **Old code rows of an unconfirmed account can stay.** An account nobody signs up over again
+  keeps its last codes (at most `EMAIL_CODE_PER_USER_PER_HOUR` an hour, while it keeps asking)
+  until its next code or the account is deleted; there is no cleanup job.
+- **The code screen works in the browser that signed up, for 24 hours.** Elsewhere, or
+  later, the user logs in with their password to get a new `email_verify` cookie and code.
 - **People behind one shared address share the IP limit.** An office or a mobile carrier
   gets 20 failures per 15 minutes for everyone behind it.
 - **A spread-out attack is not stopped.** Many addresses trying many emails, a few tries
@@ -4336,7 +4449,8 @@ not carry the email or the hash. This holds for the pipelines too.
   is one per browser. If the older tab returns first, its `state` no longer matches and it is
   refused (`failed`); if the newer one returns first, it finishes and the older one then
   finds no flow cookie (`expired`). Either way the user tries again.
-- **No limit on accounts created through Google**, the same as password sign-up.
+- **No limit on accounts created through Google.** Password sign-up counts against the IP
+  limit; Google sign-up does not.
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
   match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
   the app has a public address (Stage 6).
@@ -4656,6 +4770,7 @@ The kind `edit_not_allowed` comes from the edit check.
 | `password_changed` | `POST /me/password` (3.18) | none; no job (migration 0019) |
 | `password_reset` | `POST /auth/password-reset/confirm` (3.18), a completed reset only | none; no job (migration 0020) |
 | `google_linked` | `GET /auth/google/callback` (3.18), when a Google account is linked to an existing user; a sign-up through Google writes `account_created` instead | none; no job (migration 0021) |
+| `email_verified` | `POST /auth/verify-email` (3.18), when a new sign-up types the right code; a reset that confirms the email writes `password_reset` only | none; no job (migration 0022) |
 | `upload_created` | `POST /uploads` (3.19) | none |
 | `draft_edited` | an edit | the new version |
 | `draft_approved` | an approve | the approved version |
@@ -4663,9 +4778,10 @@ The kind `edit_not_allowed` comes from the edit check.
 
 An event holds the account, the user, the action, the job, the time and a detail with fixed
 keys only (`AuditDetail`: `version`, `reject_reason`). It never holds document text, letter
-text or a file name. Sign-up, the password change, the password reset and the upload write
-their event in the same transaction as their rows. Asking for a reset link writes no event:
-an unknown email has no account to write it to. The code only inserts events; nothing updates or deletes one.
+text or a file name. Sign-up, the email code, the password change, the password reset and the
+upload write their event in the same transaction as their rows. Asking for a reset code writes
+no event: an unknown email has no account to write it to. The code only inserts events; nothing
+updates or deletes one.
 
 The links from an event to its user and its job have no cascade, so an audited user or job
 cannot be deleted on its own: the database refuses it. `GET /audit` gives the events with the
@@ -4695,7 +4811,7 @@ All three are business tables with `account_id`.
 |---|---|---|
 | `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
 | `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
-| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed`, `password_reset` and `google_linked`, a check since migration 0019, widened in 0020 and 0021), `detail` as a JSON object |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed`, `password_reset`, `google_linked` and `email_verified`, a check since migration 0019, widened in 0020, 0021 and 0022), `detail` as a JSON object |
 
 As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
 `job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
@@ -4779,21 +4895,22 @@ screen:
 | `frontend/vite.config.ts` | The dev server and its proxy: `API_PATHS`, the nine top-level API paths, forwarded to `API_TARGET` (`http://127.0.0.1:8000`) |
 | `frontend/src/main.tsx`, `App.tsx`, `router.tsx` | The start of the app, the query client and the router; every screen is under `/app/...` |
 | `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session (the login screen then empties the cache) |
-| `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
+| `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds, `retryAfter` (a `Retry-After` of whole seconds, else null) and `code` (the answer's `code` field, such as `EMAIL_NOT_VERIFIED`, else null) |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
-| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`, `fetchAuthOptions`, `fetchGoogleSignup`, `googleSignup`, and `GOOGLE_START_PATH` (a link, not a call); `uploadLetter`, `fetchJob`; `fetchWorklist` |
-| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `useAuthOptions`, `useGoogleSignupInfo`, `useGoogleSignup`, `clearAccountData` (keeps the session and the options); the session is the cache key `["me"]`, the options `["auth-options"]` |
+| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `verifyEmail`, `resendCode`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`, `fetchAuthOptions`, `fetchGoogleSignup`, `googleSignup`, and `GOOGLE_START_PATH` (a link, not a call); `uploadLetter`, `fetchJob`; `fetchWorklist` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup` (does not touch the session: a sign-up does not log in), `useVerifyEmail`, `useResendCode`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `useAuthOptions`, `useGoogleSignupInfo`, `useGoogleSignup`, `clearAccountData` (keeps the session and the options); the session is the cache key `["me"]`, the options `["auth-options"]` |
 | `frontend/src/auth/googleSignIn.ts` | `GOOGLE_NAME_ACCOUNT_PATH`, `GOOGLE_SIGNUP_EXPIRED`; `googleRefusalMessage`, the fixed sentence for the `?google=<code>` the API sends a refusal back with |
-| `frontend/src/auth/resetLink.ts` | `FORGOT_PASSWORD_PATH`, `RESET_PASSWORD_PATH`; `tokenFromHash`, the token from the link's `#token=` fragment; `PASSWORD_SET_STATE` and `isPasswordSetState`, the note the reset screen leaves for the login screen |
+| `frontend/src/auth/passwordReset.ts` | `FORGOT_PASSWORD_PATH`; `PASSWORD_SET_STATE` and `isPasswordSetState`, the note the reset screen leaves for the login screen |
+| `frontend/src/auth/emailCode.ts` | `VERIFY_EMAIL_PATH`; `EMAIL_NOT_VERIFIED` and `isEmailNotVerified` (a login `403` with that `code`); `waitSentence`, "Wait 42 seconds before asking for another code." from a `Retry-After` (a minute or more in whole minutes, rounded up) |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm`, `checkGoogleSignup`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm` (the code and the new password), `checkCode`, `checkGoogleSignup`: the empty, email-shape, code-shape (six digits) and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, code, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `ForgotPasswordScreen`, `ResetPasswordScreen`, `GoogleNameAccountScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleNameAccountScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4803,18 +4920,17 @@ screen:
 |---|---|---|
 | `/app/login` | anyone | `POST /auth/login` |
 | `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
-| `/app/forgot-password` | anyone | `POST /auth/password-reset` |
-| `/app/reset-password` | anyone (opened from the emailed link) | `POST /auth/password-reset/confirm` |
+| `/app/verify-email` | anyone the API gave the `email_verify` cookie (after sign-up, or a login refused with `EMAIL_NOT_VERIFIED`) | `POST /auth/verify-email` and `POST /auth/verify-email/resend` |
+| `/app/forgot-password` | anyone | `POST /auth/password-reset`, then `POST /auth/password-reset/confirm` |
 | `/app/google/name-account` | anyone the API sent there after a first Google sign-in | `GET` and `POST /auth/google/signup` |
 | `/app/worklist` | a logged-in user of any role | `GET /worklist` |
 | `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
 | `/app/account` | a logged-in user of any role | `POST /me/password` |
 | any other path | | sends to `/app/worklist` |
 
-Every screen under `/app/` other than login, sign-up, the two reset screens and the Google
-name-your-account screen asks for the session first
-(`GET /me`) and shows the account, the user's email and role and a Log out button
-(`POST /auth/logout`).
+Every screen under `/app/` other than login, sign-up, the code screen, the reset screen and the
+Google name-your-account screen asks for the session first (`GET /me`) and shows the account,
+the user's email and role and a Log out button (`POST /auth/logout`).
 
 ### How the browser reaches the API
 
@@ -4837,7 +4953,8 @@ with the app's page instead of forwarding it.
 2. The guard (`RequireSession`) sends a user without a session to `/app/login` and remembers
    the page they wanted, together with the id of the user whose session just ended (none on a
    page load without a session).
-3. Login and sign-up empty the cache and write the user they get back into the session. The
+3. Login and a right sign-up code empty the cache and write the user they get back into the
+   session (sign-up itself does not log in, see "Confirming the email"). The
    app then goes back to the remembered page, but only to a page under `/app/` that is not
    login or sign-up, and only when the user who logs in is the one remembered, or no user was
    (`afterLoginPath`); anything else goes to the worklist.
@@ -4850,8 +4967,8 @@ with the app's page instead of forwarding it.
 
 The cache keys of the worklist, the jobs, the denial detail and the overview do not name the
 account, so everything but the session is removed (`clearAccountData`) when the login screen
-opens, at login, at sign-up and at logout: a second user who logs in on the same browser never
-sees the first one's rows, even for a moment.
+opens, at login, at a right sign-up code and at logout: a second user who logs in on the same
+browser never sees the first one's rows, even for a moment.
 
 The login and sign-up forms check their fields in the browser before anything is sent
 (`credentialCheck.ts`): an empty field, an email without the shape `something@something`, and
@@ -4860,6 +4977,30 @@ focus moves to the first one. The API checks everything again; a login password 
 checked for length, as the API answers a wrong length like a wrong password. The login form
 has a "Forgot password?" link (see "Forgot password"), and both forms a "Continue with
 Google" button when the server has it on (see "Continue with Google").
+
+### Confirming the email
+
+A new sign-up is not logged in until the emailed code is typed (3.18).
+
+1. Sign-up answers `201` and the screen goes to `/app/verify-email` ("Confirm your email"),
+   replacing the sign-up page in the history. A `503` at sign-up shows "We cannot send email
+   right now. Try again later."
+2. A login with the right password whose email is not confirmed answers `403` with
+   `code: "EMAIL_NOT_VERIFIED"` (`isEmailNotVerified`); the login screen goes to the same code
+   screen and shows no error. Any other `403` is shown as an error.
+3. The screen has one field, "Code" (`inputMode="numeric"`, `autoComplete="one-time-code"`
+   so a phone can offer the code from the email, at most 6 characters). It never shows the
+   email: the API knows the user from the `email_verify` cookie. `checkCode` asks for six
+   digits, then `POST /auth/verify-email` is sent.
+4. A `400` shows "The code is wrong or has expired."; a `401` "This code screen has expired.
+   Log in again to get a new code." with a link to login, and "Send a new code" is then off.
+5. "Send a new code" sends `POST /auth/verify-email/resend`. A `202` says "A new code is on its
+   way."; a `429` with `Retry-After` says how long to wait (`waitSentence`); a `409` "Your email
+   is already confirmed." with a link to login; a `503` the sentence of step 1.
+6. A right code logs in: the cache is emptied, the session written, and the screen goes to
+   the worklist. "Wrong email? Sign up again" leads back to sign-up.
+
+The code's lifetime is not shown on the screen: it is a setting, and the email says it.
 
 ### Changing the password
 
@@ -4879,21 +5020,22 @@ typed.
 
 ### Forgot password
 
-Two screens outside the login guard, both in `AuthFrame` with a "Remembered it? Log in" link.
+One screen outside the login guard, in `AuthFrame` with a "Remembered it? Log in" link. It has
+two steps; the email is kept in the screen's state only, never in the address, so a reload
+starts again.
 
 1. "Forgot password?" on the login screen opens `/app/forgot-password` ("Reset your
    password"). The email is checked in the browser (`checkResetAsk`), then
-   `POST /auth/password-reset` is sent. On `202` the form is replaced by one sentence for
-   every email: "If the email belongs to an account, a link is on its way. Check your
-   inbox." A `429` and every other error use the general sentences.
-2. The emailed link opens `/app/reset-password#token=...` ("Set a new password"). The screen
-   reads the token from the fragment **once** (`tokenFromHash`) and then replaces the address
-   with `/app/reset-password` (`navigate(..., { replace: true })`), so the token leaves the
-   address bar and the history. A reload after that needs the link again.
-3. The new password is checked (`checkResetConfirm`, 12 to 128 characters), then
-   `POST /auth/password-reset/confirm` is sent with the token.
-4. A `400`, or a link with no token, shows "The reset link is not valid or has expired." with
-   an "Ask for a new link" link back to step 1; the button stays off when there is no token.
+   `POST /auth/password-reset` is sent. A `429` and every other error use the general
+   sentences.
+2. On `202` the screen shows one sentence for every email: "If the email belongs to an
+   account, a code is on its way. Check your inbox.", and below it the code and a new password
+   (`PasswordField`). `checkResetConfirm` asks for six digits and 12 to 128 characters, then
+   `POST /auth/password-reset/confirm` is sent with the email, the code and the new password.
+3. A `400` shows "The code is wrong or has expired.": the same sentence for an email with no
+   account, so the screen never says whether it has one.
+4. "Send a new code" asks again with the same email and says "If the email belongs to an
+   account, a new code is on its way." whatever the answer (the hourly cap is silent, 3.18).
 5. On `204` the screen goes to `/app/login` with `PASSWORD_SET_STATE`, and the login screen
    says "Your password is set. Log in with it." The API does not log in after a reset (3.18).
 
@@ -4960,7 +5102,10 @@ the upload only for a role that can upload.
 other answer, or a body that is not the API's JSON) and `network` (no answer). The login
 screen shows its own sentence for a `429`, "Too many failed logins. Try again in a few
 minutes."; any other screen shows the general "Too many tries. Try again in a few minutes."
-from `errorMessage.ts`. Neither reads `Retry-After`, so the screen never shows a countdown. Of a `422` with field problems
+from `errorMessage.ts`. The `ApiError` keeps `Retry-After` (`retryAfter`) and the answer's
+`code`; only "Send a new code" on the code screen shows the wait (`waitSentence`), and no
+screen shows a countdown. A `400` or a `503` is a `server` kind with its status, so a screen
+gives it its own sentence. Of a `422` with field problems
 only the position and the kind of each problem are kept; the API's message and any input are
 dropped, so text the user typed never reaches the screen through an error (3.18 already
 answers a `422` without the input).

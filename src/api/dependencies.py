@@ -1,9 +1,9 @@
-"""FastAPI dependencies: settings, the database session, the job runner, the mail sender, the
-public URL, Google's side of the sign-in, the clock, the logged-in user and role checks.
+"""FastAPI dependencies: settings, the database session, the job runner, the mail sender,
+Google's side of the sign-in, the clock, the logged-in user and role checks.
 
 Every route takes the `account_id` it queries with from `current_user`, never from the path,
 query or body. The app factory puts `api_settings`, `session_factory`, `job_runner`,
-`mail_sender`, `public_url` and `google` (None when not configured) on `app.state`.
+`mail_sender` and `google` (None when not configured) on `app.state`.
 """
 
 from collections.abc import Callable, Iterator
@@ -57,12 +57,6 @@ def get_job_runner(request: Request) -> JobRunner:
 def get_mail_sender(request: Request) -> MailSender:
     sender: MailSender = request.app.state.mail_sender
     return sender
-
-
-def get_public_url(request: Request) -> str:
-    """The address the browser opens the app at, without a trailing slash."""
-    url: str = request.app.state.public_url
-    return url
 
 
 def get_google(request: Request) -> GoogleOidc:

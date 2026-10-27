@@ -444,8 +444,14 @@ MAIL_KEYS = (
     "MAIL_SMTP_USERNAME",
     "MAIL_SMTP_PASSWORD",
     "MAIL_FROM",
-    "PASSWORD_RESET_TTL_MINUTES",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
+)
+EMAIL_CODE_KEYS = (
+    "EMAIL_CODE_TTL_MINUTES",
+    "EMAIL_CODE_MAX_WRONG_TRIES",
+    "EMAIL_CODE_RESEND_SECONDS",
+    "EMAIL_CODE_PER_USER_PER_HOUR",
+    "MAIL_DAILY_LIMIT",
 )
 GOOGLE_KEYS = (
     "GOOGLE_CLIENT_ID",
@@ -596,14 +602,17 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS):
+    keys = (*API_KEYS, *MAIL_KEYS, *EMAIL_CODE_KEYS, *GOOGLE_KEYS)
+    for key in keys:
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
     listed = {line.split("=", 1)[0] for line in example.read_text().splitlines() if "=" in line}
 
     settings = load_api_settings(env_file=str(example))
 
-    assert {*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS} <= listed
+    assert set(keys) <= listed
+    # Removed with the reset link (migration 0022); a stale line would be ignored silently.
+    assert "PASSWORD_RESET_TTL_MINUTES" not in listed
     assert settings.mail_backend == "outbox"
     # The Google keys are listed empty: no client secret, real or made up, and the button is off.
     assert not settings.google_enabled
@@ -616,7 +625,7 @@ def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     assert mail_password_is_placeholder, "MAIL_SMTP_PASSWORD in .env.example is not a placeholder"
 
 
-def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(
+def test_mail_and_reset_settings_default_to_the_outbox_and_3_an_hour(
     api_env: pytest.MonkeyPatch,
 ) -> None:
     settings = load_api_settings(env_file=None)
@@ -624,7 +633,6 @@ def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(
     assert settings.app_public_url is None
     assert (settings.mail_backend, settings.mail_outbox_dir) == ("outbox", Path("var/outbox"))
     assert settings.mail_smtp_port == 587
-    assert settings.password_reset_ttl_minutes == 30
     assert settings.password_reset_per_email_per_hour == 3
 
 
@@ -673,7 +681,6 @@ def test_the_public_url_must_be_http_and_loses_a_trailing_slash(
     [
         ("MAIL_BACKEND", "carrier-pigeon"),
         ("MAIL_SMTP_PORT", "0"),
-        ("PASSWORD_RESET_TTL_MINUTES", "0"),
         ("PASSWORD_RESET_PER_EMAIL_PER_HOUR", "0"),
     ],
 )
@@ -681,6 +688,42 @@ def test_rejects_a_bad_mail_or_reset_value_naming_the_key(
     api_env: pytest.MonkeyPatch, key: str, value: str
 ) -> None:
     api_env.setenv(key, value)
+    with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)
+
+
+def test_email_code_settings_default_to_10_minutes_5_tries_60_seconds_5_an_hour_and_250_a_day(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert settings.email_code_ttl_minutes == 10
+    assert settings.email_code_max_wrong_tries == 5
+    assert settings.email_code_resend_seconds == 60
+    assert settings.email_code_per_user_per_hour == 5
+    assert settings.mail_daily_limit == 250
+
+
+def test_email_code_settings_are_read_from_the_environment(api_env: pytest.MonkeyPatch) -> None:
+    for key, value in zip(EMAIL_CODE_KEYS, ("15", "3", "30", "4", "100"), strict=True):
+        api_env.setenv(key, value)
+
+    settings = load_api_settings(env_file=None)
+
+    assert (
+        settings.email_code_ttl_minutes,
+        settings.email_code_max_wrong_tries,
+        settings.email_code_resend_seconds,
+        settings.email_code_per_user_per_hour,
+        settings.mail_daily_limit,
+    ) == (15, 3, 30, 4, 100)
+
+
+@pytest.mark.parametrize("key", EMAIL_CODE_KEYS)
+def test_rejects_an_email_code_limit_of_zero_naming_the_key(
+    api_env: pytest.MonkeyPatch, key: str
+) -> None:
+    api_env.setenv(key, "0")
     with pytest.raises(ValidationError, match=key.lower()):
         load_api_settings(env_file=None)
 

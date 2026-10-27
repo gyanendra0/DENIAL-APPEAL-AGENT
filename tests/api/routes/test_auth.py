@@ -18,7 +18,13 @@ from src.api.routes import auth as auth_module
 from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN, LOGIN_FAILED
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
 from src.db.models import Account, LoginFailure, LoginKeyKind, User, UserRole
-from tests.api.conftest import API_TTL_MINUTES, BASE_URL, RecordingSender, api_settings
+from tests.api.conftest import (
+    API_TTL_MINUTES,
+    BASE_URL,
+    RecordingSender,
+    api_settings,
+    signup_and_verify,
+)
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 WRONG = "a-made-up-wrong-password"  # noqa: S105  (made up)
@@ -28,11 +34,8 @@ NOW = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 def _signup(
     client: TestClient, name: str = "Clinic One", email: str = "Ann@X.org"
 ) -> dict[str, str]:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body: dict[str, str] = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body: dict[str, str] = signed_up
     return body
 
 
@@ -302,7 +305,8 @@ def test_a_good_login_clears_the_email_count_but_not_the_ip_count(
     for _ in range(4):
         _login(api_client)
     assert _login(api_client, password=PASSWORD) == 200
-    assert _failure_rows(db_session) == [LoginKeyKind.IP] * 4
+    # The sign-up's own IP try stays too.
+    assert _failure_rows(db_session) == [LoginKeyKind.IP] * 5
     for _ in range(4):
         assert _login(api_client) == 401
     assert _login(api_client, password=PASSWORD) == 200

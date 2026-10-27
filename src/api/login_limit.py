@@ -5,7 +5,8 @@ the rows inside the window, its own included. Tries that run at the same time th
 other, and at most the limit reach the password check. Neither value is stored: the key is an
 HMAC-SHA256 with a key derived from the token secret. A refused try deletes its own rows again
 and costs no hashing; a good login deletes the email's rows and its own IP row. The password
-reset routes count by IP only (the `ip_` functions), so their answer never depends on the email.
+reset routes and the sign-up and code routes count by IP only (the `ip_` functions), so their
+answer never depends on the email.
 """
 
 import hashlib
@@ -14,12 +15,14 @@ import ipaddress
 import math
 from datetime import datetime, timedelta
 
+from fastapi import HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.config.settings import ApiSettings
 from src.db.models import LoginFailure, LoginKeyKind
+from src.db.session import session_scope
 
 TOO_MANY_LOGINS = "too many failed logins; try again later"
 
@@ -237,3 +240,37 @@ def clear_email_failures(session: Session, email_hash: str, ip_row_id: int) -> N
             | (LoginFailure.id == ip_row_id)
         )
     )
+
+
+def too_many_tries(retry_after: int, detail: str = TOO_MANY_LOGINS) -> HTTPException:
+    """The 429 answer, telling the client how many seconds to wait."""
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        detail,
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def count_ip_try(
+    factory: sessionmaker[Session], ip_hash: str, *, now: datetime, settings: ApiSettings
+) -> int:
+    """Write and commit one IP failure row for this try (`reserve_ip_failure` in its own
+    transaction), and return its id. The row stays unless the try is refused or succeeds."""
+    with session_scope(factory) as session:
+        return reserve_ip_failure(
+            session, ip_hash, now=now, window_minutes=settings.login_limit_window_minutes
+        )
+
+
+def refuse_over_ip_limit(
+    session: Session, ip_hash: str, row_id: int, *, now: datetime, settings: ApiSettings
+) -> int | None:
+    """If the IP is over its limit, take back this try's row and return the seconds to wait;
+    else return None. Call it after `count_ip_try`, in the try's second transaction."""
+    if not ip_over_limit(session, ip_hash, now=now, settings=settings):
+        return None
+    release_ip_failure(session, row_id)
+    session.flush()
+    # Without its own row the count is at the limit again, so there is a wait; a good try may
+    # have cleared rows meanwhile, hence the floor.
+    return ip_retry_after_seconds(session, ip_hash, now=now, settings=settings) or 1

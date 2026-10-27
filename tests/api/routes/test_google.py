@@ -24,7 +24,13 @@ from src.api.routes.google import (
     SIGNUP_EXPIRED,
 )
 from src.db.models import Account, AuditAction, AuditEvent, LoginFailure, User, UserIdentity
-from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender
+from tests.api.conftest import (
+    BASE_URL,
+    PUBLIC_URL,
+    RecordingSender,
+    code_in,
+    signup_and_verify,
+)
 from tests.api.fake_google import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -103,12 +109,9 @@ def _sign_in(client: TestClient, fake: FakeGoogle, **claims: Any) -> tuple[int, 
 def _signup_with_password(
     client: TestClient, email: str = "ann@gmail.com", name: str = "One"
 ) -> int:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
     client.cookies.clear()
-    user_id: int = response.json()["user_id"]
+    user_id: int = signed_up["user_id"]
     return user_id
 
 
@@ -244,7 +247,7 @@ def test_an_id_token_from_another_start_is_refused_and_writes_nothing(
     assert response.headers["location"] == "/app/login?google=failed"
     assert (_count(db_session, UserIdentity), _actions(db_session)) == (
         0,
-        [AuditAction.ACCOUNT_CREATED],
+        [AuditAction.ACCOUNT_CREATED, AuditAction.EMAIL_VERIFIED],
     )
     assert AUTH_COOKIE_NAME not in client.cookies
 
@@ -269,7 +272,7 @@ def test_an_unverified_email_is_refused_and_writes_nothing(
     )
     assert (_count(db_session, UserIdentity), _actions(db_session)) == (
         0,
-        [AuditAction.ACCOUNT_CREATED],
+        [AuditAction.ACCOUNT_CREATED, AuditAction.EMAIL_VERIFIED],
     )
     assert AUTH_COOKIE_NAME not in client.cookies
 
@@ -282,7 +285,7 @@ def test_a_user_on_a_domain_google_does_not_manage_must_use_the_password(
     assert location == "/app/login?google=use_password"
     assert (_count(db_session, UserIdentity), _actions(db_session)) == (
         0,
-        [AuditAction.ACCOUNT_CREATED],
+        [AuditAction.ACCOUNT_CREATED, AuditAction.EMAIL_VERIFIED],
     )
 
 
@@ -319,7 +322,11 @@ def test_an_existing_gmail_user_is_linked_audited_and_logged_in(
 
     me = client.get("/me")
     assert (me.status_code, me.json()["user_id"]) == (200, user_id)
-    assert _actions(db_session) == [AuditAction.ACCOUNT_CREATED, AuditAction.GOOGLE_LINKED]
+    assert _actions(db_session) == [
+        AuditAction.ACCOUNT_CREATED,
+        AuditAction.EMAIL_VERIFIED,
+        AuditAction.GOOGLE_LINKED,
+    ]
     [link] = db_session.scalars(select(UserIdentity)).all()
     assert (link.user_id, link.subject) == (user_id, SUB)
 
@@ -333,7 +340,11 @@ def test_a_linked_user_logs_in_again_without_a_new_audit_event(
 
     assert _sign_in(client, fake_google) == (303, HOME_SCREEN)
     assert _me(client) == 200
-    assert _actions(db_session) == [AuditAction.ACCOUNT_CREATED, AuditAction.GOOGLE_LINKED]
+    assert _actions(db_session) == [
+        AuditAction.ACCOUNT_CREATED,
+        AuditAction.EMAIL_VERIFIED,
+        AuditAction.GOOGLE_LINKED,
+    ]
 
 
 def test_the_login_cookie_is_strict_like_a_password_login(
@@ -447,10 +458,8 @@ def test_a_user_with_no_password_sets_one_with_forgot_password(
 
     asked = client.post("/auth/password-reset", json={"email": "ann@gmail.com"})
     assert asked.status_code == 202
-    token = sender.sent[0].body.split("#token=", 1)[1].split("\n", 1)[0]
-    confirmed = client.post(
-        "/auth/password-reset/confirm", json={"token": token, "new_password": NEW_PASSWORD}
-    )
+    body = {"email": "ann@gmail.com", "code": code_in(sender.sent[0]), "new_password": NEW_PASSWORD}
+    confirmed = client.post("/auth/password-reset/confirm", json=body)
     assert confirmed.status_code == 204
 
     login = client.post("/auth/login", json={"email": "ann@gmail.com", "password": NEW_PASSWORD})

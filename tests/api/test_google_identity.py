@@ -1,6 +1,8 @@
 """Who a Google identity opens: linked users log in, linking needs an email Google vouches for,
 and a Google account never opens two users."""
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -24,6 +26,9 @@ from src.db.models import (
     UserRole,
 )
 
+# The users made here count as having confirmed their email.
+VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 SUB = "100000000000000000001"
 
@@ -39,7 +44,9 @@ def _identity(
 
 
 def _user(session: Session, email: str = "ann@gmail.com", name: str = "Clinic") -> User:
-    return create_account_with_admin(session, account_name=name, email=email, password=PASSWORD)
+    return create_account_with_admin(
+        session, account_name=name, email=email, password=PASSWORD, verified_at=VERIFIED_AT
+    )
 
 
 def _count(session: Session, model: type[UserIdentity] | type[AuditEvent] | type[Account]) -> int:
@@ -156,7 +163,9 @@ def test_a_google_account_never_links_to_a_second_user(session: Session) -> None
 def test_a_google_account_creates_an_admin_with_no_password_and_its_link(
     session: Session,
 ) -> None:
-    user = create_google_account(session, account_name="Clinic", subject=SUB, email="ann@gmail.com")
+    user = create_google_account(
+        session, account_name="Clinic", subject=SUB, email="ann@gmail.com", now=VERIFIED_AT
+    )
 
     assert (user.email, user.role, user.password_hash) == ("ann@gmail.com", UserRole.ADMIN, None)
     [link] = session.scalars(select(UserIdentity)).all()
@@ -164,11 +173,15 @@ def test_a_google_account_creates_an_admin_with_no_password_and_its_link(
 
 
 def test_a_google_account_already_linked_creates_nothing(session: Session) -> None:
-    create_google_account(session, account_name="One", subject=SUB, email="ann@gmail.com")
+    create_google_account(
+        session, account_name="One", subject=SUB, email="ann@gmail.com", now=VERIFIED_AT
+    )
     before = (_count(session, Account), _count(session, UserIdentity))
 
     with pytest.raises(GoogleRefusedError) as caught:
-        create_google_account(session, account_name="Two", subject=SUB, email="ann.new@gmail.com")
+        create_google_account(
+            session, account_name="Two", subject=SUB, email="ann.new@gmail.com", now=VERIFIED_AT
+        )
 
     assert caught.value.reason is GoogleRefusal.LINKED_ELSEWHERE
     assert (_count(session, Account), _count(session, UserIdentity)) == before
@@ -177,7 +190,36 @@ def test_a_google_account_already_linked_creates_nothing(session: Session) -> No
 def test_a_taken_name_or_email_is_refused_like_sign_up(session: Session) -> None:
     _user(session, "ann@gmail.com", "Clinic")
     with pytest.raises(AccountNameTakenError):
-        create_google_account(session, account_name="Clinic", subject=SUB, email="bob@gmail.com")
+        create_google_account(
+            session, account_name="Clinic", subject=SUB, email="bob@gmail.com", now=VERIFIED_AT
+        )
     with pytest.raises(EmailTakenError):
-        create_google_account(session, account_name="Other", subject=SUB, email="ann@gmail.com")
+        create_google_account(
+            session, account_name="Other", subject=SUB, email="ann@gmail.com", now=VERIFIED_AT
+        )
     assert _count(session, UserIdentity) == 0
+
+
+def test_an_unverified_user_with_the_email_is_not_linked(session: Session) -> None:
+    squatter = create_account_with_admin(
+        session, account_name="Squatter", email="ann@gmail.com", password=PASSWORD, verified_at=None
+    )
+    assert sign_in_with_google(session, _identity()) is None
+    assert (_count(session, UserIdentity), _actions(session)) == (0, [])
+    assert session.get(User, squatter.id) is not None
+
+
+def test_a_google_account_is_verified_and_replaces_an_unverified_holder(
+    session: Session,
+) -> None:
+    squatter = create_account_with_admin(
+        session, account_name="Squatter", email="ann@gmail.com", password=PASSWORD, verified_at=None
+    )
+    old_account_id = squatter.account_id
+    user = create_google_account(
+        session, account_name="Clinic", subject=SUB, email="ann@gmail.com", now=VERIFIED_AT
+    )
+    session.expire_all()
+    assert user.email_verified_at == VERIFIED_AT
+    assert session.get(Account, old_account_id) is None
+    assert _count(session, Account) == 1

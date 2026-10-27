@@ -17,6 +17,7 @@ from src.api.dependencies import (
     get_now,
     get_session_factory,
 )
+from src.api.email_codes import delete_codes
 from src.api.login_cookie import set_login_cookie
 from src.api.login_limit import (
     TOO_MANY_LOGINS,
@@ -28,11 +29,10 @@ from src.api.login_limit import (
     retry_after_seconds,
 )
 from src.api.passwords import hash_password, verify_password
-from src.api.reset_tokens import delete_reset_tokens
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS, PasswordChangeRequest, UserResponse
 from src.api.user_lookup import find_user_response
 from src.config.settings import ApiSettings
-from src.db.models import AuditAction, User
+from src.db.models import AuditAction, EmailCodePurpose, User
 from src.db.query import for_account
 from src.db.session import session_scope
 from src.review.audit import record_audit_event
@@ -79,7 +79,7 @@ def change_password(
     the client IP, so a stolen session cannot guess the password faster than login could; over
     the limit, 429 without checking. A user with no password yet gets a 400 that says so,
     without counting. The answer carries a new login cookie, so this session stays
-    logged in while every older token stops working; every reset link of the user stops working
+    logged in while every older token stops working; every reset code of the user stops working
     too. Takes tens of milliseconds on purpose (two password hashes).
     """
     client_host = request.client.host if request.client is not None else None
@@ -114,8 +114,13 @@ def change_password(
             ):
                 row.password_hash = hash_password(body.new_password)
                 row.token_version += 1
-                # A reset link asked for before the change must not undo it.
-                delete_reset_tokens(session, account_id=row.account_id, user_id=row.id)
+                # A reset code asked for before the change must not undo it.
+                delete_codes(
+                    session,
+                    account_id=row.account_id,
+                    user_id=row.id,
+                    purpose=EmailCodePurpose.PASSWORD_RESET,
+                )
                 clear_email_failures(session, keys.email_hash, ids.ip_id)
                 record_audit_event(
                     session, row.account_id, row.id, AuditAction.PASSWORD_CHANGED, None

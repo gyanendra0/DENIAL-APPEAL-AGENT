@@ -240,7 +240,11 @@ def signup(
     pending = _pending_signup(request, settings, now)
     try:
         user = create_google_account(
-            session, account_name=body.account_name, subject=pending.subject, email=pending.email
+            session,
+            account_name=body.account_name,
+            subject=pending.subject,
+            email=pending.email,
+            now=now,
         )
     except AccountNameTakenError:
         raise HTTPException(status.HTTP_409_CONFLICT, ACCOUNT_NAME_TAKEN) from None

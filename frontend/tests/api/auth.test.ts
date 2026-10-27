@@ -10,7 +10,9 @@ import {
   googleSignup,
   login,
   logout,
+  resendCode,
   signup,
+  verifyEmail,
 } from "../../src/api/auth";
 import { ApiError } from "../../src/api/client";
 import { ADMIN, jsonResponse, sentBody, stubApi } from "../helpers";
@@ -67,6 +69,36 @@ describe("auth calls", () => {
   });
 });
 
+describe("email code calls", () => {
+  it("sends the code and returns the user it logs in", async () => {
+    const fetchStub = stubApi({ "POST /auth/verify-email": () => jsonResponse(200, ADMIN) });
+
+    await expect(verifyEmail({ code: "012345" })).resolves.toEqual(ADMIN);
+    expect(sentBody(fetchStub, "POST /auth/verify-email")).toEqual({ code: "012345" });
+  });
+
+  it("asks for a new code with no body and accepts the 202", async () => {
+    const fetchStub = stubApi({
+      "POST /auth/verify-email/resend": () => jsonResponse(202, { detail: "on its way" }),
+    });
+
+    await expect(resendCode()).resolves.toBeUndefined();
+    expect(fetchStub.mock.calls[0]?.[1]?.body).toBeUndefined();
+  });
+
+  it("raises the API's 429 with the wait", async () => {
+    stubApi({
+      "POST /auth/verify-email/resend": () =>
+        new Response(JSON.stringify({ detail: "wait" }), {
+          status: 429,
+          headers: { "Retry-After": "30" },
+        }),
+    });
+
+    await expect(resendCode()).rejects.toMatchObject({ kind: "too_many", retryAfter: 30 });
+  });
+});
+
 describe("password reset calls", () => {
   it("asks for a reset link with the email and accepts the 202", async () => {
     const fetchStub = stubApi({
@@ -78,24 +110,28 @@ describe("password reset calls", () => {
     expect(sentBody(fetchStub, "POST /auth/password-reset")).toEqual({ email: ADMIN.email });
   });
 
-  it("sets the new password with the token and accepts the 204", async () => {
+  it("sets the new password with the email and code and accepts the 204", async () => {
     const fetchStub = stubApi({
       "POST /auth/password-reset/confirm": () => new Response(null, { status: 204 }),
     });
-    const input = { token: "a.made-up.token", new_password: "a long made-up password" };
+    const input = { email: ADMIN.email, code: "012345", new_password: "a long made-up password" };
 
     await expect(confirmPasswordReset(input)).resolves.toBeUndefined();
     expect(sentBody(fetchStub, "POST /auth/password-reset/confirm")).toEqual(input);
   });
 
-  it("raises the API's 400 for a link that is not valid", async () => {
+  it("raises the API's 400 for a code that is not valid", async () => {
     stubApi({
       "POST /auth/password-reset/confirm": () =>
-        jsonResponse(400, { detail: "the reset link is not valid or has expired" }),
+        jsonResponse(400, { detail: "the code is wrong or has expired" }),
     });
 
     await expect(
-      confirmPasswordReset({ token: "made-up", new_password: "a long made-up password" }),
+      confirmPasswordReset({
+        email: ADMIN.email,
+        code: "000000",
+        new_password: "a long made-up password",
+      }),
     ).rejects.toMatchObject({ status: 400 });
   });
 });

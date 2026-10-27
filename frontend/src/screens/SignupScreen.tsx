@@ -10,7 +10,7 @@ import {
   focusFirstError,
 } from "../auth/credentialCheck";
 import type { FieldErrors, SignupField } from "../auth/credentialCheck";
-import { HOME_PATH } from "../auth/redirect";
+import { VERIFY_EMAIL_PATH } from "../auth/emailCode";
 import { useSignup } from "../auth/session";
 import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
@@ -19,11 +19,12 @@ import { GoogleButton } from "./GoogleButton";
 import { BuildingIcon, MailIcon } from "./icons";
 
 // A 409 says which name is taken ("the email is taken"); that text comes from the API, not the user.
+// A 503 means the daily email cap is reached: nothing was created.
 function signupError(error: unknown): string {
   if (error instanceof ApiError && error.kind === "conflict") {
     return asSentence(error.message);
   }
-  return describeError(error);
+  return describeError(error, { 503: "We cannot send email right now. Try again later." });
 }
 
 export function SignupScreen() {
@@ -43,14 +44,15 @@ export function SignupScreen() {
     }
     signupMutation.mutate(
       { account_name: accountName, email, password },
-      { onSuccess: () => void navigate(HOME_PATH, { replace: true }) },
+      // The account exists but nobody is logged in until the emailed code is typed.
+      { onSuccess: () => void navigate(VERIFY_EMAIL_PATH, { replace: true }) },
     );
   }
 
   return (
     <AuthFrame
       title="Sign up"
-      intro="Creates a new account; you become its admin."
+      intro="Creates a new account; you become its admin. We email you a code to confirm it."
       footer={
         <>
           Have an account? <Link to="/app/login">Log in</Link>

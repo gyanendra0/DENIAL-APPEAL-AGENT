@@ -4,6 +4,7 @@ import {
   MAX_PASSWORD_CHARACTERS,
   MIN_PASSWORD_CHARACTERS,
   checkGoogleSignup,
+  checkCode,
   checkLogin,
   checkPasswordChange,
   checkResetAsk,
@@ -131,13 +132,39 @@ describe("checkResetAsk", () => {
 describe("checkResetConfirm", () => {
   it("refuses a new password one character outside the API's limits", () => {
     const sentence = `Use ${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`;
-    const of = (length: number) => checkResetConfirm({ newPassword: "x".repeat(length) });
+    const of = (length: number) =>
+      checkResetConfirm({ code: "012345", newPassword: "x".repeat(length) });
 
     expect(of(MIN_PASSWORD_CHARACTERS)).toEqual({});
     expect(of(MAX_PASSWORD_CHARACTERS)).toEqual({});
     expect(of(MIN_PASSWORD_CHARACTERS - 1).newPassword).toBe(sentence);
     expect(of(MAX_PASSWORD_CHARACTERS + 1).newPassword).toBe(sentence);
   });
+
+  it("names both wrong fields, code first", () => {
+    const errors = checkResetConfirm({ code: "", newPassword: "" });
+
+    expect(Object.keys(errors)).toEqual(["code", "newPassword"]);
+    expect(errors.code).toBe("Enter the code from the email.");
+  });
+});
+
+describe("checkCode", () => {
+  it("accepts six digits, leading zeros kept, and spaces around them", () => {
+    expect(checkCode({ code: "000123" })).toEqual({});
+    expect(checkCode({ code: " 123456 " })).toEqual({});
+  });
+
+  it("asks for a code when none is typed", () => {
+    expect(checkCode({ code: "  " }).code).toBe("Enter the code from the email.");
+  });
+
+  it.each(["12345", "1234567", "12a456", "123 456", "１２３４５６"])(
+    "refuses the code %s",
+    (code) => {
+      expect(checkCode({ code }).code).toBe("The code is 6 digits.");
+    },
+  );
 });
 
 describe("focusFirstError", () => {

@@ -1,7 +1,7 @@
-// The session is the answer of `GET /me`, kept in the query cache under one key. Login and sign-up
-// write the user they get back into it; logout sets it to null. Each of them, and opening the login
-// screen (where a 401 from any call leads), empties the rest of the cache, so no screen shows data
-// of another user.
+// The session is the answer of `GET /me`, kept in the query cache under one key. Login, the
+// emailed code that confirms a sign-up and a Google sign-up write the user they get back into it;
+// logout sets it to null. Each of them, and opening the login screen (where a 401 from any call
+// leads), empties the rest of the cache, so no screen shows data of another user.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
@@ -16,7 +16,9 @@ import {
   googleSignup,
   login,
   logout,
+  resendCode,
   signup,
+  verifyEmail,
 } from "../api/auth";
 import type {
   GoogleSignupInput,
@@ -25,6 +27,7 @@ import type {
   PasswordResetAskInput,
   PasswordResetConfirmInput,
   SignupInput,
+  VerifyEmailInput,
 } from "../api/auth";
 import type { UserResponse } from "../api/types";
 
@@ -40,8 +43,9 @@ export function clearAccountData(queryClient: QueryClient): void {
   queryClient.removeQueries({ predicate: (query) => !KEPT_KEYS.has(query.queryKey[0]) });
 }
 
-// Asked once per page load: only login, sign-up and logout change it, and they write it themselves.
-// Without `staleTime` each screen that reads the session would ask `/me` again when it mounts.
+// Asked once per page load: only login, the code screen, a Google sign-up and logout change it,
+// and they write it themselves. Without `staleTime` each screen that reads the session would ask
+// `/me` again when it mounts.
 export function useSession() {
   return useQuery({ queryKey: SESSION_KEY, queryFn: fetchMe, retry: false, staleTime: Infinity });
 }
@@ -57,15 +61,27 @@ export function useLogin() {
   });
 }
 
+// A sign-up does not log in (the email is confirmed first), so the session is left as it is.
 export function useSignup() {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: SignupInput) => signup(input),
+  });
+}
+
+// A right code logs in, as a login does.
+export function useVerifyEmail() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: VerifyEmailInput) => verifyEmail(input),
     onSuccess: (user: UserResponse) => {
       clearAccountData(queryClient);
       queryClient.setQueryData(SESSION_KEY, user);
     },
   });
+}
+
+export function useResendCode() {
+  return useMutation({ mutationFn: resendCode });
 }
 
 // The server's settings do not change while the page is open, so they are asked once per load.
@@ -114,7 +130,7 @@ export function useChangePassword() {
   });
 }
 
-// Asking for a reset link and setting the new password happen without a session; neither logs in,
+// Asking for a reset code and setting the new password happen without a session; neither logs in,
 // so the cache is left as it is (the login screen empties it when the user goes there).
 export function useAskPasswordReset() {
   return useMutation({

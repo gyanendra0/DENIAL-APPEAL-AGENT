@@ -130,6 +130,37 @@ describe("LoginScreen", () => {
     );
   });
 
+  it("goes to the code screen when the email is not confirmed yet", async () => {
+    stubApi({
+      "GET /me": NO_SESSION,
+      "POST /auth/login": () =>
+        jsonResponse(403, {
+          detail: "confirm your email first; we sent you a code",
+          code: "EMAIL_NOT_VERIFIED",
+        }),
+    });
+    const { router, queryClient } = renderAt("/app/login");
+
+    await fillAndSubmit(ADMIN.email, "a long made-up password");
+
+    expect(await screen.findByRole("heading", { name: "Confirm your email" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/verify-email");
+    expect(queryClient.getQueryData(SESSION_KEY)).not.toEqual(ADMIN);
+  });
+
+  it("shows a 403 without the code as an error and stays", async () => {
+    stubApi({
+      "GET /me": NO_SESSION,
+      "POST /auth/login": () => jsonResponse(403, { detail: "forbidden" }),
+    });
+    const { router } = renderAt("/app/login");
+
+    await fillAndSubmit(ADMIN.email, "a long made-up password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your role cannot do this.");
+    expect(router.state.location.pathname).toBe("/app/login");
+  });
+
   it("says the email or password is wrong on a 401", async () => {
     stubApi({
       ...EMPTY_WORKLIST,

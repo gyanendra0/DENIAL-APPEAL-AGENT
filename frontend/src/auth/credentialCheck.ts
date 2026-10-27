@@ -14,7 +14,8 @@ export type SignupField = "accountName" | "email" | "password";
 export type GoogleSignupField = "accountName";
 export type PasswordChangeField = "currentPassword" | "newPassword";
 export type ResetAskField = "email";
-export type ResetConfirmField = "newPassword";
+export type ResetConfirmField = "code" | "newPassword";
+export type CodeField = "code";
 
 // One fixed sentence per wrong field, in the order the fields are on the screen. A sentence never
 // repeats what was typed.
@@ -32,6 +33,16 @@ function checkEmail(email: string): string | undefined {
     return "Enter an email like name@example.com.";
   }
   return undefined;
+}
+
+// The same shape as the API's: exactly six digits, leading zeros kept.
+const CODE_SHAPE = /^[0-9]{6}$/;
+
+function checkCodeShape(code: string): string | undefined {
+  if (code.trim() === "") {
+    return "Enter the code from the email.";
+  }
+  return CODE_SHAPE.test(code.trim()) ? undefined : "The code is 6 digits.";
 }
 
 // Python's `len` counts code points, so the length is counted the same way here.
@@ -102,8 +113,18 @@ export function checkResetAsk(values: { email: string }): FieldErrors<ResetAskFi
   return withoutEmpty<ResetAskField>({ email: checkEmail(values.email) });
 }
 
-export function checkResetConfirm(values: { newPassword: string }): FieldErrors<ResetConfirmField> {
-  return withoutEmpty<ResetConfirmField>({ newPassword: checkNewPassword(values.newPassword) });
+export function checkResetConfirm(values: {
+  code: string;
+  newPassword: string;
+}): FieldErrors<ResetConfirmField> {
+  return withoutEmpty<ResetConfirmField>({
+    code: checkCodeShape(values.code),
+    newPassword: checkNewPassword(values.newPassword),
+  });
+}
+
+export function checkCode(values: { code: string }): FieldErrors<CodeField> {
+  return withoutEmpty<CodeField>({ code: checkCodeShape(values.code) });
 }
 
 // Moves the focus to the first wrong field (each input's `name` is its field) and says whether

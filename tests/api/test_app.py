@@ -105,7 +105,6 @@ def test_builds_from_the_environment() -> None:
     assert callable(app.state.job_runner)
     assert isinstance(app.state.mail_sender, SmtpSender)
     assert app.state.mail_sender.host == "smtp.example.test"
-    assert app.state.public_url == PUBLIC_URL
 
 
 @pytest.mark.usefixtures("full_env")
@@ -182,6 +181,8 @@ def test_routes_are_registered() -> None:
         "/auth/google/signup",
         "/auth/password-reset",
         "/auth/password-reset/confirm",
+        "/auth/verify-email",
+        "/auth/verify-email/resend",
         "/me",
         "/me/password",
         "/users/{user_id}",

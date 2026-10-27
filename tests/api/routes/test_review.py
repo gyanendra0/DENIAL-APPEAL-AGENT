@@ -24,6 +24,7 @@ from src.api.routes.review import (
 from src.db.models import AuditAction, AuditEvent, DraftReviewStatus, UploadDraft, User, UserRole
 from src.drafting.schemas import AppealLetter
 from src.jobs.store import create_upload_job
+from tests.api.conftest import VERIFIED_AT, signup_and_verify
 from tests.drafting.letter_helpers import (
     CHUNK_TEXT,
     CLOSING_TEXT,
@@ -41,17 +42,20 @@ PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 
 
 def _signup(client: TestClient, name: str, email: str) -> Member:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body = signed_up
     return Member(account_id=body["account_id"], user_id=body["user_id"])
 
 
 def _add_user(session: Session, account_id: int, email: str, role: UserRole) -> None:
     session.add(
-        User(account_id=account_id, email=email, password_hash=hash_password(PASSWORD), role=role)
+        User(
+            account_id=account_id,
+            email=email,
+            password_hash=hash_password(PASSWORD),
+            role=role,
+            email_verified_at=VERIFIED_AT,
+        )
     )
     session.commit()
 

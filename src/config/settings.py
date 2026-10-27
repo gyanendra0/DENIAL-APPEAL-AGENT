@@ -138,9 +138,11 @@ class ApiSettings(BaseSettings):
     cookie flag is set false only for local development over plain HTTP. The upload limit is
     the largest file, in bytes, one upload may send. The login limit refuses a login when the
     typed email or the client IP has this many failed logins inside the window (in minutes).
-    The mail keys say how password reset emails leave the app; a reset link lives
-    `password_reset_ttl_minutes`, and one email address gets at most
-    `password_reset_per_email_per_hour` links an hour.
+    The mail keys say how the code emails leave the app; one email address gets at most
+    `password_reset_per_email_per_hour` reset codes an hour. An emailed code lives
+    `email_code_ttl_minutes` and dies after `email_code_max_wrong_tries` wrong tries; a user gets
+    a new code at most every `email_code_resend_seconds` and `email_code_per_user_per_hour` an
+    hour; the app sends at most `mail_daily_limit` emails a UTC day.
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -159,8 +161,8 @@ class ApiSettings(BaseSettings):
     login_limit_window_minutes: int = Field(default=15, ge=1)
     login_limit_per_email: int = Field(default=5, ge=1)
     login_limit_per_ip: int = Field(default=20, ge=1)
-    # The address the browser opens the app at; reset links are built from it, never from the
-    # request's `Host` header. Optional here so that settings load without it; `create_app`
+    # The address the browser opens the app at; Google sign-in addresses are built from it, never
+    # from the request's `Host` header. Optional here so that settings load without it; `create_app`
     # refuses to start without it.
     app_public_url: str | None = None
     # `outbox` writes each email as a file (local development only); `smtp` sends it.
@@ -171,8 +173,13 @@ class ApiSettings(BaseSettings):
     mail_smtp_username: str | None = None
     mail_smtp_password: SecretStr | None = None
     mail_from: str | None = None
-    password_reset_ttl_minutes: int = Field(default=30, ge=1)
     password_reset_per_email_per_hour: int = Field(default=3, ge=1)
+    email_code_ttl_minutes: int = Field(default=10, ge=1)
+    email_code_max_wrong_tries: int = Field(default=5, ge=1)
+    email_code_resend_seconds: int = Field(default=60, ge=1)
+    email_code_per_user_per_hour: int = Field(default=5, ge=1)
+    # Below the mail provider's free daily allowance (Brevo's free plan: about 300 a day).
+    mail_daily_limit: int = Field(default=250, ge=1)
     # "Continue with Google" is off unless both the client ID and the secret are set. The URLs
     # are Google's (from its discovery document); Google signs ID tokens with either issuer.
     google_client_id: str | None = None

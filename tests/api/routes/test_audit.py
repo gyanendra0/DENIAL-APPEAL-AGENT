@@ -6,17 +6,15 @@ from sqlalchemy.orm import Session
 from src.api.dependencies import NOT_ALLOWED
 from src.api.passwords import hash_password
 from src.db.models import User, UserRole
+from tests.api.conftest import VERIFIED_AT, signup_and_verify
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 LETTER_TEXT = b"Made-up denial letter for Zebulon Quillfeather, claim 999.\n"
 
 
 def _signup(client: TestClient, name: str, email: str) -> dict[str, int]:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body: dict[str, int] = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body: dict[str, int] = signed_up
     return body
 
 
@@ -37,6 +35,7 @@ def test_sign_up_and_upload_are_audited_newest_first(api_client: TestClient) -> 
     body = response.json()
     assert [(item["action"], item["job_id"]) for item in body["items"]] == [
         ("upload_created", job_id),
+        ("email_verified", None),
         ("account_created", None),
     ]
     assert {item["user_id"] for item in body["items"]} == {admin["user_id"]}
@@ -50,8 +49,10 @@ def test_the_audit_log_pages(api_client: TestClient) -> None:
     _upload(api_client)
     first = api_client.get("/audit", params={"limit": 1}).json()
     second = api_client.get("/audit", params={"limit": 1, "before": first["next_before"]}).json()
-    assert [item["action"] for item in first["items"] + second["items"]] == [
+    third = api_client.get("/audit", params={"limit": 1, "before": second["next_before"]}).json()
+    assert [item["action"] for item in first["items"] + second["items"] + third["items"]] == [
         "upload_created",
+        "email_verified",
         "account_created",
     ]
 
@@ -62,7 +63,7 @@ def test_never_shows_another_accounts_events(api_client: TestClient) -> None:
     api_client.cookies.clear()
     _signup(api_client, "A", "admin@a.org")
     items = api_client.get("/audit").json()["items"]
-    assert [item["action"] for item in items] == ["account_created"]
+    assert [item["action"] for item in items] == ["email_verified", "account_created"]
 
 
 def test_only_an_admin_reads_the_audit_log(api_client: TestClient, db_session: Session) -> None:
@@ -73,6 +74,7 @@ def test_only_an_admin_reads_the_audit_log(api_client: TestClient, db_session: S
             email="reviewer@a.org",
             password_hash=hash_password(PASSWORD),
             role=UserRole.REVIEWER,
+            email_verified_at=VERIFIED_AT,
         )
     )
     db_session.commit()

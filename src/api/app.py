@@ -26,6 +26,7 @@ from src.api.routes import (
     password_reset,
     review,
     users,
+    verify_email,
 )
 from src.api.upload_limit import UploadSizeLimit
 from src.config.settings import (
@@ -101,7 +102,7 @@ def create_app(
     """
     settings = api_settings if api_settings is not None else load_api_settings()
     if settings.app_public_url is None:
-        raise ValueError("APP_PUBLIC_URL is not set; password reset links are built from it")
+        raise ValueError("APP_PUBLIC_URL is not set; Google sign-in addresses are built from it")
     sender = mail_sender if mail_sender is not None else build_mail_sender(settings)
     factory = (
         session_factory
@@ -126,7 +127,6 @@ def create_app(
     app.state.session_factory = factory
     app.state.job_runner = runner
     app.state.mail_sender = sender
-    app.state.public_url = settings.app_public_url
     app.state.google = google_oidc
     app.add_exception_handler(RequestValidationError, answer_validation_error)
     app.add_middleware(UploadSizeLimit)
@@ -135,6 +135,7 @@ def create_app(
         auth.router,
         google.router,
         password_reset.router,
+        verify_email.router,
         me.router,
         users.router,
         jobs.router,

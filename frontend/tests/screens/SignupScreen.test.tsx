@@ -2,7 +2,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { jobKey } from "../../src/jobs/useJob";
+import { SESSION_KEY } from "../../src/auth/session";
 import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
 
 const NO_SESSION = () => jsonResponse(401, { detail: "not logged in" });
@@ -17,18 +17,18 @@ async function fillAndSubmit() {
 }
 
 describe("SignupScreen", () => {
-  it("creates the account, logs in and goes to the worklist", async () => {
+  it("creates the account and goes to the code screen without logging in", async () => {
     const fetchStub = stubApi({
-      ...EMPTY_WORKLIST,
       "GET /me": NO_SESSION,
       "POST /auth/signup": () => jsonResponse(201, ADMIN),
     });
-    const { router } = renderAt("/app/signup");
+    const { router, queryClient } = renderAt("/app/signup");
 
     await fillAndSubmit();
 
-    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe("/app/worklist");
+    expect(await screen.findByRole("heading", { name: "Confirm your email" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/verify-email");
+    expect(queryClient.getQueryData(SESSION_KEY)).not.toEqual(ADMIN);
     expect(sentBody(fetchStub, "POST /auth/signup")).toEqual({
       account_name: "Made-up Clinic",
       email: ADMIN.email,
@@ -36,19 +36,30 @@ describe("SignupScreen", () => {
     });
   });
 
-  it("drops data another user left in the cache", async () => {
-    stubApi({
-      ...EMPTY_WORKLIST,
-      "GET /me": NO_SESSION,
-      "POST /auth/signup": () => jsonResponse(201, ADMIN),
-    });
-    const { queryClient } = renderAt("/app/signup");
-    queryClient.setQueryData(jobKey(7), { job_id: 7 });
+  it("does not show the email on the code screen", async () => {
+    stubApi({ "GET /me": NO_SESSION, "POST /auth/signup": () => jsonResponse(201, ADMIN) });
+    renderAt("/app/signup");
 
     await fillAndSubmit();
 
-    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
-    expect(queryClient.getQueryData(jobKey(7))).toBeUndefined();
+    await screen.findByRole("heading", { name: "Confirm your email" });
+    expect(document.body).not.toHaveTextContent(ADMIN.email);
+  });
+
+  it("says email cannot be sent on a 503", async () => {
+    stubApi({
+      "GET /me": NO_SESSION,
+      "POST /auth/signup": () =>
+        jsonResponse(503, { detail: "we cannot send email right now; try again later" }),
+    });
+    const { router } = renderAt("/app/signup");
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "We cannot send email right now. Try again later.",
+    );
+    expect(router.state.location.pathname).toBe("/app/signup");
   });
 
   it("asks the browser for the API's password length", async () => {

@@ -7,6 +7,7 @@ Google account is linked to some other user is never searched for: the unique ke
 """
 
 import secrets
+from datetime import datetime
 from enum import StrEnum
 
 import psycopg.errors
@@ -87,8 +88,9 @@ def _add_identity(session: Session, user: User, identity: GoogleIdentity) -> Non
 
 
 def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | None:
-    """Return the user `identity` opens, linking it first if allowed, or None if no user has
-    its email and Google vouches for it (the caller then offers a new account). Does not commit.
+    """Return the user `identity` opens, linking it first if allowed, or None if no verified
+    user has its email and Google vouches for it (the caller then offers a new account, which
+    replaces an unverified holder). Does not commit.
 
     Refuses with `GoogleRefusedError`: an unverified email; a user already linked to another
     Google account; an email Google does not vouch for (`may_link`), for a link or a new
@@ -98,7 +100,9 @@ def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | No
     if not identity.email_verified:
         raise GoogleRefusedError(GoogleRefusal.NOT_VERIFIED)
     user = find_user_by_email(session, identity.email)
-    if user is None:
+    # A user who never confirmed the email may be a stranger who typed it; linking would hand
+    # the owner's Google login to that stranger's account. It is replaced at sign-up instead.
+    if user is None or user.email_verified_at is None:
         # A new account would hold the email before its owner signs up, and keep the Google
         # login after they reset the password; so it needs an email Google vouches for too.
         if not may_link(identity):
@@ -121,9 +125,12 @@ def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | No
     return user
 
 
-def create_google_account(session: Session, *, account_name: str, subject: str, email: str) -> User:
-    """Add an account, its `admin` user (no password) and the user's Google identity, and
-    return the user. Does not commit; does not write the audit event.
+def create_google_account(
+    session: Session, *, account_name: str, subject: str, email: str, now: datetime
+) -> User:
+    """Add an account, its `admin` user (no password, email verified at `now`: Google vouches
+    for it) and the user's Google identity, and return the user. Does not commit; does not write
+    the audit event.
 
     All three rows are written inside one savepoint, so a refusal leaves none of them. Raises
     `AccountNameTakenError` or `EmailTakenError` like sign-up, and
@@ -132,7 +139,7 @@ def create_google_account(session: Session, *, account_name: str, subject: str, 
     identity = GoogleIdentity(subject=subject, email=email, email_verified=True, hosted_domain=None)
     with session.begin_nested():
         user = create_account_with_admin(
-            session, account_name=account_name, email=email, password=None
+            session, account_name=account_name, email=email, password=None, verified_at=now
         )
         _add_identity(session, user, identity)
     return user

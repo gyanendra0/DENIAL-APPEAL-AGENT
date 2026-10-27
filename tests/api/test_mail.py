@@ -1,4 +1,4 @@
-"""Outgoing email: the reset text, the outbox files, the SMTP steps, quiet failures and which
+"""Outgoing email: the code texts, the outbox files, the SMTP steps, quiet failures and which
 sender the settings build."""
 
 import logging
@@ -13,19 +13,19 @@ from pydantic import SecretStr
 
 from src.api import mail
 from src.api.mail import (
+    CODE_SUBJECTS,
     OUTBOX_FROM,
-    RESET_SUBJECT,
     MailMessage,
     OutboxSender,
     SmtpSender,
     build_mail_sender,
-    reset_email,
+    code_email,
     send_quietly,
 )
 from src.config.settings import ApiSettings
+from src.db.models import EmailCodePurpose
 
 SECRET = "a-made-up-mail-test-secret-of-forty-chars"  # noqa: S105  (made up)
-LINK = "https://app.example.test/app/reset-password#token=made.up.token"
 MESSAGE = MailMessage(to="ann@x.org", subject="Made up", body="A made-up body.\n")
 
 
@@ -35,13 +35,21 @@ def _settings(**changes: Any) -> ApiSettings:
     )
 
 
-def test_the_reset_email_holds_the_link_and_the_lifetime_and_nothing_else() -> None:
-    message = reset_email(to="ann@x.org", link=LINK, ttl_minutes=30)
-    assert (message.to, message.subject) == ("ann@x.org", RESET_SUBJECT)
-    assert LINK in message.body
-    assert "within 30 minutes" in message.body
-    assert "works once" in message.body
-    assert "ann@x.org" not in message.body
+@pytest.mark.parametrize(
+    ("purpose", "subject", "warning"),
+    [
+        (EmailCodePurpose.VERIFY_EMAIL, "Your sign-up code", "If you did not sign up"),
+        (EmailCodePurpose.PASSWORD_RESET, "Your password reset code", "If you did not ask"),
+    ],
+)
+def test_a_code_email_holds_the_code_and_its_lifetime_but_not_in_the_subject(
+    purpose: EmailCodePurpose, subject: str, warning: str
+) -> None:
+    message = code_email(purpose, to="ann@x.org", code="012345", ttl_minutes=10)
+    assert (message.to, message.subject, CODE_SUBJECTS[purpose]) == ("ann@x.org", subject, subject)
+    assert "\n    012345\n" in message.body
+    assert "It works for 10 minutes." in message.body and warning in message.body
+    assert "012345" not in message.subject
 
 
 def test_the_outbox_writes_one_readable_file_per_message(tmp_path: Path) -> None:
@@ -116,10 +124,13 @@ def test_a_failed_send_is_logged_by_its_class_without_the_address(
     error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
-    send_quietly(_BrokenSender(error), reset_email(to="ann@x.org", link=LINK, ttl_minutes=30))
+    message = code_email(
+        EmailCodePurpose.PASSWORD_RESET, to="ann@x.org", code="123456", ttl_minutes=10
+    )
+    send_quietly(_BrokenSender(error), message)
     assert f"email failed: {type(error).__name__}" in caplog.text
     assert "ann@x.org" not in caplog.text
-    assert "made.up.token" not in caplog.text
+    assert "123456" not in caplog.text
 
 
 def test_another_error_is_not_swallowed() -> None:

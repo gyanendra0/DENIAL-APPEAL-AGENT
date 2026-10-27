@@ -596,15 +596,18 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (*API_KEYS, *MAIL_KEYS):
+    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS):
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
     listed = {line.split("=", 1)[0] for line in example.read_text().splitlines() if "=" in line}
 
     settings = load_api_settings(env_file=str(example))
 
-    assert {*API_KEYS, *MAIL_KEYS} <= listed
+    assert {*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS} <= listed
     assert settings.mail_backend == "outbox"
+    # The Google keys are listed empty: no client secret, real or made up, and the button is off.
+    assert not settings.google_enabled
+    assert settings.google_client_secret is None
     # Worked out before the asserts, so a failure never prints the value of a real secret.
     secret_is_placeholder = _is_placeholder(settings.auth_token_secret)
     mail_password = settings.mail_smtp_password

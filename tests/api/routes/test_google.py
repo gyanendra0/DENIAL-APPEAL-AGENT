@@ -59,8 +59,13 @@ def clock() -> _Clock:
 
 
 @pytest.fixture
+def sender() -> RecordingSender:
+    return RecordingSender()
+
+
+@pytest.fixture
 def client(
-    api_connection: Connection, fake_google: FakeGoogle, clock: _Clock
+    api_connection: Connection, fake_google: FakeGoogle, clock: _Clock, sender: RecordingSender
 ) -> Iterator[TestClient]:
     factory = sessionmaker(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
@@ -69,7 +74,7 @@ def client(
         api_settings=google_settings(),
         session_factory=factory,
         job_runner=lambda _account_id, _job_id: None,
-        mail_sender=RecordingSender(),
+        mail_sender=sender,
         google_http=fake_google.client(),
     )
     app.dependency_overrides[get_now] = clock
@@ -228,14 +233,20 @@ def test_a_bad_id_token_is_refused_and_writes_nothing(
     assert AUTH_COOKIE_NAME not in client.cookies
 
 
-def test_an_id_token_from_another_start_is_refused(
-    client: TestClient, fake_google: FakeGoogle
+def test_an_id_token_from_another_start_is_refused_and_writes_nothing(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
 ) -> None:
+    _signup_with_password(client)
     old = _start(client)
     query = _start(client)
     fake_google.id_token = sign(id_claims(nonce=old["nonce"], now=NOW))
     response = client.get(CALLBACK_PATH, params={"code": "made-up-code", "state": query["state"]})
     assert response.headers["location"] == "/app/login?google=failed"
+    assert (_count(db_session, UserIdentity), _actions(db_session)) == (
+        0,
+        [AuditAction.ACCOUNT_CREATED],
+    )
+    assert AUTH_COOKIE_NAME not in client.cookies
 
 
 def test_every_callback_answer_ends_the_flow_cookie(
@@ -249,11 +260,18 @@ def test_every_callback_answer_ends_the_flow_cookie(
     assert second.headers["location"] == "/app/login?google=expired"
 
 
-def test_an_unverified_email_is_refused(client: TestClient, fake_google: FakeGoogle) -> None:
+def test_an_unverified_email_is_refused_and_writes_nothing(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
     _signup_with_password(client)
     assert (
         _sign_in(client, fake_google, email_verified=False)[1] == "/app/login?google=not_verified"
     )
+    assert (_count(db_session, UserIdentity), _actions(db_session)) == (
+        0,
+        [AuditAction.ACCOUNT_CREATED],
+    )
+    assert AUTH_COOKIE_NAME not in client.cookies
 
 
 def test_a_user_on_a_domain_google_does_not_manage_must_use_the_password(
@@ -266,6 +284,27 @@ def test_a_user_on_a_domain_google_does_not_manage_must_use_the_password(
         0,
         [AuditAction.ACCOUNT_CREATED],
     )
+
+
+def test_a_new_email_on_a_domain_google_does_not_manage_must_sign_up_with_a_password(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
+    status, location = _sign_in(client, fake_google, email="ann@clinic.example")
+    assert (status, location) == (303, "/app/login?google=use_signup")
+    assert SIGNUP_COOKIE_NAME not in client.cookies
+    assert AUTH_COOKIE_NAME not in client.cookies
+    assert (_count(db_session, User), _count(db_session, UserIdentity), _actions(db_session)) == (
+        0,
+        0,
+        [],
+    )
+
+
+def test_a_new_workspace_email_is_sent_to_name_its_account(
+    client: TestClient, fake_google: FakeGoogle
+) -> None:
+    location = _sign_in(client, fake_google, email="ann@clinic.example", hd="clinic.example")[1]
+    assert location == NAME_ACCOUNT_SCREEN
 
 
 # --- the callback: logging in and linking ---
@@ -397,6 +436,29 @@ def test_naming_the_account_creates_an_admin_with_no_password_and_logs_in(
         ).status_code
         == 401
     )
+
+
+def test_a_user_with_no_password_sets_one_with_forgot_password(
+    client: TestClient, fake_google: FakeGoogle, sender: RecordingSender
+) -> None:
+    _sign_in(client, fake_google)
+    assert client.post("/auth/google/signup", json={"account_name": "Clinic"}).status_code == 201
+    client.cookies.clear()
+
+    asked = client.post("/auth/password-reset", json={"email": "ann@gmail.com"})
+    assert asked.status_code == 202
+    token = sender.sent[0].body.split("#token=", 1)[1].split("\n", 1)[0]
+    confirmed = client.post(
+        "/auth/password-reset/confirm", json={"token": token, "new_password": NEW_PASSWORD}
+    )
+    assert confirmed.status_code == 204
+
+    login = client.post("/auth/login", json={"email": "ann@gmail.com", "password": NEW_PASSWORD})
+    assert login.status_code == 200
+    change = client.post(
+        "/me/password", json={"current_password": NEW_PASSWORD, "new_password": PASSWORD}
+    )
+    assert change.status_code == 204, change.text
 
 
 def test_a_taken_name_can_be_changed_while_the_cookie_lasts(

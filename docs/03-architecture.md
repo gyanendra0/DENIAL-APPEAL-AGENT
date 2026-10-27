@@ -3839,7 +3839,7 @@ Google sign-in is free ($0).
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
 | `src/api/google_oidc.py` | Google's side of the sign-in: `GoogleOidc` (`authorization_url`, `swap_code`, `verify_id_token`; Google's public keys are fetched once and again only for an unknown key id), `GoogleIdentity`, `GoogleSignInError`, `code_challenge` (PKCE S256) |
 | `src/api/google_cookies.py` | The two short-lived signed cookies `google_flow` and `google_signup`: `new_flow`, `GoogleFlow`, `PendingSignup`, `issue_flow_cookie`, `read_flow_cookie`, `issue_signup_cookie`, `read_signup_cookie`, `InvalidGoogleCookieError`; `COOKIE_TTL` (10 minutes) |
-| `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_account`, `GoogleRefusal` (the five refusal codes), `GoogleRefusedError` |
+| `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_account`, `GoogleRefusal` (the six refusal codes), `GoogleRefusedError` |
 | `src/api/routes/` | `auth.py`, `password_reset.py`, `google.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
@@ -4073,8 +4073,12 @@ is off. No model is called and no Google token is stored.
 6. **Logged in.** The login cookie is set (with the user's `token_version`, as at login) and
    the answer is `303` to `/app/worklist`. The login limit is not used: Google checked the
    person.
-7. **No user with that email.** The answer is `303` to `/app/google/name-account` with the
-   `google_signup` cookie, which holds Google's `sub` and the verified email. That screen reads
+7. **No user with that email.** Only an email Google vouches for (`may_link`, as in 5) may
+   start a new account; any other is refused (`use_signup`), because an account made by
+   whoever once controlled the address would hold it before its owner signs up, and its
+   Google login would survive the owner's password reset. Otherwise the answer is `303` to
+   `/app/google/name-account` with the `google_signup` cookie, which holds Google's `sub` and
+   the verified email. That screen reads
    the email (`GET /auth/google/signup`) and sends only the account name
    (`POST /auth/google/signup`): the email and the Google account come from the cookie, never
    from the body. In one savepoint the route creates the account, its `admin` user with **no
@@ -4083,7 +4087,7 @@ is off. No model is called and no Google token is stored.
    another user, is `409` and leaves nothing behind.
 
 Every refusal is a `303` to `/app/login?google=<code>`, one of `failed`, `not_verified`,
-`use_password`, `linked_elsewhere`, `expired`; nothing is written. The login screen shows a
+`use_password`, `use_signup`, `linked_elsewhere`, `expired`; nothing is written. The login screen shows a
 fixed sentence per code (3.21) and never what Google sent.
 
 | Cookie | Holds | Path | SameSite | Lifetime |
@@ -4325,11 +4329,13 @@ not carry the email or the hash. This holds for the pipelines too.
 - **A changed Google email stops "Continue with Google".** A user whose Google account now
   has another email is not found by the new one; there is no way to relink yet, so they log
   in with their password (or set one with "Forgot password").
-- **A Google account with a non-Gmail address cannot link to an existing user** unless it is a
-  Google Workspace account; such a user logs in with their password.
+- **A Google account with a non-Gmail address cannot link to an existing user or start a new
+  account** unless it is a Google Workspace account; such a user signs up and logs in with a
+  password.
 - **Two tabs starting Google sign-in at once: only the newest one finishes.** The flow cookie
-  is one per browser, so the older tab's `state` no longer matches; it is refused (`failed`)
-  and the user tries again.
+  is one per browser. If the older tab returns first, its `state` no longer matches and it is
+  refused (`failed`); if the newer one returns first, it finishes and the older one then
+  finds no flow cookie (`expired`). Either way the user tries again.
 - **No limit on accounts created through Google**, the same as password sign-up.
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
   match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when

@@ -80,6 +80,21 @@ def test_an_email_with_no_user_opens_nobody_and_writes_nothing(session: Session)
     assert (_count(session, UserIdentity), _actions(session)) == (0, [])
 
 
+def test_a_workspace_email_with_no_user_may_start_a_new_account(session: Session) -> None:
+    assert (
+        sign_in_with_google(session, _identity("ann@clinic.example", hd="clinic.example")) is None
+    )
+
+
+def test_a_plain_google_account_on_another_domain_with_no_user_must_sign_up(
+    session: Session,
+) -> None:
+    with pytest.raises(GoogleRefusedError) as caught:
+        sign_in_with_google(session, _identity("ann@clinic.example"))
+    assert caught.value.reason is GoogleRefusal.USE_SIGNUP
+    assert (_count(session, UserIdentity), _actions(session)) == (0, [])
+
+
 def test_a_gmail_user_is_linked_once_and_audited(session: Session) -> None:
     user = _user(session)
 

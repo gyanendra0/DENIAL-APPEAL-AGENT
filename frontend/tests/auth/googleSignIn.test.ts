@@ -10,6 +10,10 @@ describe("googleRefusalMessage", () => {
       "Google has not verified this email. Use another Google account or your password.",
     ],
     ["use_password", "This email already has a login here. Log in with your password."],
+    [
+      "use_signup",
+      "Google can't confirm this email belongs to you. Sign up with your email and a password.",
+    ],
     ["linked_elsewhere", "This Google account is linked to another login."],
     ["expired", "Google sign-in took too long, or was started again in another tab. Try again."],
   ])("gives a fixed sentence for the code %s", (code, sentence) => {

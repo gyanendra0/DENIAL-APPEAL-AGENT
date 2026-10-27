@@ -101,8 +101,8 @@ Rules:
   found (`404`), never as forbidden.
 - The one exception is the lookup of a user by email (`find_user_by_email` in
   `src/api/login.py`), used by login, by the password reset request and by Google sign-in:
-  before login the account is not known. It is safe only because an email is unique across all accounts
-  (`uq_users_email`), login returns nothing unless the password matches, the reset
+  before login the account is not known. It is safe only because an email is unique across
+  all accounts (`uq_users_email`), login returns nothing unless the password matches, the reset
   request returns the same answer whether the email exists or not, and Google sign-in uses
   only an email Google has verified and then reads the user's identities with their
   `account_id`. Do not add another.

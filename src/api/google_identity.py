@@ -31,6 +31,7 @@ class GoogleRefusal(StrEnum):
     FAILED = "failed"
     NOT_VERIFIED = "not_verified"
     USE_PASSWORD = "use_password"  # noqa: S105  (a code, not a password)
+    USE_SIGNUP = "use_signup"
     LINKED_ELSEWHERE = "linked_elsewhere"
     EXPIRED = "expired"
 
@@ -87,16 +88,21 @@ def _add_identity(session: Session, user: User, identity: GoogleIdentity) -> Non
 
 def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | None:
     """Return the user `identity` opens, linking it first if allowed, or None if no user has
-    its email (the caller then offers a new account). Does not commit.
+    its email and Google vouches for it (the caller then offers a new account). Does not commit.
 
     Refuses with `GoogleRefusedError`: an unverified email; a user already linked to another
-    Google account; an email Google does not vouch for (`may_link`); a Google account linked to
-    another user. A new link writes a `google_linked` audit event in the same transaction.
+    Google account; an email Google does not vouch for (`may_link`), for a link or a new
+    account; a Google account linked to another user. A new link writes a `google_linked`
+    audit event in the same transaction.
     """
     if not identity.email_verified:
         raise GoogleRefusedError(GoogleRefusal.NOT_VERIFIED)
     user = find_user_by_email(session, identity.email)
     if user is None:
+        # A new account would hold the email before its owner signs up, and keep the Google
+        # login after they reset the password; so it needs an email Google vouches for too.
+        if not may_link(identity):
+            raise GoogleRefusedError(GoogleRefusal.USE_SIGNUP)
         return None
     linked = session.scalars(
         for_account(UserIdentity, user.account_id).where(

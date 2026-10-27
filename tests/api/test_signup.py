@@ -3,11 +3,13 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from src.api import signup
 from src.api.email_codes import add_code
+from src.api.login import find_user_by_email
 from src.api.passwords import verify_password
 from src.api.signup import AccountNameTakenError, EmailTakenError, create_account_with_admin
 from src.db.models import (
@@ -140,6 +142,31 @@ def test_a_verified_holder_of_the_email_is_not_replaced(session: Session) -> Non
             session, account_name="Other", email="a@x.org", password=PASSWORD, verified_at=None
         )
     assert _counts(session) == (1, 1)
+
+
+def test_a_holder_verified_just_before_the_lock_is_not_replaced(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lookup sees an unverified holder, but its code is confirmed before the row is locked."""
+    _unverified(session)
+
+    def find_then_verify(found_in: Session, email: str) -> User | None:
+        holder = find_user_by_email(found_in, email)
+        found_in.execute(
+            update(User)
+            .where(User.email == email)
+            .values(email_verified_at=VERIFIED_AT)
+            .execution_options(synchronize_session=False)
+        )
+        return holder
+
+    monkeypatch.setattr(signup, "find_user_by_email", find_then_verify)
+    with pytest.raises(EmailTakenError):
+        create_account_with_admin(
+            session, account_name="Owner", email="a@x.org", password=PASSWORD, verified_at=None
+        )
+    session.expire_all()
+    assert sorted(session.scalars(select(Account.name))) == ["Squatter"]
 
 
 def test_a_taken_name_keeps_the_unverified_holder(session: Session) -> None:

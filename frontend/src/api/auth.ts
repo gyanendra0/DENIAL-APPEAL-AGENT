@@ -1,6 +1,6 @@
 // The auth calls: sign-up, the emailed code that confirms it, login, logout, the logged-in user, a
-// password change, a reset and the "Continue with Google" sign-up. The API sets and clears the HttpOnly login cookie itself; these
-// calls never see the token.
+// password change, a reset and the "Continue with Google" sign-up. The API sets and clears the
+// HttpOnly login cookie itself; these calls never see the token.
 
 import { ApiError, apiRequest, jsonRequest } from "./client";
 import type { AuthOptions, GoogleSignupInfo, UserResponse } from "./types";

@@ -3994,8 +3994,8 @@ password set a new one. It is the same code for both, with the purpose (`verify_
 |---|---|
 | Code | Six digits from `secrets` (leading zeros kept), so one million possible codes |
 | Lifetime | `EMAIL_CODE_TTL_MINUTES`, 10 by default; checked against `get_now` |
-| Wrong tries | A wrong code counts one try against the user's newest code; at `EMAIL_CODE_MAX_WRONG_TRIES` (5) that code is deleted. Five tries out of a million cannot guess a code, and every try also counts against the client IP's limit |
-| Works | Only the user's newest code of that purpose, and only once: a new code makes the older one useless |
+| Wrong tries | A wrong code counts one try against the user's newest code; at `EMAIL_CODE_MAX_WRONG_TRIES` (5) that code is dead. A dead code is kept, not deleted: it stays the newest (so an older code never works again) and still counts toward the resend gap and the hourly cap. Five tries out of a million cannot guess a code, and every try also counts against the client IP's limit |
+| Works | Only the user's newest code of that purpose, and only once: a new code makes the older one useless, and so does a dead newer one |
 | Stored | Only an HMAC-SHA256 over purpose, user id and code (`email_codes.code_hash`), with a key derived from `AUTH_TOKEN_SECRET` plus the label `email-code`. A plain hash would not do: a million codes are tried in a moment. Without the secret, a copy of the table gives nothing, and a code for one user or purpose never matches another. Compared in constant time |
 | A new sign-up code | At most one per `EMAIL_CODE_RESEND_SECONDS` (60) and `EMAIL_CODE_PER_USER_PER_HOUR` (5) an hour; more is `429` with `Retry-After` |
 | A new reset code | At most `PASSWORD_RESET_PER_EMAIL_PER_HOUR` (3) an hour and no gap; more gets the same `202` and no email |
@@ -4011,8 +4011,9 @@ Rows older than two days are deleted at the next send.
 lowercase hex characters), `wrong_tries` (default 0, never below 0), `expires_at` and the
 timestamps. It links to the user on (`account_id`, `user_id`) with `ON DELETE CASCADE`. An
 index on (`account_id`, `user_id`, `purpose`, `created_at`) serves the hourly cap. A used
-code is deleted at use, one out of tries at its last wrong try, and expired ones at the
-user's next code, so there is no cleanup job.
+code is deleted at use (with every other code of that purpose); a dead or expired one stays
+until the user's next code finds it expired and more than an hour old, so there is no cleanup
+job.
 
 Every code route locks the user row (`FOR UPDATE`, with the `account_id`) before it counts or
 checks, so two requests at the same moment cannot both pass a cap or skip a wrong try.
@@ -4326,7 +4327,7 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `MAIL_FROM` | with `smtp` | The sender address, verified at the provider; also written into outbox files when set |
 | `PASSWORD_RESET_PER_EMAIL_PER_HOUR` | no (default 3) | Reset codes one user gets in one hour; more requests get the same `202` and no email; at least 1 |
 | `EMAIL_CODE_TTL_MINUTES` | no (default 10) | How long an emailed code works, at least 1 |
-| `EMAIL_CODE_MAX_WRONG_TRIES` | no (default 5) | Wrong tries before a code is deleted, at least 1 |
+| `EMAIL_CODE_MAX_WRONG_TRIES` | no (default 5) | Wrong tries before a code is dead, at least 1 |
 | `EMAIL_CODE_RESEND_SECONDS` | no (default 60) | The wait between two sign-up codes for one user, at least 1 |
 | `EMAIL_CODE_PER_USER_PER_HOUR` | no (default 5) | Sign-up codes one user gets in one hour, at least 1 |
 | `MAIL_DAILY_LIMIT` | no (default 250) | Emails the app sends in one UTC day, over every account; below Brevo's free 300; at least 1 |
@@ -4404,8 +4405,10 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
 - **Anyone who knows an email can lock its user out of login.** Five wrong passwords every 15
   minutes keep that email refused. A password reset clears the email's failures, so the user
   gets in at once, but the attacker can start again.
-- **A known email takes a little more work to ask for.** It writes a code row and an unknown
-  one does not. The gap is milliseconds, far below network noise, but not zero.
+- **A known email takes a little more work to ask for.** It locks the user row, counts the
+  hourly cap and writes a `mail_sends` row and a code row; an unknown one does one lookup. The
+  gap is milliseconds, far below network noise, but not zero (and sign-up's `409` already
+  tells a confirmed email apart).
 - **Code emails may land in spam.** The sender is one Gmail address verified at Brevo, not a
   domain of our own; a domain sender comes with the deployment (Stage 6), a `.env` change.
 - **A code email can be lost.** It is sent after the answer in the one API process (3.19);
@@ -4416,6 +4419,9 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   at the same moment may both pass at the cap, so one or two more may go out.
 - **An unconfirmed account is taken over by the next sign-up for its email.** It holds
   nothing yet (it was never logged in), so nothing is lost but the name.
+- **Old code rows of an unconfirmed account can stay.** An account nobody signs up over again
+  keeps its last codes (at most `EMAIL_CODE_PER_USER_PER_HOUR` an hour, while it keeps asking)
+  until its next code or the account is deleted; there is no cleanup job.
 - **The code screen works in the browser that signed up, for 24 hours.** Elsewhere, or
   later, the user logs in with their password to get a new `email_verify` cookie and code.
 - **People behind one shared address share the IP limit.** An office or a mobile carrier

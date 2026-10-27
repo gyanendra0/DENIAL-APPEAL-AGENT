@@ -274,6 +274,22 @@ def test_a_new_code_waits_a_minute_then_replaces_the_old_one(
     assert _verify(api_client, new) == 200
 
 
+def test_a_dead_code_keeps_the_older_one_dead_and_still_holds_the_gap(
+    api_client: TestClient, clock: _Clock, sent_mail: RecordingSender
+) -> None:
+    _signup(api_client)
+    clock.now = NOW + timedelta(minutes=1)
+    assert api_client.post(RESEND_PATH).status_code == 202
+    old, new = (code_in(message) for message in sent_mail.sent)
+    for _ in range(5):
+        assert _verify(api_client, _wrong(new)) == 400
+    assert _verify(api_client, old) == 400
+    clock.now = NOW + timedelta(minutes=1, seconds=30)
+    response = api_client.post(RESEND_PATH)
+    assert (response.status_code, response.headers["Retry-After"]) == (429, "30")
+    assert len(sent_mail.sent) == 2
+
+
 def test_the_sixth_code_in_an_hour_is_429(
     api_client: TestClient, clock: _Clock, sent_mail: RecordingSender
 ) -> None:

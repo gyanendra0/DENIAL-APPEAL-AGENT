@@ -124,6 +124,19 @@ def test_a_fourth_ask_within_the_hour_is_the_same_202_without_an_email(
     assert len(sent_mail.sent) == 4
 
 
+def test_a_dead_code_still_counts_toward_the_hourly_cap(
+    api_client: TestClient, clock: _Clock, sent_mail: RecordingSender
+) -> None:
+    _signup(api_client)
+    _ask(api_client)
+    _ask(api_client)
+    code = code_in(sent_mail.sent[1])
+    assert [_confirm(api_client, _other(code)) for _ in range(5)] == [400] * 5
+    _ask(api_client)
+    assert _ask(api_client) == (202, {"detail": RESET_ASKED})
+    assert len(sent_mail.sent) == 3
+
+
 def test_the_cap_counts_one_email_only(
     api_client: TestClient, clock: _Clock, sent_mail: RecordingSender
 ) -> None:
@@ -255,7 +268,7 @@ def test_five_wrong_codes_kill_the_code_so_even_the_right_one_is_400(
     [row] = db_session.scalars(select(EmailCode)).all()
     assert row.wrong_tries == 4
     assert _confirm(api_client, _other(code)) == 400
-    assert _code_rows(db_session) == 0
+    assert _code_rows(db_session) == 1
     assert _confirm(api_client, code) == 400
     assert _login(api_client, PASSWORD) == 200
 

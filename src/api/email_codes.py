@@ -130,8 +130,10 @@ def check_code(
     """True if `code` is the user's newest unexpired code of `purpose`.
 
     A wrong code counts one wrong try against that newest code; at `max_wrong_tries` the code
-    is deleted. Lock the user row first, so tries at the same time are all counted. Does not
-    commit, and does not delete a right code (the caller does, with `delete_codes`).
+    is dead. A dead code is kept, not deleted: it stays the newest, so an older code never works
+    again, and it still counts toward the resend gap and the hourly cap. Lock the user row first,
+    so tries at the same time are all counted. Does not commit, and does not delete a right code
+    (the caller does, with `delete_codes`).
     """
     newest = session.scalars(
         for_account(EmailCode, account_id)
@@ -139,13 +141,11 @@ def check_code(
         .order_by(EmailCode.id.desc())
         .limit(1)
     ).one_or_none()
-    if newest is None or newest.expires_at <= now:
+    if newest is None or newest.expires_at <= now or newest.wrong_tries >= max_wrong_tries:
         return False
     if secrets.compare_digest(newest.code_hash, hash_code(purpose, user_id, code, secret=secret)):
         return True
     newest.wrong_tries += 1
-    if newest.wrong_tries >= max_wrong_tries:
-        session.delete(newest)
     session.flush()
     return False
 

@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 import psycopg.errors
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -44,12 +44,21 @@ def remove_unverified_holder(session: Session, email: str) -> None:
 
     `email` must already be trimmed and lowercased. Deleting the account removes the user, the
     user's codes and the `account_created` audit row with it (every link cascades). A verified
-    holder is left alone; the unique key then refuses the sign-up.
+    holder is left alone; the unique key then refuses the sign-up. The holder's row is locked and
+    read again before the delete, so a code confirmed at the same moment keeps its account.
     """
     holder = find_user_by_email(session, email)
     if holder is None or holder.email_verified_at is not None:
         return
     account_id = holder.account_id
+    locked = session.scalars(
+        select(User)
+        .where(User.account_id == account_id, User.id == holder.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if locked is None or locked.email_verified_at is not None:
+        return
     session.expunge(holder)
     session.execute(delete(Account).where(Account.id == account_id))
     logger.info("sign-up: replaced unverified account %d", account_id)

@@ -159,15 +159,25 @@ def test_only_the_newest_code_passes(session: Session) -> None:
     assert _check(session, user, "222222", at=NOW + timedelta(minutes=2)) is True
 
 
-def test_a_wrong_code_counts_and_the_fifth_wrong_try_deletes_the_code(session: Session) -> None:
+def test_a_wrong_code_counts_and_the_fifth_wrong_try_kills_the_code(session: Session) -> None:
     user = _user(session)
     _add(session, user)
-    for tries in range(1, 5):
+    for tries in range(1, 6):
         assert _check(session, user, "000000") is False
         assert _rows(session)[0].wrong_tries == tries
-    assert _check(session, user, "000000") is False
-    assert _rows(session) == []
     assert _check(session, user) is False
+    # A dead code is kept, and further tries no longer count.
+    assert [row.wrong_tries for row in _rows(session)] == [5]
+
+
+def test_an_older_code_does_not_pass_once_the_newer_one_is_dead(session: Session) -> None:
+    user = _user(session)
+    _add(session, user, "111111")
+    _add(session, user, "222222", at=NOW + timedelta(minutes=1))
+    for _ in range(5):
+        assert _check(session, user, "000000", at=NOW + timedelta(minutes=2)) is False
+    assert _check(session, user, "111111", at=NOW + timedelta(minutes=2)) is False
+    assert _check(session, user, "222222", at=NOW + timedelta(minutes=2)) is False
 
 
 def test_adding_a_code_deletes_only_rows_expired_and_older_than_an_hour(session: Session) -> None:
@@ -219,3 +229,18 @@ def test_the_sixth_code_in_an_hour_waits_until_the_oldest_leaves_the_hour(
         _add(session, user, at=NOW - timedelta(minutes=minutes))
     assert _wait(session, user) == 10 * 60
     assert _wait(session, user, NOW + timedelta(minutes=10)) is None
+
+
+def test_a_dead_code_still_counts_toward_the_hourly_cap(session: Session) -> None:
+    user = _user(session)
+    for minutes in (50, 40, 30, 20, 10):
+        _add(session, user, at=NOW - timedelta(minutes=minutes))
+        for _ in range(5):
+            _check(session, user, "000000", at=NOW - timedelta(minutes=minutes))
+    assert len(_rows(session)) == 5
+    assert _wait(session, user) == 10 * 60
+    # Ten minutes on, the oldest has left the hour; a sixth dead code fills the cap again.
+    _add(session, user, at=NOW + timedelta(minutes=10))
+    for _ in range(5):
+        _check(session, user, "000000", at=NOW + timedelta(minutes=10))
+    assert _wait(session, user, NOW + timedelta(minutes=10, seconds=30)) == 9 * 60 + 30

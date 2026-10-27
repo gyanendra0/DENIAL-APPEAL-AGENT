@@ -99,9 +99,11 @@ Rules:
 - The account of a query comes from the logged-in user (`current_user` in `src/api/`), never
   from a path, query string or request body. A row of another account is answered as not
   found (`404`), never as forbidden.
-- The one exception is the login lookup of a user by email (`src/api/login.py`): before login
-  the account is not known. It is safe only because an email is unique across all accounts
-  (`uq_users_email`) and nothing is returned unless the password matches. Do not add another.
+- The one exception is the lookup of a user by email (`find_user_by_email` in
+  `src/api/login.py`), used by login and by the password reset request: before login the
+  account is not known. It is safe only because an email is unique across all accounts
+  (`uq_users_email`), login returns nothing unless the password matches, and the reset
+  request returns the same answer whether the email exists or not. Do not add another.
 - Public reference tables (loaded from public sources and shared by every account, such as
   `issuer_denial_stats`) are an exception: they have no `account_id`. They never hold
   customer data. Any table that does is a business table.

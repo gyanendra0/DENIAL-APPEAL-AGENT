@@ -3801,8 +3801,8 @@ About the rubric:
 ## 3.18 API and auth
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
-logout, the logged-in user's own record and their password change, one admin route and a
-health check. The upload and
+logout, the logged-in user's own record and their password change, the reset of a forgotten
+password by email, one admin route and a health check. The upload and
 job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
 3.20.
 
@@ -3818,27 +3818,30 @@ Three things hold for every route:
 
 No route calls a model and no route spends money while the request is answered. The one
 place money is spent is the background job an upload queues, after its answer is sent
-(3.19).
+(3.19). The password reset email goes out through the mail provider's free tier ($0).
 
 ### Where the code is
 
 | File | Holds |
 |---|---|
 | `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_mail_sender`, `get_public_url`, `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
-| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
+| `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetAnswer`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by sign-up, login and the password change |
 | `src/api/signup.py` | `create_account_with_admin`, `AccountNameTakenError`, `EmailTakenError` |
-| `src/api/login.py` | `authenticate`, the login lookup by email |
-| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS` |
+| `src/api/login.py` | `authenticate`; `find_user_by_email`, the lookup by email shared by login and the reset request |
+| `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS`; the IP-only helpers the reset routes use: `ip_key`, `reserve_ip_failure`, `ip_over_limit`, `release_ip_failure`, `ip_retry_after_seconds` |
+| `src/api/reset_tokens.py` | The reset token: `issue_reset_token`, `read_reset_token`, `ResetClaims`, `InvalidResetTokenError`, `hash_token_id`; the rows: `add_reset_token`, `count_recent_reset_tokens`, `delete_stale_reset_tokens`, `delete_reset_tokens`, `usable_reset_token` |
+| `src/api/mail.py` | `MailMessage`, the `MailSender` protocol, `SmtpSender`, `OutboxSender`, `reset_email` (the text), `send_quietly`, `build_mail_sender` |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
-| `src/api/routes/` | `auth.py`, `me.py`, `users.py`, `health.py`: one router each |
+| `src/api/routes/` | `auth.py`, `password_reset.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
 | `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
 | `src/db/migrations/versions/rev_0019_password_changed_and_token_version.py` | Migration 0019: `users.token_version` (default 0, never below 0) and the audit action `password_changed` (no job, 3.20); the downgrade deletes that action's events, rebuilds the type without it and drops the column |
+| `src/db/migrations/versions/rev_0020_password_reset_tokens.py` | Migration 0020: the business table `password_reset_tokens` and the audit action `password_reset` (no job, 3.20); the downgrade drops the table, deletes that action's events, rebuilds the type without it and restores 0019's check |
 
 ### The routes
 
@@ -3849,6 +3852,8 @@ place money is spent is the background job an upload queues, after its answer is
 | `POST /auth/logout` | anyone | `204`; the cookie is cleared |
 | `GET /me` | a logged-in user | `200` with the user and their account's name; `401` when not logged in |
 | `POST /me/password` | a logged-in user of any role | `204` with a new login cookie (every other session ends); `400` "the current password is wrong"; `429` with `Retry-After` while the user's email or the client IP has too many recent failures; `401` when not logged in; `422` for a body that does not fit (a new password outside 12 to 128 characters, say) |
+| `POST /auth/password-reset` | anyone | `202` with the same body whether the email has an account, has none or already got its links this hour; the email goes out after the answer; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
+| `POST /auth/password-reset/confirm` | anyone with a reset link | `204` (no login cookie; every session of the user ends); `400` "the reset link is not valid or has expired" for every token problem; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
 | `GET /health` | anyone | `200` with `{"status": "ok"}`; it touches no database |
 
@@ -3890,10 +3895,11 @@ to a `viewer`.
    gets the same `401` as a wrong one. A password over 1,024 characters
    (`MAX_LOGIN_PASSWORD_CHARACTERS`) gets that same `401` without being hashed, so a huge
    body costs no Argon2 work. It still counts as a failure.
-4. The user is looked up by email alone. This is the one query on `users` without an
-   `account_id` filter: before login the account is not known. It is safe because an email
-   belongs to exactly one account (`uq_users_email`) and nothing is returned unless the
-   password matches.
+4. The user is looked up by email alone (`find_user_by_email`). This is the one query on
+   `users` without an `account_id` filter: before login the account is not known. It is safe
+   because an email belongs to exactly one account (`uq_users_email`) and nothing is
+   returned unless the password matches. The password reset request uses the same lookup
+   and returns nothing at all (see "Resetting a forgotten password").
 5. For an unknown email the password is still checked against a fixed dummy hash, so that
    case takes about as long as a wrong password and the time does not tell which emails exist.
 6. A match deletes the failures of the email's key and the try's own IP row (earlier IP
@@ -3926,8 +3932,9 @@ from the login, never from the body (`extra="forbid"` refuses any other field).
 5. A wrong current password keeps the failure rows and is `400` "the current password is
    wrong", raised after the transaction has ended. A right one, in the same transaction:
    stores the new hash, raises `users.token_version` by one, deletes the failures of the
-   email's key and the try's own IP row (as a good login does), writes a `password_changed`
-   audit event (3.20) and sets a new login cookie carrying the new version.
+   email's key and the try's own IP row (as a good login does), deletes the user's password
+   reset tokens (so an emailed link no longer works), writes a `password_changed` audit
+   event (3.20) and sets a new login cookie carrying the new version.
 6. Every token issued before the change carries the old version, so `current_user` refuses
    it from the next request on: every other session ends. This browser keeps working with the
    new cookie.
@@ -3936,6 +3943,108 @@ from the login, never from the body (`extra="forbid"` refuses any other field).
 rolls back on any error, and the `400` is an error. The route instead opens its own two
 transactions (as login does) and must hold no other session while it does.
 
+### Resetting a forgotten password, step by step
+
+A user who cannot log in asks for a link by email, opens it and sets a new password. Nobody
+is logged in on either route, so both use the two-transaction pattern of login and count
+every try against the **client IP only** (`reserve_ip_failure`, the same IP limit as login).
+The email is never a limit key here, so no answer depends on it.
+
+**Asking for a link** (`POST /auth/password-reset`, body `{"email": ...}`):
+
+1. The body is checked; the email is trimmed and lowercased as at login.
+2. The try's IP row is written and committed first. Over the IP limit, the row is deleted
+   again and the answer is `429` with `Retry-After`. Otherwise the row stays: asking costs the
+   address one try, so the route cannot be used to send many emails.
+3. The user is looked up with `find_user_by_email`. No user: nothing more happens.
+4. The user row is locked (`FOR UPDATE`, with the user's `account_id`), so two requests at
+   the same moment cannot both pass the cap. The user's reset rows that are expired and older
+   than one hour are deleted.
+5. If the user got `PASSWORD_RESET_PER_EMAIL_PER_HOUR` (3) links in the last hour, nothing is
+   sent. Otherwise a new token is issued and its row stored.
+6. The answer is `202` `{"detail": "if the email belongs to an account, a link is on its
+   way"}` in every case: unknown email, over the cap, or a link made. A `429` for the cap would
+   only ever happen for real accounts, so the cap is silent.
+7. The email is sent after the answer (`BackgroundTasks`, `send_quietly`), so the slow SMTP
+   call does not make a known email take longer than an unknown one.
+
+**The link and its token.** The link is `APP_PUBLIC_URL` + `/app/reset-password#token=...`.
+It is built from the setting, never from the request's `Host` header, which a client can
+forge. The token is in the **fragment** (after `#`), which browsers never send to a server, so
+it stays out of server and proxy logs and `Referer` headers.
+
+| Part | Value |
+|---|---|
+| Format | JWT signed with HS256, but with its own key: an HMAC of `AUTH_TOKEN_SECRET` with the label `password-reset`. A reset token can never pass as a login token, nor the other way round |
+| Claims | `sub` (user id), `acct` (account id), `jti` (32 random bytes), `typ` = `pwreset`, `iat`, `exp`; all six required |
+| Lifetime | `PASSWORD_RESET_TTL_MINUTES`, 30 by default; checked against `get_now`, so tests can move the clock |
+| Stored | Only the SHA-256 of `jti` (`password_reset_tokens.token_hash`). A fast hash is enough: 32 random bytes cannot be guessed, unlike a password |
+| Works | Once, and only while it is the user's newest row: asking again makes older links useless |
+
+**Why a signed token and not only a random one.** At confirm time nobody is logged in, so
+the account is not known. A plain random token looked up by its hash alone would be a second
+query on a business table without `account_id` ([conventions 6.4](06-conventions.md#64-database)).
+The signed claims name the account, so the row is found with `for_account`, just as
+`current_user` takes the account from the signed login cookie.
+
+**Setting the new password** (`POST /auth/password-reset/confirm`, body `{"token": ...,
+"new_password": ...}`, `extra="forbid"`):
+
+1. The body is checked: the new password is 12 to 128 characters, as at sign-up; the token
+   1 to `MAX_RESET_TOKEN_CHARACTERS`.
+2. The try's IP row is written and committed first; over the IP limit, `429` without checking
+   the token.
+3. The token is checked (signature, `typ`, the claims' types, expiry). The user row is locked,
+   found with the token's `account_id` and user id. The token's hash must match the user's
+   newest row, and that row must not have expired.
+4. Any failure is `400` "the reset link is not valid or has expired": one sentence for a
+   damaged, expired, used or replaced token, or a login token sent in its place. The IP row
+   stays, so guessing counts toward the limit.
+5. Success, in one transaction: the new hash, `users.token_version` + 1 (every session of the
+   user ends, see "The login token"), **every** reset row of the user deleted, the failures of
+   the email's login key and the try's own IP row deleted (so a user locked out by wrong
+   passwords can log in at once), and a `password_reset` audit event (3.20).
+6. The answer is `204` with **no login cookie**: the screen sends the user to login. Whoever
+   has the link still has to type the new password once more.
+
+The password change (`POST /me/password`) also deletes the user's reset rows, so a password
+change makes every emailed link useless.
+
+**The table** `password_reset_tokens` (migration 0020) is a business table: `account_id`,
+`user_id`, `token_hash` (`String(64)`, unique, a check allows only 64 lowercase hex
+characters), `expires_at` and the timestamps. It links to the user on (`account_id`,
+`user_id`) with `ON DELETE CASCADE`. An index on (`account_id`, `user_id`, `created_at`)
+serves the hourly cap. Used rows are deleted at use and stale ones at the user's next request,
+so there is no cleanup job.
+
+### Sending email
+
+`src/api/mail.py` has one protocol, `MailSender` (`send(message)`, raises on failure), and two
+senders. `build_mail_sender` picks one from `MAIL_BACKEND` when the app starts.
+
+| Sender | `MAIL_BACKEND` | What it does |
+|---|---|---|
+| `SmtpSender` | `smtp` | Connects to `MAIL_SMTP_HOST`:`MAIL_SMTP_PORT` (587), upgrades to TLS (STARTTLS), logs in and sends; 10-second timeout. Works with any provider's SMTP server; this project uses Brevo's free tier, so a change of provider changes `.env` only |
+| `OutboxSender` | `outbox` (the default) | Writes each message as a `.eml` file into `MAIL_OUTBOX_DIR` (`var/outbox`, git-ignored); the names sort by time, so the newest is last. For local development: open the file to click the link. The app refuses to start with it while `AUTH_COOKIE_SECURE` is true, so a deployed app cannot silently drop emails |
+
+The email is plain text, with no HTML, no tracking and nothing about the account:
+
+```
+Subject: Reset your password
+
+Someone asked to reset the password for this email address.
+
+To choose a new password, open this link within 30 minutes:
+<APP_PUBLIC_URL>/app/reset-password#token=<token>
+
+The link works once. If you did not ask for this, ignore this email; your password stays the same.
+```
+
+The text is a constant in the code, not a prompt (no model writes it). `send_quietly` runs
+after the answer, so a failed send has nobody to tell: it logs "email failed" with the error's
+class only. Tests replace the sender with a stub that records the messages, and the SMTP
+sender's tests replace `smtplib.SMTP`, so no test sends mail.
+
 ### The login limit
 
 The limit slows down someone guessing passwords, for one account or across many.
@@ -3943,7 +4052,7 @@ The limit slows down someone guessing passwords, for one account or across many.
 | Key | Counts | Limit (default) |
 |---|---|---|
 | The typed email (after trimming and lowercasing) | failures for that email, also for an email no account has | 5 in 15 minutes |
-| The client IP (`request.client.host`) | failures from that address, over every email | 20 in 15 minutes |
+| The client IP (`request.client.host`) | failures from that address, over every email, plus every reset request and every failed reset confirm | 20 in 15 minutes |
 
 - **Where the counts are.** In the operational table `login_failures` (migration 0018):
   one row per try per key, kept when the login fails, with `key_kind` (`email` or `ip`, the type
@@ -4025,10 +4134,22 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `LOGIN_LIMIT_WINDOW_MINUTES` | no (default 15) | How far back failed logins are counted, at least 1 |
 | `LOGIN_LIMIT_PER_EMAIL` | no (default 5) | Failures for one email inside the window before its logins are refused, at least 1 |
 | `LOGIN_LIMIT_PER_IP` | no (default 20) | Failures from one client IP inside the window before its logins are refused, at least 1 |
+| `APP_PUBLIC_URL` | yes | The address the browser opens the app at (`http://127.0.0.1:5173` locally); reset links are built from it. Must start with `http://` or `https://`; a trailing `/` is dropped |
+| `MAIL_BACKEND` | no (default `outbox`) | `outbox` (write `.eml` files; only with `AUTH_COOKIE_SECURE=false`) or `smtp` (send) |
+| `MAIL_OUTBOX_DIR` | no (default `var/outbox`) | Where the outbox writes |
+| `MAIL_SMTP_HOST` | with `smtp` | The provider's SMTP server |
+| `MAIL_SMTP_PORT` | no (default 587) | The SMTP port (STARTTLS), 1 to 65535 |
+| `MAIL_SMTP_USERNAME` | with `smtp` | The SMTP login |
+| `MAIL_SMTP_PASSWORD` | with `smtp` | The SMTP password or key; a secret, hidden in error messages |
+| `MAIL_FROM` | with `smtp` | The sender address, verified at the provider; also written into outbox files when set |
+| `PASSWORD_RESET_TTL_MINUTES` | no (default 30) | How long a reset link works, at least 1 |
+| `PASSWORD_RESET_PER_EMAIL_PER_HOUR` | no (default 3) | Links one user gets in one hour; more requests get the same `202` and no email; at least 1 |
 
 The keys are in `ApiSettings`, not in `Settings`, and are loaded only when the app is built.
 The pipelines and their tests need no token secret. A missing or short secret fails when the
-app starts, with a message that names the key. The database URL is read through the main
+app starts, with a message that names the key. So do a missing `APP_PUBLIC_URL`,
+`MAIL_BACKEND=smtp` without its four keys (the message names the missing ones), and
+`MAIL_BACKEND=outbox` with secure cookies. The database URL is read through the main
 `Settings` (`DATABASE_URL`), so a missing required key there fails at the start too.
 
 ### Starting it
@@ -4038,12 +4159,13 @@ uvicorn src.api.app:create_app --factory
 ```
 
 `--factory` makes uvicorn call `create_app()`, which reads the settings and the database URL
-from the environment and builds the job runner (3.19), so the LLM keys, the prompt files and
-the model file must be there too. Tests call `create_app(api_settings, session_factory,
-job_runner)` with their own values instead, the runner a stub. The route tests run the real app against `app_test` on a connection that is
+from the environment and builds the job runner (3.19) and the mail sender, so the LLM keys,
+the prompt files, the model file and `APP_PUBLIC_URL` must be there too. Tests call
+`create_app(api_settings, session_factory, job_runner, mail_sender)` with their own values
+instead, the runner and the sender stubs. The route tests run the real app against `app_test` on a connection that is
 rolled back after each test.
 
-Every route except login and the password change takes its session through `DbSession`, which closes the session (and commits)
+Every route except login, the password change and the two reset routes takes its session through `DbSession`, which closes the session (and commits)
 when the route returns, before the answer is sent (`scope="function"`). FastAPI's default
 closes it after the answer, so a client could be told `201` for a sign-up whose commit then
 failed. A failed commit is now a `500` with no login cookie (tested).
@@ -4054,7 +4176,11 @@ Sign-up and login log the account id and the user id. A failed login logs only t
 failed, and a login refused by the limit only "login refused: too many failures"; neither
 logs the email, the IP or their hashes. A password change logs the account id and the user
 id when it succeeds, and only "wrong current password" or "too many failures" when it does
-not. The email, the password, its hash and the token are never logged, and no response
+not. The reset routes log the account id and the user id when a link is made or a password
+is reset, the user id when the hourly cap stops a link, and otherwise only "password reset
+asked", "too many tries" or "link not valid"; the mail senders log only "email written to the
+outbox", "email sent" or "email failed" with the error's class. No reset log line holds the
+email, the link or the token. The email, the password, its hash and the token are never logged, and no response
 carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
 never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
 password would be the password, so `create_app` replaces it with `answer_validation_error`.
@@ -4067,11 +4193,19 @@ not carry the email or the hash. This holds for the pipelines too.
 - **No server-side logout.** `POST /auth/logout` clears the cookie, but a copied token stays
   valid until it expires (at most `AUTH_TOKEN_TTL_MINUTES`). A password change does end every
   other session at once (`token_version`); a logout does not.
-- **No password reset yet.** A user who forgot their password cannot change it, and an admin
-  cannot set another user's password. "Forgot password?" by email is the next branch.
-- **Anyone who knows an email can lock its user out.** Five wrong passwords every 15
-  minutes keep that email refused. The fix (an unlock link by email, or a challenge) needs
-  a mail sender, which comes with the password reset branch.
+- **An admin cannot set another user's password.** A user who forgot theirs resets it by
+  email.
+- **Anyone who knows an email can lock its user out of login.** Five wrong passwords every 15
+  minutes keep that email refused. A password reset clears the email's failures, so the user
+  gets in at once, but the attacker can start again.
+- **A known email takes a little more work to ask for.** It writes a token row and an unknown
+  one does not. The gap is milliseconds, far below network noise, but not zero.
+- **Reset emails may land in spam.** The sender is one Gmail address verified at Brevo, not a
+  domain of our own; a domain sender comes with the deployment (Stage 6), a `.env` change.
+- **A reset email can be lost.** It is sent after the answer in the one API process (3.19);
+  a restart at that moment drops it, and the user asks again.
+- **Whoever reads the mailbox can reset the password.** That is how email reset works.
+- **The sign-up email is not checked.** A user who typed it wrong can never get a reset link.
 - **People behind one shared address share the IP limit.** An office or a mobile carrier
   gets 20 failures per 15 minutes for everyone behind it.
 - **A spread-out attack is not stopped.** Many addresses trying many emails, a few tries
@@ -4394,6 +4528,7 @@ The kind `edit_not_allowed` comes from the edit check.
 |---|---|---|
 | `account_created` | sign-up (3.18) | none; no job |
 | `password_changed` | `POST /me/password` (3.18) | none; no job (migration 0019) |
+| `password_reset` | `POST /auth/password-reset/confirm` (3.18), a completed reset only | none; no job (migration 0020) |
 | `upload_created` | `POST /uploads` (3.19) | none |
 | `draft_edited` | an edit | the new version |
 | `draft_approved` | an approve | the approved version |
@@ -4401,8 +4536,9 @@ The kind `edit_not_allowed` comes from the edit check.
 
 An event holds the account, the user, the action, the job, the time and a detail with fixed
 keys only (`AuditDetail`: `version`, `reject_reason`). It never holds document text, letter
-text or a file name. Sign-up, the password change and the upload write their event in the
-same transaction as their rows. The code only inserts events; nothing updates or deletes one.
+text or a file name. Sign-up, the password change, the password reset and the upload write
+their event in the same transaction as their rows. Asking for a reset link writes no event:
+an unknown email has no account to write it to. The code only inserts events; nothing updates or deletes one.
 
 The links from an event to its user and its job have no cascade, so an audited user or job
 cannot be deleted on its own: the database refuses it. `GET /audit` gives the events with the
@@ -4432,7 +4568,7 @@ All three are business tables with `account_id`.
 |---|---|---|
 | `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
 | `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
-| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created` and `password_changed`, a check since migration 0019), `detail` as a JSON object |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed` and `password_reset`, a check since migration 0019, widened in 0020), `detail` as a JSON object |
 
 As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
 `job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
@@ -4518,17 +4654,18 @@ screen:
 | `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session (the login screen then empties the cache) |
 | `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
-| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
-| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `clearAccountData`; the session is the cache key `["me"]` |
+| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `clearAccountData`; the session is the cache key `["me"]` |
+| `frontend/src/auth/resetLink.ts` | `FORGOT_PASSWORD_PATH`, `RESET_PASSWORD_PATH`; `tokenFromHash`, the token from the link's `#token=` fragment; `PASSWORD_SET_STATE` and `isPasswordSetState`, the note the reset screen leaves for the login screen |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up or password change is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen` (both in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `ForgotPasswordScreen`, `ResetPasswordScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4538,12 +4675,14 @@ screen:
 |---|---|---|
 | `/app/login` | anyone | `POST /auth/login` |
 | `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
+| `/app/forgot-password` | anyone | `POST /auth/password-reset` |
+| `/app/reset-password` | anyone (opened from the emailed link) | `POST /auth/password-reset/confirm` |
 | `/app/worklist` | a logged-in user of any role | `GET /worklist` |
 | `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
 | `/app/account` | a logged-in user of any role | `POST /me/password` |
 | any other path | | sends to `/app/worklist` |
 
-Every screen under `/app/` other than login and sign-up asks for the session first
+Every screen under `/app/` other than login, sign-up and the two reset screens asks for the session first
 (`GET /me`) and shows the account, the user's email and role and a Log out button
 (`POST /auth/logout`).
 
@@ -4588,8 +4727,8 @@ The login and sign-up forms check their fields in the browser before anything is
 (`credentialCheck.ts`): an empty field, an email without the shape `something@something`, and
 at sign-up a password outside 12 to 128 characters get one sentence under that field, and the
 focus moves to the first one. The API checks everything again; a login password is not
-checked for length, as the API answers a wrong length like a wrong password. There is no
-"Forgot password?" link and no social login: the API has neither.
+checked for length, as the API answers a wrong length like a wrong password. The login form
+has a "Forgot password?" link (see "Forgot password"). There is no social login yet.
 
 ### Changing the password
 
@@ -4606,6 +4745,26 @@ typed.
 3. On `204` both fields are cleared and the screen says the password is changed and other
    sessions are logged out. The API's answer carries a new login cookie, so this browser stays
    logged in; the user does not change, so the cache is left as it is.
+
+### Forgot password
+
+Two screens outside the login guard, both in `AuthFrame` with a "Remembered it? Log in" link.
+
+1. "Forgot password?" on the login screen opens `/app/forgot-password` ("Reset your
+   password"). The email is checked in the browser (`checkResetAsk`), then
+   `POST /auth/password-reset` is sent. On `202` the form is replaced by one sentence for
+   every email: "If the email belongs to an account, a link is on its way. Check your
+   inbox." A `429` and every other error use the general sentences.
+2. The emailed link opens `/app/reset-password#token=...` ("Set a new password"). The screen
+   reads the token from the fragment **once** (`tokenFromHash`) and then replaces the address
+   with `/app/reset-password` (`navigate(..., { replace: true })`), so the token leaves the
+   address bar and the history. A reload after that needs the link again.
+3. The new password is checked (`checkResetConfirm`, 12 to 128 characters), then
+   `POST /auth/password-reset/confirm` is sent with the token.
+4. A `400`, or a link with no token, shows "The reset link is not valid or has expired." with
+   an "Ask for a new link" link back to step 1; the button stays off when there is no token.
+5. On `204` the screen goes to `/app/login` with `PASSWORD_SET_STATE`, and the login screen
+   says "Your password is set. Log in with it." The API does not log in after a reset (3.18).
 
 ### An upload, step by step
 

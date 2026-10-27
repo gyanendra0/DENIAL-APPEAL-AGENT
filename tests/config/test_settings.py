@@ -584,17 +584,21 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in API_KEYS:
+    for key in (*API_KEYS, *MAIL_KEYS):
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
     listed = {line.split("=", 1)[0] for line in example.read_text().splitlines() if "=" in line}
 
     settings = load_api_settings(env_file=str(example))
 
-    assert set(API_KEYS) <= listed
-    # Worked out before the assert, so a failure never prints the value of a real secret.
+    assert {*API_KEYS, *MAIL_KEYS} <= listed
+    assert settings.mail_backend == "outbox"
+    # Worked out before the asserts, so a failure never prints the value of a real secret.
     secret_is_placeholder = _is_placeholder(settings.auth_token_secret)
+    mail_password = settings.mail_smtp_password
+    mail_password_is_placeholder = mail_password is not None and _is_placeholder(mail_password)
     assert secret_is_placeholder, "AUTH_TOKEN_SECRET in .env.example is not a placeholder"
+    assert mail_password_is_placeholder, "MAIL_SMTP_PASSWORD in .env.example is not a placeholder"
 
 
 def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(

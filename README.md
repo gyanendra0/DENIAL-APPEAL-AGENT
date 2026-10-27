@@ -86,11 +86,16 @@ Settings come from a `.env` file; `.env.example` lists every key.
    pip install -e ".[dev]"
    alembic upgrade head
    ```
-3. Start the API on `http://127.0.0.1:8000`. It needs `AUTH_TOKEN_SECRET` and, on plain HTTP
-   as here, `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
+3. Start the API on `http://127.0.0.1:8000`. It needs `AUTH_TOKEN_SECRET`,
+   `APP_PUBLIC_URL=http://127.0.0.1:5173` (password reset links point there) and, on plain
+   HTTP as here, `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
    ```
    uvicorn src.api.app:create_app --factory
    ```
+   With the default `MAIL_BACKEND=outbox`, a password reset email is not sent: it is written
+   as a `.eml` file in `var/outbox/`; open the newest one to find the link. To really send,
+   set `MAIL_BACKEND=smtp` and the `MAIL_SMTP_*` and `MAIL_FROM` keys (architecture
+   [3.18](docs/03-architecture.md#318-api-and-auth), "Sending email").
 4. In a second terminal, start the dashboard. Its dev server forwards the API paths to
    `uvicorn`, so the browser sees one site:
    ```

@@ -1,9 +1,9 @@
 """FastAPI dependencies: settings, the database session, the job runner, the mail sender, the
-public URL, the clock, the logged-in user and role checks.
+public URL, Google's side of the sign-in, the clock, the logged-in user and role checks.
 
 Every route takes the `account_id` it queries with from `current_user`, never from the path,
 query or body. The app factory puts `api_settings`, `session_factory`, `job_runner`,
-`mail_sender` and `public_url` on `app.state`.
+`mail_sender`, `public_url` and `google` (None when not configured) on `app.state`.
 """
 
 from collections.abc import Callable, Iterator
@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.api.google_oidc import GoogleOidc
 from src.api.mail import MailSender
 from src.api.tokens import InvalidTokenError, read_token
 from src.config.settings import ApiSettings
@@ -62,6 +63,14 @@ def get_public_url(request: Request) -> str:
     """The address the browser opens the app at, without a trailing slash."""
     url: str = request.app.state.public_url
     return url
+
+
+def get_google(request: Request) -> GoogleOidc:
+    """Google's side of "Continue with Google", or 404 when it is not configured."""
+    google: GoogleOidc | None = request.app.state.google
+    if google is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+    return google
 
 
 def get_session_factory(request: Request) -> sessionmaker[Session]:

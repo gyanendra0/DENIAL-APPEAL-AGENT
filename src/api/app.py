@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
 
+import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -12,8 +13,20 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import JobRunner
+from src.api.google_oidc import GoogleOidc
 from src.api.mail import MailSender, build_mail_sender
-from src.api.routes import audit, auth, health, jobs, me, overview, password_reset, review, users
+from src.api.routes import (
+    audit,
+    auth,
+    google,
+    health,
+    jobs,
+    me,
+    overview,
+    password_reset,
+    review,
+    users,
+)
 from src.api.upload_limit import UploadSizeLimit
 from src.config.settings import (
     ApiSettings,
@@ -27,6 +40,9 @@ from src.jobs.run import run_upload_job
 from src.jobs.store import mark_interrupted_jobs
 
 logger = logging.getLogger(__name__)
+
+# How long one call to Google (the token swap, the public keys) may take.
+GOOGLE_TIMEOUT_SECONDS = 10.0
 
 
 async def answer_validation_error(_request: Request, exc: Exception) -> JSONResponse:
@@ -73,13 +89,15 @@ def create_app(
     session_factory: sessionmaker[Session] | None = None,
     job_runner: JobRunner | None = None,
     mail_sender: MailSender | None = None,
+    google_http: httpx.Client | None = None,
 ) -> FastAPI:
     """Build the API app.
 
     With no arguments the settings, the database, the job runner and the mail sender come from
     the environment, so a missing or short `AUTH_TOKEN_SECRET`, a missing `DATABASE_URL`, a
     missing LLM key, a missing model file or a mail setup that cannot send fails here, at
-    startup. A missing `APP_PUBLIC_URL` fails here too, whatever is passed in.
+    startup. A missing `APP_PUBLIC_URL` fails here too, whatever is passed in. When Google
+    sign-in is configured, `google_http` makes the calls to Google (by default a new client).
     """
     settings = api_settings if api_settings is not None else load_api_settings()
     if settings.app_public_url is None:
@@ -91,17 +109,31 @@ def create_app(
         else create_session_factory(create_db_engine())
     )
     runner = job_runner if job_runner is not None else build_job_runner(factory)
+    google_oidc = None
+    if settings.google_enabled:
+        # Never built from the request's `Host` header: it must match what Google has on file.
+        google_oidc = GoogleOidc(
+            settings,
+            (
+                google_http
+                if google_http is not None
+                else httpx.Client(timeout=GOOGLE_TIMEOUT_SECONDS)
+            ),
+            redirect_uri=settings.app_public_url + google.CALLBACK_PATH,
+        )
     app = FastAPI(title="denial-appeal-agent", lifespan=fail_interrupted_jobs)
     app.state.api_settings = settings
     app.state.session_factory = factory
     app.state.job_runner = runner
     app.state.mail_sender = sender
     app.state.public_url = settings.app_public_url
+    app.state.google = google_oidc
     app.add_exception_handler(RequestValidationError, answer_validation_error)
     app.add_middleware(UploadSizeLimit)
     for router in (
         health.router,
         auth.router,
+        google.router,
         password_reset.router,
         me.router,
         users.router,

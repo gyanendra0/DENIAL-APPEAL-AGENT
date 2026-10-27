@@ -113,6 +113,31 @@ class PasswordResetAnswer(BaseModel):
     detail: str
 
 
+class AuthOptions(BaseModel):
+    """The ways in besides email and password that this server offers."""
+
+    model_config = ConfigDict(frozen=True)
+
+    google: bool
+
+
+class GoogleSignupInfo(BaseModel):
+    """The verified Google email a pending Google sign-up will create its user with."""
+
+    model_config = ConfigDict(frozen=True)
+
+    email: str
+
+
+class GoogleSignupRequest(BaseModel):
+    """The name of the new account. The email and the Google account come from the signed
+    `google_signup` cookie, never from the body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    account_name: AccountName
+
+
 class UserResponse(BaseModel):
     """A user and the account they belong to."""
 

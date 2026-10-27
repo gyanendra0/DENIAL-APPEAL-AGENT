@@ -173,6 +173,45 @@ class ApiSettings(BaseSettings):
     mail_from: str | None = None
     password_reset_ttl_minutes: int = Field(default=30, ge=1)
     password_reset_per_email_per_hour: int = Field(default=3, ge=1)
+    # "Continue with Google" is off unless both the client ID and the secret are set. The URLs
+    # are Google's (from its discovery document); Google signs ID tokens with either issuer.
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
+    google_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    google_token_url: str = "https://oauth2.googleapis.com/token"  # noqa: S105  (a URL)
+    google_jwks_url: str = "https://www.googleapis.com/oauth2/v3/certs"
+    # Comma-separated, so the environment can hold it as one plain value.
+    google_issuers: str = "https://accounts.google.com,accounts.google.com"
+
+    @property
+    def google_enabled(self) -> bool:
+        """True when "Continue with Google" is configured (the validator makes it both or none)."""
+        return self.google_client_id is not None
+
+    @property
+    def google_issuer_list(self) -> tuple[str, ...]:
+        """The accepted `iss` values of a Google ID token."""
+        return tuple(issuer.strip() for issuer in self.google_issuers.split(",") if issuer.strip())
+
+    @field_validator("google_auth_url", "google_token_url", "google_jwks_url")
+    @classmethod
+    def _google_url_must_be_https(cls, value: str) -> str:
+        if not value.startswith("https://"):
+            raise ValueError("a Google URL must start with https://")
+        return value
+
+    @model_validator(mode="after")
+    def _google_needs_both_keys(self) -> Self:
+        values = {
+            "GOOGLE_CLIENT_ID": self.google_client_id,
+            "GOOGLE_CLIENT_SECRET": self.google_client_secret,
+        }
+        missing = [key for key, value in values.items() if value is None]
+        if len(missing) == 1:
+            raise ValueError(f"Google sign-in needs both keys; {missing[0]} is not set")
+        if not self.google_issuer_list:
+            raise ValueError("GOOGLE_ISSUERS names no issuer")
+        return self
 
     @field_validator("app_public_url")
     @classmethod

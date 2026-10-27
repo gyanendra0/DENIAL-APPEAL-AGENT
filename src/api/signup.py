@@ -28,15 +28,16 @@ def _taken_key(error: IntegrityError) -> str | None:
 
 
 def create_account_with_admin(
-    session: Session, *, account_name: str, email: str, password: str
+    session: Session, *, account_name: str, email: str, password: str | None
 ) -> User:
     """Add an account named `account_name` and its `admin` user, and return the user.
 
-    `email` must already be trimmed and lowercased. Both rows are written inside one savepoint:
+    `email` must already be trimmed and lowercased. `password` is None for a user who signs in
+    with Google only (no password yet). Both rows are written inside one savepoint:
     a taken name or email rolls both back and raises `AccountNameTakenError` or `EmailTakenError`.
     Any other database error propagates. Hashing takes tens of milliseconds on purpose.
     """
-    password_hash = hash_password(password)
+    password_hash = hash_password(password) if password is not None else None
     try:
         with session.begin_nested():
             account = Account(name=account_name)

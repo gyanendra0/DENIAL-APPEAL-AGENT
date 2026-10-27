@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import src.api.app as app_module
 from src.api.app import answer_validation_error, create_app
+from src.api.google_oidc import GoogleOidc
 from src.api.mail import SmtpSender
 from src.config.settings import ApiSettings, get_settings
 from src.db.models import DatasetSplit, Job, JobFailure, JobStatus
@@ -23,6 +24,7 @@ from src.jobs.run import JobContext
 from src.jobs.store import create_upload_job, start_job
 from src.ml.training import SplitFacts, save_win_model, train_win_model
 from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender
+from tests.api.fake_google import google_settings
 from tests.jobs.helpers import add_member, new_upload
 from tests.ml.made_up_rows import training_rows
 
@@ -174,6 +176,10 @@ def test_routes_are_registered() -> None:
         "/auth/signup",
         "/auth/login",
         "/auth/logout",
+        "/auth/options",
+        "/auth/google/start",
+        "/auth/google/callback",
+        "/auth/google/signup",
         "/auth/password-reset",
         "/auth/password-reset/confirm",
         "/me",
@@ -189,6 +195,19 @@ def test_routes_are_registered() -> None:
         "/overview",
         "/audit",
     }
+
+
+def test_google_is_off_without_its_keys_and_uses_the_public_callback_with_them() -> None:
+    settings = ApiSettings(  # type: ignore[call-arg]
+        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
+    )
+    assert create_app(settings, sessionmaker(), _no_job, RecordingSender()).state.google is None
+
+    app = create_app(google_settings(), sessionmaker(), _no_job, RecordingSender())
+
+    google = app.state.google
+    assert isinstance(google, GoogleOidc)
+    assert google.redirect_uri == f"{PUBLIC_URL}/auth/google/callback"
 
 
 def test_the_validation_answer_handles_another_error_as_empty() -> None:

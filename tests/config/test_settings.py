@@ -447,6 +447,18 @@ MAIL_KEYS = (
     "PASSWORD_RESET_TTL_MINUTES",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
 )
+GOOGLE_KEYS = (
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_AUTH_URL",
+    "GOOGLE_TOKEN_URL",
+    "GOOGLE_JWKS_URL",
+    "GOOGLE_ISSUERS",
+)
+GOOGLE_ENV = {
+    "GOOGLE_CLIENT_ID": "made-up-client-id.apps.example.test",
+    "GOOGLE_CLIENT_SECRET": "made-up-google-client-secret",
+}
 SMTP_ENV = {
     "MAIL_BACKEND": "smtp",
     "MAIL_SMTP_HOST": "smtp.example.test",
@@ -459,7 +471,7 @@ SMTP_ENV = {
 @pytest.fixture
 def api_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Set the token secret and clear the optional API keys."""
-    for key in (*API_KEYS, *MAIL_KEYS):
+    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", TOKEN_SECRET)
     return monkeypatch
@@ -667,4 +679,59 @@ def test_rejects_a_bad_mail_or_reset_value_naming_the_key(
 ) -> None:
     api_env.setenv(key, value)
     with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)
+
+
+def test_google_sign_in_is_off_by_default_with_googles_urls(api_env: pytest.MonkeyPatch) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert not settings.google_enabled
+    assert settings.google_auth_url == "https://accounts.google.com/o/oauth2/v2/auth"
+    assert settings.google_token_url == "https://oauth2.googleapis.com/token"  # noqa: S105
+    assert settings.google_jwks_url == "https://www.googleapis.com/oauth2/v3/certs"
+    assert settings.google_issuer_list == ("https://accounts.google.com", "accounts.google.com")
+
+
+def test_google_sign_in_is_on_with_both_keys_and_hides_the_secret(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    for key, value in GOOGLE_ENV.items():
+        api_env.setenv(key, value)
+    api_env.setenv("GOOGLE_ISSUERS", " https://issuer.example.test , ")
+
+    settings = load_api_settings(env_file=None)
+
+    assert settings.google_enabled
+    assert settings.google_client_secret is not None
+    assert settings.google_client_secret.get_secret_value() == "made-up-google-client-secret"
+    assert "made-up-google-client-secret" not in repr(settings)
+    assert settings.google_issuer_list == ("https://issuer.example.test",)
+
+
+@pytest.mark.parametrize("key", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"])
+def test_google_with_only_one_of_its_keys_fails_naming_the_other(
+    api_env: pytest.MonkeyPatch, key: str
+) -> None:
+    for name, value in GOOGLE_ENV.items():
+        api_env.setenv(name, value)
+    api_env.setenv(key, "")
+
+    with pytest.raises(ValidationError, match=key) as caught:
+        load_api_settings(env_file=None)
+    assert "made-up-google-client-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("GOOGLE_TOKEN_URL", "http://oauth2.example.test/token", "google_token_url"),
+        ("GOOGLE_JWKS_URL", "www.example.test/certs", "google_jwks_url"),
+        ("GOOGLE_ISSUERS", " , ", "GOOGLE_ISSUERS"),
+    ],
+)
+def test_rejects_a_google_url_without_https_or_no_issuer(
+    api_env: pytest.MonkeyPatch, key: str, value: str, match: str
+) -> None:
+    api_env.setenv(key, value)
+    with pytest.raises(ValidationError, match=match):
         load_api_settings(env_file=None)

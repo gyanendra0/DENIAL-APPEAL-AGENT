@@ -447,6 +447,14 @@ MAIL_KEYS = (
     "PASSWORD_RESET_TTL_MINUTES",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
 )
+# Not in `.env.example` yet; the docs task of the email-code branch adds them.
+EMAIL_CODE_KEYS = (
+    "EMAIL_CODE_TTL_MINUTES",
+    "EMAIL_CODE_MAX_WRONG_TRIES",
+    "EMAIL_CODE_RESEND_SECONDS",
+    "EMAIL_CODE_PER_USER_PER_HOUR",
+    "MAIL_DAILY_LIMIT",
+)
 GOOGLE_KEYS = (
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
@@ -681,6 +689,42 @@ def test_rejects_a_bad_mail_or_reset_value_naming_the_key(
     api_env: pytest.MonkeyPatch, key: str, value: str
 ) -> None:
     api_env.setenv(key, value)
+    with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)
+
+
+def test_email_code_settings_default_to_10_minutes_5_tries_60_seconds_5_an_hour_and_250_a_day(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert settings.email_code_ttl_minutes == 10
+    assert settings.email_code_max_wrong_tries == 5
+    assert settings.email_code_resend_seconds == 60
+    assert settings.email_code_per_user_per_hour == 5
+    assert settings.mail_daily_limit == 250
+
+
+def test_email_code_settings_are_read_from_the_environment(api_env: pytest.MonkeyPatch) -> None:
+    for key, value in zip(EMAIL_CODE_KEYS, ("15", "3", "30", "4", "100"), strict=True):
+        api_env.setenv(key, value)
+
+    settings = load_api_settings(env_file=None)
+
+    assert (
+        settings.email_code_ttl_minutes,
+        settings.email_code_max_wrong_tries,
+        settings.email_code_resend_seconds,
+        settings.email_code_per_user_per_hour,
+        settings.mail_daily_limit,
+    ) == (15, 3, 30, 4, 100)
+
+
+@pytest.mark.parametrize("key", EMAIL_CODE_KEYS)
+def test_rejects_an_email_code_limit_of_zero_naming_the_key(
+    api_env: pytest.MonkeyPatch, key: str
+) -> None:
+    api_env.setenv(key, "0")
     with pytest.raises(ValidationError, match=key.lower()):
         load_api_settings(env_file=None)
 

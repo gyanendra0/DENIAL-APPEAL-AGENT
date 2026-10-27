@@ -31,6 +31,8 @@ from src.db.models import (
     DraftRejectReason,
     DraftReviewStatus,
     DraftRevision,
+    EmailCode,
+    EmailCodePurpose,
     EndState,
     EvidenceChunk,
     EvidenceChunkEmbedding,
@@ -47,6 +49,7 @@ from src.db.models import (
     LlmProvider,
     LoginFailure,
     LoginKeyKind,
+    MailSend,
     MetalLevel,
     PasswordResetToken,
     PlanDenialStats,
@@ -2688,4 +2691,142 @@ def test_stores_a_google_linked_audit_event_without_a_job(session: Session) -> N
     stored = session.get(AuditEvent, event.id)
     assert stored is not None
     assert stored.action is AuditAction.GOOGLE_LINKED
+    assert stored.job_id is None
+
+
+def test_a_new_user_has_no_verified_email_until_one_is_stored(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    session.expire_all()
+    assert user.email_verified_at is None
+
+    user.email_verified_at = RESET_EXPIRES_AT
+    session.flush()
+    session.expire_all()
+
+    assert user.email_verified_at == RESET_EXPIRES_AT
+
+
+# A made-up HMAC-SHA256: 64 lowercase hex characters, as an emailed code's stored hash.
+CODE_HASH = "abcdef0123456789" * 4
+CODE_EXPIRES_AT = datetime(2026, 10, 27, 12, 10, tzinfo=UTC)
+
+
+def _email_code(session: Session, user: User, **overrides: Any) -> EmailCode:
+    fields: dict[str, Any] = {
+        "account_id": user.account_id,
+        "user_id": user.id,
+        "purpose": EmailCodePurpose.VERIFY_EMAIL,
+        "code_hash": CODE_HASH,
+        "expires_at": CODE_EXPIRES_AT,
+    }
+    code = EmailCode(**(fields | overrides))
+    session.add(code)
+    session.flush()
+    return code
+
+
+def test_stores_an_email_code_with_no_wrong_tries_its_expiry_and_timestamps(
+    session: Session,
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+    code = _email_code(session, user)
+    session.expire_all()
+
+    stored = session.get(EmailCode, code.id)
+    assert stored is not None
+    assert (stored.account_id, stored.user_id) == (user.account_id, user.id)
+    assert stored.purpose is EmailCodePurpose.VERIFY_EMAIL
+    assert (stored.code_hash, stored.wrong_tries) == (CODE_HASH, 0)
+    assert stored.expires_at == CODE_EXPIRES_AT
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_stores_the_same_code_hash_twice_for_two_codes(session: Session) -> None:
+    # No unique key: the hash is keyed by purpose and user, and an old code may stay a while.
+    user = _user_of(session, _account(session, "a"))
+    _email_code(session, user)
+    _email_code(session, user, purpose=EmailCodePurpose.PASSWORD_RESET)
+
+    assert len(session.scalars(select(EmailCode)).all()) == 2
+
+
+@pytest.mark.parametrize(
+    "code_hash",
+    [CODE_HASH[:63], CODE_HASH.upper(), "g" + CODE_HASH[1:], ""],
+    ids=["too-short", "uppercase", "not-hex", "empty"],
+)
+def test_rejects_an_email_code_whose_hash_is_not_64_lowercase_hex(
+    session: Session, code_hash: str
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_email_codes_code_hash_format"):
+        _email_code(session, user, code_hash=code_hash)
+
+
+def test_rejects_an_email_code_with_negative_wrong_tries(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_email_codes_wrong_tries_not_negative"):
+        _email_code(session, user, wrong_tries=-1)
+
+
+def test_rejects_an_email_code_naming_a_user_of_another_account(session: Session) -> None:
+    other = _user_of(session, _account(session, "other"), "bob@example.test")
+    account = _account(session, "a")
+
+    with pytest.raises(IntegrityError, match="fk_email_codes_user"):
+        _email_code(session, other, account_id=account.id)
+
+
+def test_rejects_an_unknown_email_code_purpose(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    insert = text(
+        "INSERT INTO email_codes (account_id, user_id, purpose, code_hash, expires_at)"
+        " VALUES (:a, :u, 'login', :h, now())"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, {"a": user.account_id, "u": user.id, "h": CODE_HASH})
+
+
+def test_deleting_a_user_removes_their_email_codes_only(session: Session) -> None:
+    account = _account(session, "a")
+    user = _user_of(session, account)
+    kept = _user_of(session, account, "bob@example.test")
+    _email_code(session, user)
+    kept_code = _email_code(session, kept)
+
+    session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
+    session.expire_all()
+
+    assert [row.id for row in session.scalars(select(EmailCode))] == [kept_code.id]
+
+
+def test_stores_a_mail_send_with_its_purpose_and_timestamps_only(session: Session) -> None:
+    send = MailSend(purpose=EmailCodePurpose.PASSWORD_RESET)
+    session.add(send)
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(MailSend, send.id)
+    assert stored is not None
+    assert stored.purpose is EmailCodePurpose.PASSWORD_RESET
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_stores_an_email_verified_audit_event_without_a_job(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    event = AuditEvent(
+        account_id=user.account_id, user_id=user.id, action=AuditAction.EMAIL_VERIFIED
+    )
+    session.add(event)
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(AuditEvent, event.id)
+    assert stored is not None
+    assert stored.action is AuditAction.EMAIL_VERIFIED
     assert stored.job_id is None

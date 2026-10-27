@@ -31,6 +31,7 @@ from src.db.migrations.versions import rev_0020_password_reset_tokens as migrati
 from src.db.migrations.versions import (
     rev_0021_user_identities_and_google_linked as migration_0021,
 )
+from src.db.migrations.versions import rev_0022_email_codes_and_mail_sends as migration_0022
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -44,6 +45,7 @@ from src.db.models import (
     DocumentType,
     DraftRejectReason,
     DraftReviewStatus,
+    EmailCodePurpose,
     EndState,
     EvidenceSource,
     ExchangeType,
@@ -63,6 +65,8 @@ UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jo
 REVIEW_TABLES = ("audit_events", "draft_revisions")
 RESET_TABLE = "password_reset_tokens"
 IDENTITY_TABLE = "user_identities"
+EMAIL_CODE_TABLE = "email_codes"
+MAIL_SEND_TABLE = "mail_sends"
 BUSINESS_TABLES = {
     "accounts",
     "users",
@@ -72,6 +76,7 @@ BUSINESS_TABLES = {
     *REVIEW_TABLES,
     RESET_TABLE,
     IDENTITY_TABLE,
+    EMAIL_CODE_TABLE,
 }
 REFERENCE_TABLES = {
     "issuer_denial_stats",
@@ -88,8 +93,8 @@ REFERENCE_TABLES = {
     "agent_runs",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls,
-# and keyed hashes of failed logins.
-OPERATIONAL_TABLES = {"llm_calls", "login_failures"}
+# keyed hashes of failed logins, and what each sent email was for.
+OPERATIONAL_TABLES = {"llm_calls", "login_failures", MAIL_SEND_TABLE}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES | OPERATIONAL_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
@@ -1054,17 +1059,69 @@ def test_user_identities_has_its_keys_the_cascading_user_link_index_and_checks(
 
 
 def test_migration_0021_lists_the_same_values_and_check_rules_as_the_models() -> None:
-    assert tuple(member.value for member in AuditAction) == (
+    # 0022 added one audit action and replaced the job rule; its test compares the new ones.
+    assert (
         *migration_0021.AUDIT_ACTION_BEFORE,
         migration_0021.NEW_AUDIT_ACTION,
-    )
+    ) == migration_0022.AUDIT_ACTION_BEFORE
+    assert migration_0022.JOB_MATCHES_ACTION_BEFORE == migration_0021.JOB_MATCHES_ACTION
     assert tuple(member.value for member in IdentityProvider) == migration_0021.IDENTITY_PROVIDER
-    assert _model_checks(REVIEW_TABLES)[migration_0021.JOB_CHECK_NAME] == (
-        migration_0021.JOB_MATCHES_ACTION
-    )
     assert _model_checks((IDENTITY_TABLE,)) == {
         "ck_user_identities_subject_not_empty": migration_0021.SUBJECT_NOT_EMPTY,
         "ck_user_identities_email_at_link_normalized": migration_0021.EMAIL_AT_LINK_NORMALIZED,
+    }
+
+
+def test_email_codes_has_the_cascading_user_link_its_indexes_and_checks_and_no_unique_key(
+    engine: Engine,
+) -> None:
+    indexes = {i["name"]: i["column_names"] for i in inspect(engine).get_indexes(EMAIL_CODE_TABLE)}
+    unique, foreign, checks = _keys_links_and_checks(engine, EMAIL_CODE_TABLE)
+
+    assert indexes == {
+        "ix_email_codes_account_id": ["account_id"],
+        "ix_email_codes_account_id_user_id_purpose_created_at": [
+            "account_id",
+            "user_id",
+            "purpose",
+            "created_at",
+        ],
+    }
+    assert unique == {}
+    assert foreign == {
+        "fk_email_codes_user": (
+            ["account_id", "user_id"],
+            "users",
+            ["account_id", "id"],
+            "CASCADE",
+        ),
+    }
+    assert checks == {"ck_email_codes_code_hash_format", "ck_email_codes_wrong_tries_not_negative"}
+
+
+def test_mail_sends_has_only_its_purpose_timestamps_and_created_at_index(engine: Engine) -> None:
+    inspector = inspect(engine)
+    columns = {c["name"] for c in inspector.get_columns(MAIL_SEND_TABLE)}
+    indexes = {i["name"]: i["column_names"] for i in inspector.get_indexes(MAIL_SEND_TABLE)}
+
+    # No address, user or code: the cap counts emails, never who they went to.
+    assert columns == {"id", "purpose", "created_at", "updated_at"}
+    assert indexes == {"ix_mail_sends_created_at": ["created_at"]}
+    assert inspector.get_foreign_keys(MAIL_SEND_TABLE) == []
+
+
+def test_migration_0022_lists_the_same_values_and_check_rules_as_the_models() -> None:
+    assert tuple(member.value for member in AuditAction) == (
+        *migration_0022.AUDIT_ACTION_BEFORE,
+        migration_0022.NEW_AUDIT_ACTION,
+    )
+    assert tuple(member.value for member in EmailCodePurpose) == migration_0022.EMAIL_CODE_PURPOSE
+    assert _model_checks(REVIEW_TABLES)[migration_0022.JOB_CHECK_NAME] == (
+        migration_0022.JOB_MATCHES_ACTION
+    )
+    assert _model_checks((EMAIL_CODE_TABLE,)) == {
+        "ck_email_codes_code_hash_format": migration_0022.CODE_HASH_FORMAT,
+        "ck_email_codes_wrong_tries_not_negative": migration_0022.WRONG_TRIES_NOT_NEGATIVE,
     }
 
 
@@ -1186,6 +1243,72 @@ def _store_audit_events_with_sql(
 def _users_password_hash_nullable(engine: Engine) -> bool:
     columns = {c["name"]: c for c in inspect(engine).get_columns("users")}
     return bool(columns["password_hash"]["nullable"])
+
+
+def _users_columns(engine: Engine) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns("users")}
+
+
+def test_upgrade_to_0022_counts_every_existing_user_as_verified_when_they_were_made(
+    engine: Engine, alembic_config: Config
+) -> None:
+    command.downgrade(alembic_config, "0021")
+    try:
+        _store_audit_events_with_sql(engine, ("account_created",))
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET created_at = '2026-10-01T09:00:00Z'"))
+        command.upgrade(alembic_config, "0022")
+
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT created_at, email_verified_at FROM users")).all()
+        assert len(rows) == 1
+        assert rows[0].email_verified_at == rows[0].created_at
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
+
+
+def test_downgrade_to_0021_removes_the_code_and_send_tables_email_verified_and_its_rows(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("google_linked", "email_verified"))
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO email_codes (account_id, user_id, purpose, code_hash, expires_at)"
+                    " SELECT account_id, id, 'verify_email', :hash, now() FROM users"
+                ),
+                {"hash": "0123456789abcdef" * 4},
+            )
+            conn.execute(text("INSERT INTO mail_sends (purpose) VALUES ('verify_email')"))
+        command.downgrade(alembic_config, "0021")
+
+        tables = set(inspect(engine).get_table_names())
+        assert EMAIL_CODE_TABLE not in tables
+        assert MAIL_SEND_TABLE not in tables
+        assert _type_names(engine, migration_0022.NEW_ENUMS) == set()
+        assert "email_verified_at" not in _users_columns(engine)
+        assert _audit_action_values(engine) == list(migration_0022.AUDIT_ACTION_BEFORE)
+        with engine.connect() as conn:
+            actions = list(conn.scalars(text("SELECT action::text FROM audit_events")))
+            rule = conn.scalar(
+                text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
+                {"name": migration_0022.JOB_CHECK_NAME},
+            )
+        assert actions == ["google_linked"]
+        assert "email_verified" not in rule
+        assert "google_linked" in rule
+        assert _type_names(engine, (migration_0022.OLD_TYPE_NAME,)) == set()
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+    assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    assert {EMAIL_CODE_TABLE, MAIL_SEND_TABLE} <= set(inspect(engine).get_table_names())
+    assert "email_verified_at" in _users_columns(engine)
 
 
 def test_downgrade_to_0020_removes_the_identity_table_google_linked_and_its_rows(

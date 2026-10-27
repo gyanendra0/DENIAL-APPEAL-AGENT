@@ -1,6 +1,6 @@
-"""Core tables, uploads, jobs, draft review, audit, password reset and outside logins
-(business), reference
-tables, and the operational tables `llm_calls` and `login_failures`."""
+"""Core tables, uploads, jobs, draft review, audit, password reset, emailed codes and outside
+logins (business), reference tables, and the operational tables `llm_calls`, `login_failures`
+and `mail_sends`."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -156,12 +156,20 @@ class AuditAction(StrEnum):
     PASSWORD_CHANGED = "password_changed"  # noqa: S105  (an audit action, not a password)
     PASSWORD_RESET = "password_reset"  # noqa: S105  (an audit action, not a password)
     GOOGLE_LINKED = "google_linked"
+    EMAIL_VERIFIED = "email_verified"
 
 
 class IdentityProvider(StrEnum):
     """Who vouches for a login other than the password."""
 
     GOOGLE = "google"
+
+
+class EmailCodePurpose(StrEnum):
+    """What an emailed code is for; also what an email was sent for."""
+
+    VERIFY_EMAIL = "verify_email"
+    PASSWORD_RESET = "password_reset"  # noqa: S105  (a purpose, not a password)
 
 
 class LoginKeyKind(StrEnum):
@@ -211,6 +219,10 @@ class User(AccountScopedMixin, TimestampMixin, Base):
     # Carried in every login token; a password change adds 1, so the older tokens stop working.
     token_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+    # When the user proved they read this address (a code, or Google vouching); NULL: not yet.
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 
@@ -631,6 +643,27 @@ class LoginFailure(TimestampMixin, Base):
         Enum(LoginKeyKind, name="login_key_kind", values_callable=_values), nullable=False
     )
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class MailSend(TimestampMixin, Base):
+    """One email the app sent, counted for the daily send cap.
+
+    Operational table, no `account_id`: the cap counts every account's emails together, and
+    the row holds only what the email was for and when (`created_at`); never an address, a
+    user or a code.
+    """
+
+    __tablename__ = "mail_sends"
+    __table_args__ = (
+        # The cap counts the rows of the current UTC day; old rows are deleted by `created_at`.
+        Index("ix_mail_sends_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    purpose: Mapped[EmailCodePurpose] = mapped_column(
+        Enum(EmailCodePurpose, name="email_code_purpose", values_callable=_values),
+        nullable=False,
+    )
 
 
 class DocumentExtraction(TimestampMixin, Base):
@@ -1197,8 +1230,8 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
 
     Business table, written in the same transaction as the change; the code only inserts.
     `detail` holds fixed keys only (a version number, a reject reason), never document text.
-    `job_id` is empty exactly for `account_created`, `password_changed`, `password_reset` and
-    `google_linked`.
+    `job_id` is empty exactly for `account_created`, `password_changed`, `password_reset`,
+    `google_linked` and `email_verified`.
     The links to the user and the job carry `account_id` and have no cascade, so an audited
     job cannot be deleted on its own; deleting the account removes everything.
     """
@@ -1212,9 +1245,8 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
             ["account_id", "job_id"], ["jobs.account_id", "jobs.id"], name="fk_audit_events_job"
         ),
         CheckConstraint(
-            "(action::text IN"
-            " ('account_created', 'password_changed', 'password_reset', 'google_linked'))"
-            " = (job_id IS NULL)",
+            "(action::text IN ('account_created', 'password_changed', 'password_reset',"
+            " 'google_linked', 'email_verified')) = (job_id IS NULL)",
             name="ck_audit_events_job_matches_action",
         ),
         CheckConstraint("jsonb_typeof(detail) = 'object'", name="ck_audit_events_detail_is_object"),
@@ -1265,6 +1297,47 @@ class PasswordResetToken(AccountScopedMixin, TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EmailCode(AccountScopedMixin, TimestampMixin, Base):
+    """One emailed 6-digit code, stored only as a keyed hash.
+
+    Business table. `code_hash` is an HMAC-SHA256 (lowercase hex) of purpose, user and code,
+    with a key derived from the token secret, so the code cannot be read back from the table.
+    Only the user's newest code of a purpose works, until `expires_at`; `wrong_tries` counts
+    the wrong codes typed against it. The resend limits count a user's rows by `created_at`.
+    The link to the user carries `account_id` and cascades: a code means nothing once its
+    user is gone.
+    """
+
+    __tablename__ = "email_codes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["users.account_id", "users.id"],
+            name="fk_email_codes_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("code_hash ~ '^[0-9a-f]{64}$'", name="ck_email_codes_code_hash_format"),
+        CheckConstraint("wrong_tries >= 0", name="ck_email_codes_wrong_tries_not_negative"),
+        Index(
+            "ix_email_codes_account_id_user_id_purpose_created_at",
+            "account_id",
+            "user_id",
+            "purpose",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[EmailCodePurpose] = mapped_column(
+        Enum(EmailCodePurpose, name="email_code_purpose", values_callable=_values),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    wrong_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

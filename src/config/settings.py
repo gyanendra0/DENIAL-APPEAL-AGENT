@@ -140,7 +140,10 @@ class ApiSettings(BaseSettings):
     typed email or the client IP has this many failed logins inside the window (in minutes).
     The mail keys say how password reset emails leave the app; a reset link lives
     `password_reset_ttl_minutes`, and one email address gets at most
-    `password_reset_per_email_per_hour` links an hour.
+    `password_reset_per_email_per_hour` links an hour. An emailed code lives
+    `email_code_ttl_minutes` and dies after `email_code_max_wrong_tries` wrong tries; a user gets
+    a new code at most every `email_code_resend_seconds` and `email_code_per_user_per_hour` an
+    hour; the app sends at most `mail_daily_limit` emails a UTC day.
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -173,6 +176,12 @@ class ApiSettings(BaseSettings):
     mail_from: str | None = None
     password_reset_ttl_minutes: int = Field(default=30, ge=1)
     password_reset_per_email_per_hour: int = Field(default=3, ge=1)
+    email_code_ttl_minutes: int = Field(default=10, ge=1)
+    email_code_max_wrong_tries: int = Field(default=5, ge=1)
+    email_code_resend_seconds: int = Field(default=60, ge=1)
+    email_code_per_user_per_hour: int = Field(default=5, ge=1)
+    # Below the mail provider's free daily allowance (Brevo's free plan: about 300 a day).
+    mail_daily_limit: int = Field(default=250, ge=1)
     # "Continue with Google" is off unless both the client ID and the secret are set. The URLs
     # are Google's (from its discovery document); Google signs ID tokens with either issuer.
     google_client_id: str | None = None

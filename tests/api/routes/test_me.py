@@ -7,13 +7,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import AUTH_COOKIE_NAME, get_now
 from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.routes import me as me_module
-from src.api.routes.me import WRONG_CURRENT_PASSWORD
+from src.api.routes.me import NO_PASSWORD_YET, WRONG_CURRENT_PASSWORD
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
 from src.db.models import AuditAction, AuditEvent, LoginFailure, LoginKeyKind, User
 from src.db.query import for_account
@@ -148,6 +148,26 @@ def test_a_wrong_current_password_is_400_and_changes_nothing(
     assert _hash(db_session, signed_up["user_id"]) == before
     assert _password_events(db_session) == []
     assert api_client.get("/me").status_code == 200
+
+
+def test_a_user_with_no_password_is_400_told_so_and_nothing_counts(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    signed_up = _signup(api_client, "One", "a@x.org")
+    db_session.execute(
+        update(User).where(User.id == signed_up["user_id"]).values(password_hash=None)
+    )
+    db_session.commit()
+    response = api_client.post(
+        "/me/password", json={"current_password": WRONG, "new_password": NEW_PASSWORD}
+    )
+    assert (response.status_code, response.json()) == (400, {"detail": NO_PASSWORD_YET})
+    db_session.expire_all()
+    stored = db_session.scalar(select(User.password_hash).where(User.id == signed_up["user_id"]))
+    assert stored is None
+    assert _password_events(db_session) == []
+    # Nothing was guessed, so neither the email nor the IP count grows.
+    assert db_session.scalars(select(LoginFailure)).all() == []
 
 
 @pytest.mark.parametrize("length", [11, 129])

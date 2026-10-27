@@ -26,7 +26,7 @@ def test_creates_the_account_and_an_admin_with_a_hashed_password(session: Sessio
     account = session.get(Account, user.account_id)
     assert account is not None and account.name == "Clinic One"
     assert (user.email, user.role) == ("ann@x.org", UserRole.ADMIN)
-    assert user.password_hash != PASSWORD
+    assert user.password_hash is not None and user.password_hash != PASSWORD
     assert verify_password(user.password_hash, PASSWORD)
 
 

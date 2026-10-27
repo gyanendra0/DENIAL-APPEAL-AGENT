@@ -32,6 +32,21 @@ def test_unknown_email_returns_none_after_the_dummy_check(
     assert checked == [PASSWORD]
 
 
+@pytest.mark.parametrize("password", [PASSWORD, ""])
+def test_a_user_with_no_password_is_refused_after_the_dummy_check(
+    session: Session, monkeypatch: pytest.MonkeyPatch, password: str
+) -> None:
+    user = create_account_with_admin(
+        session, account_name="One", email="a@x.org", password=PASSWORD
+    )
+    user.password_hash = None
+    session.flush()
+    checked: list[str] = []
+    monkeypatch.setattr(login, "verify_dummy_password", checked.append)
+    assert authenticate(session, email="a@x.org", password=password) is None
+    assert checked == [password]
+
+
 def test_known_email_skips_the_dummy_check(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

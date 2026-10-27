@@ -79,7 +79,7 @@ def change_password(
     the client IP, so a stolen session cannot guess the password faster than login could; over
     the limit, 429 without checking. A user with no password yet gets a 400 that says so,
     without counting. The answer carries a new login cookie, so this session stays
-    logged in while every older token stops working; every reset link of the user stops working
+    logged in while every older token stops working; every reset code of the user stops working
     too. Takes tens of milliseconds on purpose (two password hashes).
     """
     client_host = request.client.host if request.client is not None else None

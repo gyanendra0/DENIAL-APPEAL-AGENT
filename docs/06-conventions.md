@@ -100,12 +100,15 @@ Rules:
   from a path, query string or request body. A row of another account is answered as not
   found (`404`), never as forbidden.
 - The one exception is the lookup of a user by email (`find_user_by_email` in
-  `src/api/login.py`), used by login, by the password reset request and by Google sign-in:
-  before login the account is not known. It is safe only because an email is unique across
-  all accounts (`uq_users_email`), login returns nothing unless the password matches, the reset
-  request returns the same answer whether the email exists or not, and Google sign-in uses
-  only an email Google has verified and then reads the user's identities with their
-  `account_id`. Do not add another.
+  `src/api/login.py`), used by login, by sign-up, by the password reset request and its
+  confirm, and by Google sign-in: before login the account is not known. It is safe only
+  because an email is unique across all accounts (`uq_users_email`), login returns nothing
+  unless the password matches, sign-up only deletes the account of a holder who never
+  confirmed the email (a brand-new account that was never logged in) and returns nothing
+  about it, the reset request returns the same answer whether the email exists or not, the
+  reset confirm changes nothing unless the emailed code matches and gives the same answer
+  for an unknown email, and Google sign-in uses only an email Google has verified and then
+  reads the user's identities with their `account_id`. Do not add another.
 - Public reference tables (loaded from public sources and shared by every account, such as
   `issuer_denial_stats`) are an exception: they have no `account_id`. They never hold
   customer data. Any table that does is a business table.

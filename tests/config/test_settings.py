@@ -446,7 +446,6 @@ MAIL_KEYS = (
     "MAIL_FROM",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
 )
-# Not in `.env.example` yet; the docs task of the email-code branch adds them.
 EMAIL_CODE_KEYS = (
     "EMAIL_CODE_TTL_MINUTES",
     "EMAIL_CODE_MAX_WRONG_TRIES",
@@ -603,14 +602,17 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS):
+    keys = (*API_KEYS, *MAIL_KEYS, *EMAIL_CODE_KEYS, *GOOGLE_KEYS)
+    for key in keys:
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
     listed = {line.split("=", 1)[0] for line in example.read_text().splitlines() if "=" in line}
 
     settings = load_api_settings(env_file=str(example))
 
-    assert {*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS} <= listed
+    assert set(keys) <= listed
+    # Removed with the reset link (migration 0022); a stale line would be ignored silently.
+    assert "PASSWORD_RESET_TTL_MINUTES" not in listed
     assert settings.mail_backend == "outbox"
     # The Google keys are listed empty: no client secret, real or made up, and the button is off.
     assert not settings.google_enabled
@@ -623,7 +625,7 @@ def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     assert mail_password_is_placeholder, "MAIL_SMTP_PASSWORD in .env.example is not a placeholder"
 
 
-def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(
+def test_mail_and_reset_settings_default_to_the_outbox_and_3_an_hour(
     api_env: pytest.MonkeyPatch,
 ) -> None:
     settings = load_api_settings(env_file=None)

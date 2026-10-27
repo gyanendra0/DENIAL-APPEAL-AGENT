@@ -64,11 +64,12 @@ Denial document
 
 ## Status
 
-**Stages 0 to 4 are released (`v0.5.0`); Stage 5, the product, is in progress.** The API
+**Stages 0 to 5 are released (`v0.6.0`); Stage 6, deployment, is in progress.** The API
 signs users up, takes an uploaded denial letter through extraction, rules, scoring, evidence
 and drafting, and lets a reviewer edit, approve or reject the draft. The web dashboard covers
 all of it in the browser: sign-up, login, the upload, the worklist, the denial beside its
-draft, the review, and an overview. See the
+draft, the review, and an overview. A user can also change or reset a password, confirm their
+email with a 6-digit code, and sign in with Google. See the
 [build plan](docs/05-build-plan.md).
 
 ## Running it locally

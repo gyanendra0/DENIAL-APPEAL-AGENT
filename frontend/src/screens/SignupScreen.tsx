@@ -14,13 +14,14 @@ import { HOME_PATH } from "../auth/redirect";
 import { useSignup } from "../auth/session";
 import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
-import { describeError } from "./errorMessage";
+import { asSentence, describeError } from "./errorMessage";
+import { GoogleButton } from "./GoogleButton";
 import { BuildingIcon, MailIcon } from "./icons";
 
 // A 409 says which name is taken ("the email is taken"); that text comes from the API, not the user.
 function signupError(error: unknown): string {
   if (error instanceof ApiError && error.kind === "conflict") {
-    return `${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`;
+    return asSentence(error.message);
   }
   return describeError(error);
 }
@@ -56,6 +57,7 @@ export function SignupScreen() {
         </>
       }
     >
+      <GoogleButton />
       <form className="form auth-form" noValidate onSubmit={onSubmit}>
         <AuthField
           label="Account name"

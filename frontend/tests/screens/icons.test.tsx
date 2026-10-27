@@ -7,6 +7,7 @@ import {
   CloseIcon,
   EyeIcon,
   EyeOffIcon,
+  GoogleIcon,
   ListIcon,
   LockIcon,
   LogOutIcon,
@@ -32,6 +33,7 @@ describe("icons", () => {
     ["ListIcon", ListIcon],
     ["ChartIcon", ChartIcon],
     ["LogOutIcon", LogOutIcon],
+    ["GoogleIcon", GoogleIcon],
   ])("%s is decoration, hidden from screen readers", (_name, IconComponent) => {
     const { container } = render(<IconComponent />);
 

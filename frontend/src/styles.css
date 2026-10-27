@@ -973,6 +973,52 @@ textarea {
   font-size: 14px;
 }
 
+/* "Continue with Google" is a light outlined link above the form, then a line with "or". */
+.auth-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 46px;
+  margin-top: 20px;
+  font-weight: 600;
+  color: var(--color-text);
+  text-decoration: none;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+}
+
+.auth-google:hover {
+  background: var(--color-surface);
+}
+
+.auth-google svg {
+  width: 18px;
+  height: 18px;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 -4px;
+  font-size: var(--text-small);
+  color: var(--color-muted);
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  border-top: var(--border-hairline) solid var(--color-border);
+}
+
+.auth-signing-as {
+  margin: 16px 0 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1050px) {
   :root {
     --sidebar-width: 232px;

@@ -97,6 +97,16 @@ export interface UserResponse {
   account_name: string;
 }
 
+// src/api/schemas.py AuthOptions: the ways in besides email and password.
+export interface AuthOptions {
+  google: boolean;
+}
+
+// src/api/schemas.py GoogleSignupInfo: the verified Google email a pending sign-up will use.
+export interface GoogleSignupInfo {
+  email: string;
+}
+
 // src/api/routes/jobs.py UploadAccepted
 export interface UploadAccepted {
   job_id: number;

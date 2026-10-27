@@ -10,12 +10,16 @@ import {
   askPasswordReset,
   changePassword,
   confirmPasswordReset,
+  fetchAuthOptions,
+  fetchGoogleSignup,
   fetchMe,
+  googleSignup,
   login,
   logout,
   signup,
 } from "../api/auth";
 import type {
+  GoogleSignupInput,
   LoginInput,
   PasswordChangeInput,
   PasswordResetAskInput,
@@ -25,11 +29,15 @@ import type {
 import type { UserResponse } from "../api/types";
 
 export const SESSION_KEY = ["me"] as const;
+// What the server offers besides email and password; the same for every user.
+export const AUTH_OPTIONS_KEY = ["auth-options"] as const;
 
-// Removes every query but the session. The other keys do not name the account, so data kept
-// past a change of user would be shown to the next one.
+const KEPT_KEYS: ReadonlySet<unknown> = new Set([SESSION_KEY[0], AUTH_OPTIONS_KEY[0]]);
+
+// Removes every query but the session and the server's options. The other keys do not name the
+// account, so data kept past a change of user would be shown to the next one.
 export function clearAccountData(queryClient: QueryClient): void {
-  queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
+  queryClient.removeQueries({ predicate: (query) => !KEPT_KEYS.has(query.queryKey[0]) });
 }
 
 // Asked once per page load: only login, sign-up and logout change it, and they write it themselves.
@@ -53,6 +61,32 @@ export function useSignup() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: SignupInput) => signup(input),
+    onSuccess: (user: UserResponse) => {
+      clearAccountData(queryClient);
+      queryClient.setQueryData(SESSION_KEY, user);
+    },
+  });
+}
+
+// The server's settings do not change while the page is open, so they are asked once per load.
+export function useAuthOptions() {
+  return useQuery({
+    queryKey: AUTH_OPTIONS_KEY,
+    queryFn: fetchAuthOptions,
+    retry: false,
+    staleTime: Infinity,
+  });
+}
+
+// Asked when the "name your account" screen opens; a retry would not bring back an expired cookie.
+export function useGoogleSignupInfo() {
+  return useQuery({ queryKey: ["google-signup"], queryFn: fetchGoogleSignup, retry: false });
+}
+
+export function useGoogleSignup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: GoogleSignupInput) => googleSignup(input),
     onSuccess: (user: UserResponse) => {
       clearAccountData(queryClient);
       queryClient.setQueryData(SESSION_KEY, user);

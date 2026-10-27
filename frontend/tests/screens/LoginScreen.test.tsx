@@ -255,4 +255,22 @@ describe("LoginScreen", () => {
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
+
+  it("says why a Google sign-in was refused, in its own words", async () => {
+    stubApi({ "GET /me": NO_SESSION });
+    renderAt("/app/login?google=use_password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This email already has a login here. Log in with your password.",
+    );
+  });
+
+  it("shows nothing for a Google code it does not know", async () => {
+    stubApi({ "GET /me": NO_SESSION });
+    renderAt("/app/login?google=made-up");
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/made-up/)).not.toBeInTheDocument();
+  });
 });

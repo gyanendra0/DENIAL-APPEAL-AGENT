@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_PASSWORD_CHARACTERS,
   MIN_PASSWORD_CHARACTERS,
+  checkGoogleSignup,
   checkLogin,
   checkPasswordChange,
   checkResetAsk,
@@ -103,6 +104,16 @@ describe("checkPasswordChange", () => {
     expect(checkPasswordChange({ ...VALID, newPassword: "secret" }).newPassword).not.toContain(
       "secret",
     );
+  });
+});
+
+describe("checkGoogleSignup", () => {
+  it("accepts an account name", () => {
+    expect(checkGoogleSignup({ accountName: "Made-up Clinic" })).toEqual({});
+  });
+
+  it("names an empty or blank account name", () => {
+    expect(checkGoogleSignup({ accountName: "  " }).accountName).toBe("Enter the account name.");
   });
 });
 

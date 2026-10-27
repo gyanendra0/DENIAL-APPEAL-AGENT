@@ -4,7 +4,10 @@ import {
   askPasswordReset,
   changePassword,
   confirmPasswordReset,
+  fetchAuthOptions,
+  fetchGoogleSignup,
   fetchMe,
+  googleSignup,
   login,
   logout,
   signup,
@@ -94,6 +97,44 @@ describe("password reset calls", () => {
     await expect(
       confirmPasswordReset({ token: "made-up", new_password: "a long made-up password" }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("Google sign-in calls", () => {
+  it("asks which ways in the server offers", async () => {
+    stubApi({ "GET /auth/options": () => jsonResponse(200, { google: true }) });
+
+    await expect(fetchAuthOptions()).resolves.toEqual({ google: true });
+  });
+
+  it("returns the email of the pending Google sign-up", async () => {
+    stubApi({ "GET /auth/google/signup": () => jsonResponse(200, { email: ADMIN.email }) });
+
+    await expect(fetchGoogleSignup()).resolves.toEqual({ email: ADMIN.email });
+  });
+
+  it("returns null when the Google sign-up has expired", async () => {
+    stubApi({
+      "GET /auth/google/signup": () =>
+        jsonResponse(401, { detail: "the Google sign-up has expired; continue with Google again" }),
+    });
+
+    await expect(fetchGoogleSignup()).resolves.toBeNull();
+  });
+
+  it("raises any other error of the pending sign-up", async () => {
+    stubApi({ "GET /auth/google/signup": () => jsonResponse(404, { detail: "Not Found" }) });
+
+    await expect(fetchGoogleSignup()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("sends only the account name and returns the new user", async () => {
+    const fetchStub = stubApi({ "POST /auth/google/signup": () => jsonResponse(201, ADMIN) });
+
+    await expect(googleSignup({ account_name: "Made-up Clinic" })).resolves.toEqual(ADMIN);
+    expect(sentBody(fetchStub, "POST /auth/google/signup")).toEqual({
+      account_name: "Made-up Clinic",
+    });
   });
 });
 

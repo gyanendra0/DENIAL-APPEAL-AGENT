@@ -12,6 +12,8 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+$/;
 export type LoginField = "email" | "password";
 export type SignupField = "accountName" | "email" | "password";
 export type PasswordChangeField = "currentPassword" | "newPassword";
+export type ResetAskField = "email";
+export type ResetConfirmField = "newPassword";
 
 // One fixed sentence per wrong field, in the order the fields are on the screen. A sentence never
 // repeats what was typed.
@@ -83,6 +85,14 @@ export function checkPasswordChange(values: {
     currentPassword: values.currentPassword === "" ? "Enter your current password." : undefined,
     newPassword: checkNewPassword(values.newPassword),
   });
+}
+
+export function checkResetAsk(values: { email: string }): FieldErrors<ResetAskField> {
+  return withoutEmpty<ResetAskField>({ email: checkEmail(values.email) });
+}
+
+export function checkResetConfirm(values: { newPassword: string }): FieldErrors<ResetConfirmField> {
+  return withoutEmpty<ResetConfirmField>({ newPassword: checkNewPassword(values.newPassword) });
 }
 
 // Moves the focus to the first wrong field (each input's `name` is its field) and says whether

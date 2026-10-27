@@ -27,6 +27,7 @@ from src.db.migrations.versions import rev_0018_login_failures as migration_0018
 from src.db.migrations.versions import (
     rev_0019_password_changed_and_token_version as migration_0019,
 )
+from src.db.migrations.versions import rev_0020_password_reset_tokens as migration_0020
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -56,7 +57,16 @@ from src.db.models import (
 UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jobs", "uploads")
 # Added by 0017, children before parents.
 REVIEW_TABLES = ("audit_events", "draft_revisions")
-BUSINESS_TABLES = {"accounts", "users", "claims", "denials", *UPLOAD_TABLES, *REVIEW_TABLES}
+RESET_TABLE = "password_reset_tokens"
+BUSINESS_TABLES = {
+    "accounts",
+    "users",
+    "claims",
+    "denials",
+    *UPLOAD_TABLES,
+    *REVIEW_TABLES,
+    RESET_TABLE,
+}
 REFERENCE_TABLES = {
     "issuer_denial_stats",
     "plan_denial_stats",
@@ -932,13 +942,12 @@ def test_migration_0018_lists_the_same_values_and_check_rule_as_the_model() -> N
 
 
 def test_migration_0019_lists_the_same_audit_actions_and_check_rules_as_the_models() -> None:
-    assert tuple(member.value for member in AuditAction) == (
+    # 0020 added one audit action and replaced the job rule; its test compares the new ones.
+    assert (
         *migration_0019.AUDIT_ACTION_BEFORE,
         migration_0019.NEW_AUDIT_ACTION,
-    )
-    assert _model_checks(REVIEW_TABLES)[migration_0019.JOB_CHECK_NAME] == (
-        migration_0019.JOB_MATCHES_ACTION
-    )
+    ) == migration_0020.AUDIT_ACTION_BEFORE
+    assert migration_0020.JOB_MATCHES_ACTION_BEFORE == migration_0019.JOB_MATCHES_ACTION
     assert _model_checks(("users",))["ck_users_token_version_not_negative"] == (
         migration_0019.TOKEN_VERSION_NOT_NEGATIVE
     )
@@ -963,6 +972,50 @@ def test_users_token_version_starts_at_zero_and_refuses_a_negative_number(
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM accounts"))
+
+
+def test_password_reset_tokens_has_its_keys_the_cascading_user_link_indexes_and_check(
+    engine: Engine,
+) -> None:
+    # Without the index Postgres makes for the unique key; that key is checked below.
+    indexes = {
+        i["name"]: i["column_names"]
+        for i in inspect(engine).get_indexes(RESET_TABLE)
+        if "duplicates_constraint" not in i
+    }
+    unique, foreign, checks = _keys_links_and_checks(engine, RESET_TABLE)
+
+    assert indexes == {
+        "ix_password_reset_tokens_account_id": ["account_id"],
+        "ix_password_reset_tokens_account_id_user_id_created_at": [
+            "account_id",
+            "user_id",
+            "created_at",
+        ],
+    }
+    assert unique == {"uq_password_reset_tokens_token_hash": ["token_hash"]}
+    assert foreign == {
+        "fk_password_reset_tokens_user": (
+            ["account_id", "user_id"],
+            "users",
+            ["account_id", "id"],
+            "CASCADE",
+        ),
+    }
+    assert checks == {"ck_password_reset_tokens_token_hash_format"}
+
+
+def test_migration_0020_lists_the_same_audit_actions_and_check_rules_as_the_models() -> None:
+    assert tuple(member.value for member in AuditAction) == (
+        *migration_0020.AUDIT_ACTION_BEFORE,
+        migration_0020.NEW_AUDIT_ACTION,
+    )
+    assert _model_checks(REVIEW_TABLES)[migration_0020.JOB_CHECK_NAME] == (
+        migration_0020.JOB_MATCHES_ACTION
+    )
+    assert _model_checks((RESET_TABLE,)) == {
+        "ck_password_reset_tokens_token_hash_format": migration_0020.TOKEN_HASH_FORMAT
+    }
 
 
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
@@ -1057,7 +1110,9 @@ def _audit_action_values(engine: Engine) -> list[str]:
         return list(conn.scalars(text("SELECT unnest(enum_range(NULL::audit_action))::text")))
 
 
-def _store_audit_events_with_sql(engine: Engine) -> None:
+def _store_audit_events_with_sql(
+    engine: Engine, actions: tuple[str, ...] = ("account_created", "password_changed")
+) -> None:
     # One event of each kind without a job: the old one stays, the new one goes on downgrade.
     with engine.begin() as conn:
         account_id = conn.scalar(text("INSERT INTO accounts (name) VALUES ('p') RETURNING id"))
@@ -1068,7 +1123,7 @@ def _store_audit_events_with_sql(engine: Engine) -> None:
             ),
             {"a": account_id},
         )
-        for action in ("account_created", "password_changed"):
+        for action in actions:
             conn.execute(
                 text(
                     "INSERT INTO audit_events (account_id, user_id, action)"
@@ -1076,6 +1131,43 @@ def _store_audit_events_with_sql(engine: Engine) -> None:
                 ),
                 {"a": account_id, "u": user_id, "action": action},
             )
+
+
+def test_downgrade_to_0019_removes_the_reset_table_password_reset_and_its_rows(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("password_changed", "password_reset"))
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO password_reset_tokens"
+                    " (account_id, user_id, token_hash, expires_at)"
+                    " SELECT account_id, id, :hash, now() FROM users"
+                ),
+                {"hash": "0123456789abcdef" * 4},
+            )
+        command.downgrade(alembic_config, "0019")
+
+        assert RESET_TABLE not in set(inspect(engine).get_table_names())
+        assert _audit_action_values(engine) == list(migration_0020.AUDIT_ACTION_BEFORE)
+        with engine.connect() as conn:
+            actions = list(conn.scalars(text("SELECT action::text FROM audit_events")))
+            rule = conn.scalar(
+                text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
+                {"name": migration_0020.JOB_CHECK_NAME},
+            )
+        assert actions == ["password_changed"]
+        assert "password_reset" not in rule
+        assert "password_changed" in rule
+        assert _type_names(engine, (migration_0020.OLD_TYPE_NAME,)) == set()
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+    assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    assert RESET_TABLE in set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0018_removes_password_changed_its_rows_and_the_token_version(

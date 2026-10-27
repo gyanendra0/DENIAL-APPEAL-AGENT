@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { changePassword, fetchMe, login, logout, signup } from "../../src/api/auth";
+import {
+  askPasswordReset,
+  changePassword,
+  confirmPasswordReset,
+  fetchMe,
+  login,
+  logout,
+  signup,
+} from "../../src/api/auth";
 import { ApiError } from "../../src/api/client";
 import { ADMIN, jsonResponse, sentBody, stubApi } from "../helpers";
 
@@ -53,6 +61,39 @@ describe("auth calls", () => {
     await expect(
       changePassword({ current_password: "wrong", new_password: "a long made-up password" }),
     ).rejects.toMatchObject({ status: 400, message: "the current password is wrong" });
+  });
+});
+
+describe("password reset calls", () => {
+  it("asks for a reset link with the email and accepts the 202", async () => {
+    const fetchStub = stubApi({
+      "POST /auth/password-reset": () =>
+        jsonResponse(202, { detail: "if the email belongs to an account, a link is on its way" }),
+    });
+
+    await expect(askPasswordReset({ email: ADMIN.email })).resolves.toBeUndefined();
+    expect(sentBody(fetchStub, "POST /auth/password-reset")).toEqual({ email: ADMIN.email });
+  });
+
+  it("sets the new password with the token and accepts the 204", async () => {
+    const fetchStub = stubApi({
+      "POST /auth/password-reset/confirm": () => new Response(null, { status: 204 }),
+    });
+    const input = { token: "a.made-up.token", new_password: "a long made-up password" };
+
+    await expect(confirmPasswordReset(input)).resolves.toBeUndefined();
+    expect(sentBody(fetchStub, "POST /auth/password-reset/confirm")).toEqual(input);
+  });
+
+  it("raises the API's 400 for a link that is not valid", async () => {
+    stubApi({
+      "POST /auth/password-reset/confirm": () =>
+        jsonResponse(400, { detail: "the reset link is not valid or has expired" }),
+    });
+
+    await expect(
+      confirmPasswordReset({ token: "made-up", new_password: "a long made-up password" }),
+    ).rejects.toMatchObject({ status: 400 });
   });
 });
 

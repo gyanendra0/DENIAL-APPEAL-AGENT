@@ -1,9 +1,9 @@
-"""FastAPI dependencies: settings, the database session, the job runner, the clock, the logged-in
-user and role checks.
+"""FastAPI dependencies: settings, the database session, the job runner, the mail sender, the
+public URL, the clock, the logged-in user and role checks.
 
 Every route takes the `account_id` it queries with from `current_user`, never from the path,
-query or body. The app factory puts `api_settings`, `session_factory` and `job_runner` on
-`app.state`.
+query or body. The app factory puts `api_settings`, `session_factory`, `job_runner`,
+`mail_sender` and `public_url` on `app.state`.
 """
 
 from collections.abc import Callable, Iterator
@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.api.mail import MailSender
 from src.api.tokens import InvalidTokenError, read_token
 from src.config.settings import ApiSettings
 from src.db.models import User, UserRole
@@ -50,6 +51,17 @@ def get_api_settings(request: Request) -> ApiSettings:
 def get_job_runner(request: Request) -> JobRunner:
     runner: JobRunner = request.app.state.job_runner
     return runner
+
+
+def get_mail_sender(request: Request) -> MailSender:
+    sender: MailSender = request.app.state.mail_sender
+    return sender
+
+
+def get_public_url(request: Request) -> str:
+    """The address the browser opens the app at, without a trailing slash."""
+    url: str = request.app.state.public_url
+    return url
 
 
 def get_session_factory(request: Request) -> sessionmaker[Session]:

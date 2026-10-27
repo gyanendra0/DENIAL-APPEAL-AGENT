@@ -123,7 +123,7 @@ def login(
                 else authenticate(session, email=body.email, password=body.password)
             )
             if user is not None:
-                clear_email_failures(session, keys, ids)
+                clear_email_failures(session, keys.email_hash, ids.ip_id)
                 set_login_cookie(
                     response,
                     settings,

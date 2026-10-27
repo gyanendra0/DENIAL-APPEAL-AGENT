@@ -23,7 +23,7 @@ from src.extraction.prompts import ExtractionPrompt
 from src.jobs.run import JobContext, run_upload_job
 from src.llm.gateway import LlmRequest
 from tests.agent.helpers import fixed_model
-from tests.api.conftest import API_SECRET, BASE_URL
+from tests.api.conftest import API_SECRET, BASE_URL, PUBLIC_URL, RecordingSender
 from tests.drafting.helpers import PROMPT, drafting_gateway
 from tests.extraction.helpers import LETTER, PROMPT_VERSION, StubProvider, fields_json, system_text
 from tests.ingest.helpers import write_text_pdf
@@ -129,14 +129,20 @@ def test_an_upload_without_a_file_is_422(api_client: TestClient) -> None:
 
 def test_a_file_over_the_limit_is_413(api_connection: Connection) -> None:
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(API_SECRET), upload_max_bytes=10, _env_file=None
+        auth_token_secret=SecretStr(API_SECRET),
+        app_public_url=PUBLIC_URL,
+        upload_max_bytes=10,
+        _env_file=None,
     )
     factory = sessionmaker(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
     calls: list[tuple[int, int]] = []
     app = create_app(
-        settings, factory, lambda account_id, job_id: calls.append((account_id, job_id))
+        settings,
+        factory,
+        lambda account_id, job_id: calls.append((account_id, job_id)),
+        RecordingSender(),
     )
     with TestClient(app, base_url=BASE_URL) as client:
         _signup(client, "A", "admin@a.org")
@@ -241,9 +247,11 @@ def running_client(api_connection: Connection) -> Iterator[TestClient]:
         )
 
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(API_SECRET), _env_file=None
+        auth_token_secret=SecretStr(API_SECRET), app_public_url=PUBLIC_URL, _env_file=None
     )
-    with TestClient(create_app(settings, factory, run), base_url=BASE_URL) as client:
+    with TestClient(
+        create_app(settings, factory, run, RecordingSender()), base_url=BASE_URL
+    ) as client:
         yield client
 
 

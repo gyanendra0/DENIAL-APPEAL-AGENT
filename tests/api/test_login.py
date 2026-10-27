@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from src.api import login
-from src.api.login import authenticate
+from src.api.login import authenticate, find_user_by_email
 from src.api.signup import create_account_with_admin
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
@@ -40,3 +40,12 @@ def test_known_email_skips_the_dummy_check(
     monkeypatch.setattr(login, "verify_dummy_password", checked.append)
     authenticate(session, email="a@x.org", password=WRONG_PASSWORD)
     assert checked == []
+
+
+def test_the_email_lookup_finds_the_user_in_any_account_or_none(session: Session) -> None:
+    create_account_with_admin(session, account_name="One", email="a@x.org", password=PASSWORD)
+    other = create_account_with_admin(
+        session, account_name="Two", email="b@x.org", password=PASSWORD
+    )
+    assert find_user_by_email(session, "b@x.org") is other
+    assert find_user_by_email(session, "nobody@x.org") is None

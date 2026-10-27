@@ -5,9 +5,10 @@ import { Link, useLocation, useNavigate } from "react-router";
 
 import { checkLogin, focusFirstError } from "../auth/credentialCheck";
 import type { FieldErrors, LoginField } from "../auth/credentialCheck";
+import { VERIFY_EMAIL_PATH, isEmailNotVerified } from "../auth/emailCode";
 import { googleRefusalMessage } from "../auth/googleSignIn";
+import { FORGOT_PASSWORD_PATH, isPasswordSetState } from "../auth/passwordReset";
 import { afterLoginPath } from "../auth/redirect";
-import { FORGOT_PASSWORD_PATH, isPasswordSetState } from "../auth/resetLink";
 import { clearAccountData, useLogin } from "../auth/session";
 import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
@@ -41,6 +42,12 @@ export function LoginScreen() {
       {
         onSuccess: (user) => {
           void navigate(afterLoginPath(location.state, user.user_id), { replace: true });
+        },
+        // The right password but the email is not confirmed: the API has emailed a code.
+        onError: (error) => {
+          if (isEmailNotVerified(error)) {
+            void navigate(VERIFY_EMAIL_PATH);
+          }
         },
       },
     );
@@ -88,7 +95,7 @@ export function LoginScreen() {
         <p className="auth-forgot">
           <Link to={FORGOT_PASSWORD_PATH}>Forgot password?</Link>
         </p>
-        {loginMutation.isError && (
+        {loginMutation.isError && !isEmailNotVerified(loginMutation.error) && (
           <p className="error" role="alert">
             {describeError(loginMutation.error, {
               401: "Email or password is wrong.",

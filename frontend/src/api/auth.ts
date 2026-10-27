@@ -1,5 +1,5 @@
-// The auth calls: sign-up, login, logout, the logged-in user, a password change, a reset and the
-// "Continue with Google" sign-up. The API sets and clears the HttpOnly login cookie itself; these
+// The auth calls: sign-up, the emailed code that confirms it, login, logout, the logged-in user, a
+// password change, a reset and the "Continue with Google" sign-up. The API sets and clears the HttpOnly login cookie itself; these
 // calls never see the token.
 
 import { ApiError, apiRequest, jsonRequest } from "./client";
@@ -20,6 +20,10 @@ export interface LoginInput {
   password: string;
 }
 
+export interface VerifyEmailInput {
+  code: string;
+}
+
 export interface PasswordChangeInput {
   current_password: string;
   new_password: string;
@@ -30,7 +34,8 @@ export interface PasswordResetAskInput {
 }
 
 export interface PasswordResetConfirmInput {
-  token: string;
+  email: string;
+  code: string;
   new_password: string;
 }
 
@@ -38,8 +43,20 @@ export interface GoogleSignupInput {
   account_name: string;
 }
 
+// Answers 201 with the new user but does not log in: the API sets its own signed cookie for the
+// code screen and emails a 6-digit code.
 export function signup(input: SignupInput): Promise<UserResponse> {
   return apiRequest<UserResponse>("/auth/signup", jsonRequest("POST", input));
+}
+
+// The user comes from the API's code-screen cookie, never from the body. A right code logs in.
+export function verifyEmail(input: VerifyEmailInput): Promise<UserResponse> {
+  return apiRequest<UserResponse>("/auth/verify-email", jsonRequest("POST", input));
+}
+
+// Answers 202; the new code makes the older one useless. The body is not read.
+export async function resendCode(): Promise<void> {
+  await apiRequest<unknown>("/auth/verify-email/resend", { method: "POST" });
 }
 
 export function login(input: LoginInput): Promise<UserResponse> {

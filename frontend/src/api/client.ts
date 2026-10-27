@@ -53,6 +53,10 @@ export class ApiError extends Error {
   readonly problems: readonly FieldProblem[];
   // The problems of a refused letter (a draft edit or approval): kinds and positions only.
   readonly letterProblems: readonly LetterProblem[];
+  // The seconds a 429 asks the client to wait (`Retry-After`), or null when it does not say.
+  readonly retryAfter: number | null;
+  // The API's fixed name for a refusal the screen acts on (`EMAIL_NOT_VERIFIED`), or null.
+  readonly code: string | null;
 
   constructor(
     status: number | null,
@@ -60,6 +64,7 @@ export class ApiError extends Error {
     message: string,
     problems: readonly FieldProblem[] = [],
     letterProblems: readonly LetterProblem[] = [],
+    extra: { retryAfter?: number | null; code?: string | null } = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -67,6 +72,8 @@ export class ApiError extends Error {
     this.kind = kind;
     this.problems = problems;
     this.letterProblems = letterProblems;
+    this.retryAfter = extra.retryAfter ?? null;
+    this.code = extra.code ?? null;
   }
 }
 
@@ -122,6 +129,12 @@ function readLetterProblems(problems: unknown): LetterProblem[] {
   });
 }
 
+// `Retry-After` as whole seconds; the API sends only that form, so a date or anything else is null.
+function readRetryAfter(response: Response): number | null {
+  const value = response.headers.get("Retry-After");
+  return value !== null && /^[0-9]+$/.test(value) ? Number(value) : null;
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -146,7 +159,11 @@ async function toApiError(response: Response): Promise<ApiError> {
     return new ApiError(response.status, kind, INVALID_REQUEST, readProblems(detail));
   }
   const message = typeof detail === "string" ? detail : `the API answered ${response.status}`;
-  return new ApiError(response.status, kind, message);
+  const code = isRecord(body) && typeof body.code === "string" ? body.code : null;
+  return new ApiError(response.status, kind, message, [], [], {
+    retryAfter: readRetryAfter(response),
+    code,
+  });
 }
 
 // The options of a request with a JSON body.

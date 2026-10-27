@@ -219,6 +219,53 @@ describe("apiRequest", () => {
     expect(error.letterProblems).toEqual([]);
   });
 
+  it("reads the seconds to wait from a 429's Retry-After", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ detail: "wait" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "42" },
+      }),
+    );
+
+    const error = await caught(apiRequest("/auth/verify-email/resend"));
+
+    expect(error.kind).toBe("too_many");
+    expect(error.retryAfter).toBe(42);
+  });
+
+  it("gives no wait for a missing or non-numeric Retry-After", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ detail: "wait" }), {
+        status: 429,
+        headers: { "Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT" },
+      }),
+    );
+    expect((await caught(apiRequest("/auth/login"))).retryAfter).toBeNull();
+
+    stubFetch(jsonResponse(429, { detail: "wait" }));
+    expect((await caught(apiRequest("/auth/login"))).retryAfter).toBeNull();
+  });
+
+  it("keeps the API's refusal code beside its sentence", async () => {
+    stubFetch(
+      jsonResponse(403, { detail: "confirm your email first", code: "EMAIL_NOT_VERIFIED" }),
+    );
+
+    const error = await caught(apiRequest("/auth/login"));
+
+    expect(error.kind).toBe("forbidden");
+    expect(error.message).toBe("confirm your email first");
+    expect(error.code).toBe("EMAIL_NOT_VERIFIED");
+  });
+
+  it("gives no refusal code when the body has none or it is not text", async () => {
+    stubFetch(jsonResponse(403, { detail: "no", code: 7 }));
+    expect((await caught(apiRequest("/auth/login"))).code).toBeNull();
+
+    stubFetch(jsonResponse(403, { detail: "no" }));
+    expect((await caught(apiRequest("/auth/login"))).code).toBeNull();
+  });
+
   it("gives a plain message when the error body is not JSON", async () => {
     stubFetch(new Response("<html>bad gateway</html>", { status: 502 }));
 

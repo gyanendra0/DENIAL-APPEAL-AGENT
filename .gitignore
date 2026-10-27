@@ -60,7 +60,7 @@ logs/
 tmp/
 temp/
 # Development email outbox (password reset links are password-equivalent)
-var/
+/var/
 chat.json
 
 # ---------- Working docs (task sheets, notes — never pushed) ----------

@@ -4138,7 +4138,7 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `MAIL_BACKEND` | no (default `outbox`) | `outbox` (write `.eml` files; only with `AUTH_COOKIE_SECURE=false`) or `smtp` (send) |
 | `MAIL_OUTBOX_DIR` | no (default `var/outbox`) | Where the outbox writes |
 | `MAIL_SMTP_HOST` | with `smtp` | The provider's SMTP server |
-| `MAIL_SMTP_PORT` | no (default 587) | The SMTP port (STARTTLS), 1 to 65535 |
+| `MAIL_SMTP_PORT` | no (default 587) | The SMTP port (STARTTLS), 1 to 65535; 465 (TLS from the first byte) is not supported |
 | `MAIL_SMTP_USERNAME` | with `smtp` | The SMTP login |
 | `MAIL_SMTP_PASSWORD` | with `smtp` | The SMTP password or key; a secret, hidden in error messages |
 | `MAIL_FROM` | with `smtp` | The sender address, verified at the provider; also written into outbox files when set |

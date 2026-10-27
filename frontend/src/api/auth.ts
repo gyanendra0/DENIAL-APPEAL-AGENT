@@ -1,8 +1,13 @@
-// The auth calls: sign-up, login, logout, the logged-in user, a password change and a reset.
-// The API sets and clears the HttpOnly login cookie itself; these calls never see the token.
+// The auth calls: sign-up, login, logout, the logged-in user, a password change, a reset and the
+// "Continue with Google" sign-up. The API sets and clears the HttpOnly login cookie itself; these
+// calls never see the token.
 
 import { ApiError, apiRequest, jsonRequest } from "./client";
-import type { UserResponse } from "./types";
+import type { AuthOptions, GoogleSignupInfo, UserResponse } from "./types";
+
+// "Continue with Google" is a link to this API path, not a `fetch`: the browser itself goes on to
+// Google and comes back.
+export const GOOGLE_START_PATH = "/auth/google/start";
 
 export interface SignupInput {
   account_name: string;
@@ -27,6 +32,10 @@ export interface PasswordResetAskInput {
 export interface PasswordResetConfirmInput {
   token: string;
   new_password: string;
+}
+
+export interface GoogleSignupInput {
+  account_name: string;
 }
 
 export function signup(input: SignupInput): Promise<UserResponse> {
@@ -55,6 +64,28 @@ export async function askPasswordReset(input: PasswordResetAskInput): Promise<vo
 // Answers 204 and no cookie: the user logs in with the new password. Every other session ends.
 export async function confirmPasswordReset(input: PasswordResetConfirmInput): Promise<void> {
   await apiRequest<undefined>("/auth/password-reset/confirm", jsonRequest("POST", input));
+}
+
+export function fetchAuthOptions(): Promise<AuthOptions> {
+  return apiRequest<AuthOptions>("/auth/options");
+}
+
+// The email of the pending Google sign-up, or null when there is none or it has expired (a 401).
+// The API reads it from its own signed cookie, so the email never travels in a URL.
+export async function fetchGoogleSignup(): Promise<GoogleSignupInfo | null> {
+  try {
+    return await apiRequest<GoogleSignupInfo>("/auth/google/signup");
+  } catch (error) {
+    if (error instanceof ApiError && error.kind === "unauthorized") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+// Creates the account with this name, its admin (no password) and the Google link, and logs in.
+export function googleSignup(input: GoogleSignupInput): Promise<UserResponse> {
+  return apiRequest<UserResponse>("/auth/google/signup", jsonRequest("POST", input));
 }
 
 // The logged-in user, or null when there is no session (a 401). Any other error is raised.

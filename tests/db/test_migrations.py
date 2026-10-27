@@ -28,6 +28,9 @@ from src.db.migrations.versions import (
     rev_0019_password_changed_and_token_version as migration_0019,
 )
 from src.db.migrations.versions import rev_0020_password_reset_tokens as migration_0020
+from src.db.migrations.versions import (
+    rev_0021_user_identities_and_google_linked as migration_0021,
+)
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -44,6 +47,7 @@ from src.db.models import (
     EndState,
     EvidenceSource,
     ExchangeType,
+    IdentityProvider,
     JobFailure,
     JobStatus,
     LlmProvider,
@@ -58,6 +62,7 @@ UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jo
 # Added by 0017, children before parents.
 REVIEW_TABLES = ("audit_events", "draft_revisions")
 RESET_TABLE = "password_reset_tokens"
+IDENTITY_TABLE = "user_identities"
 BUSINESS_TABLES = {
     "accounts",
     "users",
@@ -66,6 +71,7 @@ BUSINESS_TABLES = {
     *UPLOAD_TABLES,
     *REVIEW_TABLES,
     RESET_TABLE,
+    IDENTITY_TABLE,
 }
 REFERENCE_TABLES = {
     "issuer_denial_stats",
@@ -1006,15 +1012,59 @@ def test_password_reset_tokens_has_its_keys_the_cascading_user_link_indexes_and_
 
 
 def test_migration_0020_lists_the_same_audit_actions_and_check_rules_as_the_models() -> None:
-    assert tuple(member.value for member in AuditAction) == (
+    # 0021 added one audit action and replaced the job rule; its test compares the new ones.
+    assert (
         *migration_0020.AUDIT_ACTION_BEFORE,
         migration_0020.NEW_AUDIT_ACTION,
-    )
-    assert _model_checks(REVIEW_TABLES)[migration_0020.JOB_CHECK_NAME] == (
-        migration_0020.JOB_MATCHES_ACTION
-    )
+    ) == migration_0021.AUDIT_ACTION_BEFORE
+    assert migration_0021.JOB_MATCHES_ACTION_BEFORE == migration_0020.JOB_MATCHES_ACTION
     assert _model_checks((RESET_TABLE,)) == {
         "ck_password_reset_tokens_token_hash_format": migration_0020.TOKEN_HASH_FORMAT
+    }
+
+
+def test_user_identities_has_its_keys_the_cascading_user_link_index_and_checks(
+    engine: Engine,
+) -> None:
+    # Without the indexes Postgres makes for the unique keys; those keys are checked below.
+    indexes = {
+        i["name"]: i["column_names"]
+        for i in inspect(engine).get_indexes(IDENTITY_TABLE)
+        if "duplicates_constraint" not in i
+    }
+    unique, foreign, checks = _keys_links_and_checks(engine, IDENTITY_TABLE)
+
+    assert indexes == {"ix_user_identities_account_id": ["account_id"]}
+    assert unique == {
+        "uq_user_identities_provider_subject": ["provider", "subject"],
+        "uq_user_identities_account_id_user_id_provider": ["account_id", "user_id", "provider"],
+    }
+    assert foreign == {
+        "fk_user_identities_user": (
+            ["account_id", "user_id"],
+            "users",
+            ["account_id", "id"],
+            "CASCADE",
+        ),
+    }
+    assert checks == {
+        "ck_user_identities_subject_not_empty",
+        "ck_user_identities_email_at_link_normalized",
+    }
+
+
+def test_migration_0021_lists_the_same_values_and_check_rules_as_the_models() -> None:
+    assert tuple(member.value for member in AuditAction) == (
+        *migration_0021.AUDIT_ACTION_BEFORE,
+        migration_0021.NEW_AUDIT_ACTION,
+    )
+    assert tuple(member.value for member in IdentityProvider) == migration_0021.IDENTITY_PROVIDER
+    assert _model_checks(REVIEW_TABLES)[migration_0021.JOB_CHECK_NAME] == (
+        migration_0021.JOB_MATCHES_ACTION
+    )
+    assert _model_checks((IDENTITY_TABLE,)) == {
+        "ck_user_identities_subject_not_empty": migration_0021.SUBJECT_NOT_EMPTY,
+        "ck_user_identities_email_at_link_normalized": migration_0021.EMAIL_AT_LINK_NORMALIZED,
     }
 
 
@@ -1131,6 +1181,76 @@ def _store_audit_events_with_sql(
                 ),
                 {"a": account_id, "u": user_id, "action": action},
             )
+
+
+def _users_password_hash_nullable(engine: Engine) -> bool:
+    columns = {c["name"]: c for c in inspect(engine).get_columns("users")}
+    return bool(columns["password_hash"]["nullable"])
+
+
+def test_downgrade_to_0020_removes_the_identity_table_google_linked_and_its_rows(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("password_reset", "google_linked"))
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO user_identities"
+                    " (account_id, user_id, provider, subject, email_at_link)"
+                    " SELECT account_id, id, 'google', 's-1', email FROM users"
+                )
+            )
+        command.downgrade(alembic_config, "0020")
+
+        assert IDENTITY_TABLE not in set(inspect(engine).get_table_names())
+        assert _type_names(engine, migration_0021.NEW_ENUMS) == set()
+        assert not _users_password_hash_nullable(engine)
+        assert _audit_action_values(engine) == list(migration_0021.AUDIT_ACTION_BEFORE)
+        with engine.connect() as conn:
+            actions = list(conn.scalars(text("SELECT action::text FROM audit_events")))
+            rule = conn.scalar(
+                text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
+                {"name": migration_0021.JOB_CHECK_NAME},
+            )
+        assert actions == ["password_reset"]
+        assert "google_linked" not in rule
+        assert "password_reset" in rule
+        assert _type_names(engine, (migration_0021.OLD_TYPE_NAME,)) == set()
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+    assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    assert IDENTITY_TABLE in set(inspect(engine).get_table_names())
+    assert _users_password_hash_nullable(engine)
+
+
+def test_downgrade_to_0020_refuses_while_a_user_has_no_password_and_changes_nothing(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        with engine.begin() as conn:
+            account_id = conn.scalar(text("INSERT INTO accounts (name) VALUES ('g') RETURNING id"))
+            conn.execute(
+                text(
+                    "INSERT INTO users (account_id, email, role)"
+                    " VALUES (:a, 'g@example.com', 'admin')"
+                ),
+                {"a": account_id},
+            )
+
+        with pytest.raises(RuntimeError, match="1 user\\(s\\) have no password"):
+            command.downgrade(alembic_config, "0020")
+
+        assert IDENTITY_TABLE in set(inspect(engine).get_table_names())
+        assert _users_password_hash_nullable(engine)
+        assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
 
 
 def test_downgrade_to_0019_removes_the_reset_table_password_reset_and_its_rows(

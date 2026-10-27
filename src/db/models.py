@@ -1,4 +1,5 @@
-"""Core tables, uploads, jobs, draft review, audit and password reset (business), reference
+"""Core tables, uploads, jobs, draft review, audit, password reset and outside logins
+(business), reference
 tables, and the operational tables `llm_calls` and `login_failures`."""
 
 from datetime import date, datetime
@@ -154,6 +155,13 @@ class AuditAction(StrEnum):
     DRAFT_REJECTED = "draft_rejected"
     PASSWORD_CHANGED = "password_changed"  # noqa: S105  (an audit action, not a password)
     PASSWORD_RESET = "password_reset"  # noqa: S105  (an audit action, not a password)
+    GOOGLE_LINKED = "google_linked"
+
+
+class IdentityProvider(StrEnum):
+    """Who vouches for a login other than the password."""
+
+    GOOGLE = "google"
 
 
 class LoginKeyKind(StrEnum):
@@ -193,7 +201,8 @@ class User(AccountScopedMixin, TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL: no password set yet (a user made through Google); login refuses every password.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", values_callable=_values),
         nullable=False,
@@ -1188,7 +1197,8 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
 
     Business table, written in the same transaction as the change; the code only inserts.
     `detail` holds fixed keys only (a version number, a reject reason), never document text.
-    `job_id` is empty exactly for `account_created`, `password_changed` and `password_reset`.
+    `job_id` is empty exactly for `account_created`, `password_changed`, `password_reset` and
+    `google_linked`.
     The links to the user and the job carry `account_id` and have no cascade, so an audited
     job cannot be deleted on its own; deleting the account removes everything.
     """
@@ -1202,7 +1212,8 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
             ["account_id", "job_id"], ["jobs.account_id", "jobs.id"], name="fk_audit_events_job"
         ),
         CheckConstraint(
-            "(action::text IN ('account_created', 'password_changed', 'password_reset'))"
+            "(action::text IN"
+            " ('account_created', 'password_changed', 'password_reset', 'google_linked'))"
             " = (job_id IS NULL)",
             name="ck_audit_events_job_matches_action",
         ),
@@ -1255,3 +1266,45 @@ class PasswordResetToken(AccountScopedMixin, TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserIdentity(AccountScopedMixin, TimestampMixin, Base):
+    """One outside login (today: a Google account) linked to a user.
+
+    Business table. `subject` is the provider's permanent id for the account (Google's `sub`);
+    `email_at_link` is the verified email it had when linked, kept for the audit trail. One
+    provider account opens at most one user in the whole system, and a user has at most one
+    identity per provider. No provider token is stored. The link to the user carries
+    `account_id` and cascades: an identity means nothing once its user is gone.
+    """
+
+    __tablename__ = "user_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="uq_user_identities_provider_subject"),
+        UniqueConstraint(
+            "account_id",
+            "user_id",
+            "provider",
+            name="uq_user_identities_account_id_user_id_provider",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["users.account_id", "users.id"],
+            name="fk_user_identities_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("subject <> ''", name="ck_user_identities_subject_not_empty"),
+        # The same rule as `users.email`.
+        CheckConstraint(
+            "email_at_link = lower(email_at_link) AND email_at_link !~ '^\\s|\\s$'",
+            name="ck_user_identities_email_at_link_normalized",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[IdentityProvider] = mapped_column(
+        Enum(IdentityProvider, name="identity_provider", values_callable=_values), nullable=False
+    )
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    email_at_link: Mapped[str] = mapped_column(String(320), nullable=False)

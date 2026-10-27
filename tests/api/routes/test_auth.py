@@ -148,6 +148,7 @@ def test_no_response_carries_the_password_or_the_hash(
         api_client.get("/me"),
     ]
     password_hash = db_session.scalars(select(User.password_hash)).one()
+    assert password_hash is not None
     for response in responses:
         assert PASSWORD not in response.text
         assert password_hash not in response.text

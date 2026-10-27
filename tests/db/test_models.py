@@ -38,6 +38,7 @@ from src.db.models import (
     EvidenceSource,
     ExchangeType,
     GeneratedDocument,
+    IdentityProvider,
     IssuerDenialStats,
     Job,
     JobFailure,
@@ -57,6 +58,7 @@ from src.db.models import (
     UploadExtraction,
     UploadFileType,
     User,
+    UserIdentity,
     UserRole,
 )
 from src.evaluation.review_rubric import RejectReason
@@ -190,11 +192,16 @@ def test_rejects_a_negative_token_version(session: Session) -> None:
         session.flush()
 
 
-def test_rejects_a_user_without_a_password_hash(session: Session) -> None:
-    session.add(User(account_id=_account(session, "a").id, email="a@example.com"))
+def test_stores_a_user_without_a_password_hash(session: Session) -> None:
+    # A user made through Google has no password until they set one.
+    user = User(account_id=_account(session, "a").id, email="a@example.com")
+    session.add(user)
+    session.flush()
+    session.expire_all()
 
-    with pytest.raises(IntegrityError):
-        session.flush()
+    stored = session.get(User, user.id)
+    assert stored is not None
+    assert stored.password_hash is None
 
 
 @pytest.mark.parametrize(
@@ -2568,3 +2575,117 @@ def test_deleting_a_user_removes_their_password_reset_tokens_only(session: Sessi
     session.expire_all()
 
     assert [row.id for row in session.scalars(select(PasswordResetToken))] == [kept_token.id]
+
+
+# A made-up Google subject; real ones are digit strings of about 21 characters.
+GOOGLE_SUBJECT = "100000000000000000001"
+
+
+def _identity(session: Session, user: User, **overrides: Any) -> UserIdentity:
+    fields: dict[str, Any] = {
+        "account_id": user.account_id,
+        "user_id": user.id,
+        "provider": IdentityProvider.GOOGLE,
+        "subject": GOOGLE_SUBJECT,
+        "email_at_link": user.email,
+    }
+    identity = UserIdentity(**(fields | overrides))
+    session.add(identity)
+    session.flush()
+    return identity
+
+
+def test_stores_a_google_identity_with_its_user_subject_email_and_timestamps(
+    session: Session,
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+    identity = _identity(session, user)
+    session.expire_all()
+
+    stored = session.get(UserIdentity, identity.id)
+    assert stored is not None
+    assert (stored.account_id, stored.user_id) == (user.account_id, user.id)
+    assert stored.provider is IdentityProvider.GOOGLE
+    assert (stored.subject, stored.email_at_link) == (GOOGLE_SUBJECT, "ada@example.test")
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_rejects_the_same_google_subject_twice_even_in_another_account(session: Session) -> None:
+    _identity(session, _user_of(session, _account(session, "a")))
+    other = _user_of(session, _account(session, "other"), "bob@example.test")
+
+    with pytest.raises(IntegrityError, match="uq_user_identities_provider_subject"):
+        _identity(session, other)
+
+
+def test_rejects_a_second_google_identity_for_one_user(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    _identity(session, user)
+
+    with pytest.raises(IntegrityError, match="uq_user_identities_account_id_user_id_provider"):
+        _identity(session, user, subject="100000000000000000002")
+
+
+def test_rejects_an_identity_naming_a_user_of_another_account(session: Session) -> None:
+    other = _user_of(session, _account(session, "other"), "bob@example.test")
+    account = _account(session, "a")
+
+    with pytest.raises(IntegrityError, match="fk_user_identities_user"):
+        _identity(session, other, account_id=account.id)
+
+
+def test_rejects_an_empty_google_subject(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_user_identities_subject_not_empty"):
+        _identity(session, user, subject="")
+
+
+@pytest.mark.parametrize("email", ["Ada@example.test", " ada@example.test", "ada@example.test\n"])
+def test_rejects_an_identity_email_that_is_not_trimmed_and_lowercased(
+    session: Session, email: str
+) -> None:
+    user = _user_of(session, _account(session, "a"))
+
+    with pytest.raises(IntegrityError, match="ck_user_identities_email_at_link_normalized"):
+        _identity(session, user, email_at_link=email)
+
+
+def test_rejects_an_unknown_identity_provider(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    insert = text(
+        "INSERT INTO user_identities (account_id, user_id, provider, subject, email_at_link)"
+        " VALUES (:a, :u, 'github', 's', 'ada@example.test')"
+    )
+
+    with pytest.raises(DataError):
+        session.execute(insert, {"a": user.account_id, "u": user.id})
+
+
+def test_deleting_a_user_removes_their_identity_only(session: Session) -> None:
+    account = _account(session, "a")
+    user = _user_of(session, account)
+    kept = _user_of(session, account, "bob@example.test")
+    _identity(session, user)
+    kept_identity = _identity(session, kept, subject="100000000000000000002")
+
+    session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
+    session.expire_all()
+
+    assert [row.id for row in session.scalars(select(UserIdentity))] == [kept_identity.id]
+
+
+def test_stores_a_google_linked_audit_event_without_a_job(session: Session) -> None:
+    user = _user_of(session, _account(session, "a"))
+    event = AuditEvent(
+        account_id=user.account_id, user_id=user.id, action=AuditAction.GOOGLE_LINKED
+    )
+    session.add(event)
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(AuditEvent, event.id)
+    assert stored is not None
+    assert stored.action is AuditAction.GOOGLE_LINKED
+    assert stored.job_id is None

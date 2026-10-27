@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "../../src/api/client";
-import { describeError } from "../../src/screens/errorMessage";
+import { asSentence, describeError } from "../../src/screens/errorMessage";
 
 describe("describeError", () => {
   it.each([
@@ -51,5 +51,11 @@ describe("describeError", () => {
     expect(describeError(new Error("boom"))).toBe(
       "Something went wrong on the server. Try again later.",
     );
+  });
+});
+
+describe("asSentence", () => {
+  it("starts the API's sentence with a capital and ends it with a full stop", () => {
+    expect(asSentence("the email is taken")).toBe("The email is taken.");
   });
 });

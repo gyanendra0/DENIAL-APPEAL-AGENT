@@ -43,6 +43,9 @@ router = APIRouter(tags=["users"])
 
 # A fixed sentence: the answer never repeats what was typed.
 WRONG_CURRENT_PASSWORD = "the current password is wrong"  # noqa: S105  (a message, not a password)
+NO_PASSWORD_YET = (
+    "this login has no password yet; use Forgot password to set one"  # noqa: S105  (a message)
+)
 
 LoggedIn = Annotated[CurrentUser, Depends(current_user)]
 Settings = Annotated[ApiSettings, Depends(get_api_settings)]
@@ -74,7 +77,8 @@ def change_password(
 
     A wrong current password is a 400 and counts toward the login limit of the user's email and
     the client IP, so a stolen session cannot guess the password faster than login could; over
-    the limit, 429 without checking. The answer carries a new login cookie, so this session stays
+    the limit, 429 without checking. A user with no password yet gets a 400 that says so,
+    without counting. The answer carries a new login cookie, so this session stays
     logged in while every older token stops working; every reset link of the user stops working
     too. Takes tens of milliseconds on purpose (two password hashes).
     """
@@ -88,6 +92,7 @@ def change_password(
         )
     retry_after: int | None = None
     gone = False
+    no_password = False
     with session_scope(factory) as session:
         if over_limit(session, keys, now=now, settings=settings):
             release_failure(session, ids)
@@ -100,6 +105,10 @@ def change_password(
             ).one_or_none()
             if row is None:
                 gone = True
+            elif row.password_hash is None:
+                # Nothing was guessed, so the try does not count.
+                no_password = True
+                release_failure(session, ids)
             elif len(body.current_password) <= MAX_LOGIN_PASSWORD_CHARACTERS and verify_password(
                 row.password_hash, body.current_password
             ):
@@ -130,6 +139,9 @@ def change_password(
     if gone:
         # Deleted between the login check and this read.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN)
+    if no_password:
+        logger.info("password change refused: no password set yet")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, NO_PASSWORD_YET)
     # The failure rows were committed before the password check, so they stay.
     logger.info("password change failed: wrong current password")
     raise HTTPException(status.HTTP_400_BAD_REQUEST, WRONG_CURRENT_PASSWORD)

@@ -105,6 +105,22 @@ Settings come from a `.env` file; `.env.example` lists every key.
    ```
 5. Open `http://127.0.0.1:5173/app/` and sign up.
 
+"Continue with Google" is optional and off until both `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` are set. To turn it on (free, no model call):
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create or pick a project.
+2. Under "Google Auth Platform" (older consoles: "OAuth consent screen"), set the app name and
+   a support email, choose the audience **External**, keep only the scopes `openid` and
+   `email`, and add your own Google address as a test user. The app can stay in "Testing".
+3. Under "Clients" (older consoles: "Credentials"), create an OAuth client of type **Web
+   application** with the authorized redirect URI `APP_PUBLIC_URL` followed by
+   `/auth/google/callback`, here `http://127.0.0.1:5173/auth/google/callback`. It must match
+   exactly, or Google refuses the sign-in.
+4. Put the client ID and secret in `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+   (never in a commit, an issue or a chat), and start `uvicorn` again. The login and sign-up
+   screens then show the button (architecture
+   [3.18](docs/03-architecture.md#318-api-and-auth), "Signing in with Google").
+
 Uploading a letter calls a model and spends money (within the monthly cap in the settings).
 
 Checks: `ruff check . && black --check . && mypy && pytest` for the backend (database tests

@@ -18,6 +18,12 @@ const MESSAGE_BY_KIND: Readonly<Record<ApiError["kind"], string>> = {
   network: "The API could not be reached. Check your connection and try again.",
 };
 
+// One of the API's fixed sentences, as the screen shows it: "the email is taken" becomes
+// "The email is taken.". Only for answers whose text the API wrote, never what the user typed.
+export function asSentence(message: string): string {
+  return `${message.charAt(0).toUpperCase()}${message.slice(1)}.`;
+}
+
 // The name of the field a 422 problem points at: the last text part of its `loc`.
 function fieldName(problem: FieldProblem): string | null {
   const last = problem.loc.at(-1);
@@ -38,7 +44,7 @@ export function describeError(error: unknown, messages: Partial<Record<number, s
       return `Check these fields: ${names.join(", ")}.`;
     }
     if (error.message !== INVALID_REQUEST) {
-      return `${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`;
+      return asSentence(error.message);
     }
     return MESSAGE_BY_KIND.invalid;
   }

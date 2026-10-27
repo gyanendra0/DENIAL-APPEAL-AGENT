@@ -3802,7 +3802,7 @@ About the rubric:
 
 The API is the HTTP surface the dashboard will call. This first part has sign-up, login,
 logout, the logged-in user's own record and their password change, the reset of a forgotten
-password by email, one admin route and a health check. The upload and
+password by email, "Continue with Google", one admin route and a health check. The upload and
 job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
 3.20.
 
@@ -3818,7 +3818,8 @@ Three things hold for every route:
 
 No route calls a model and no route spends money while the request is answered. The one
 place money is spent is the background job an upload queues, after its answer is sent
-(3.19). The password reset email goes out through the mail provider's free tier ($0).
+(3.19). The password reset email goes out through the mail provider's free tier ($0), and
+Google sign-in is free ($0).
 
 ### Where the code is
 
@@ -3836,12 +3837,16 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/api/reset_tokens.py` | The reset token: `issue_reset_token`, `read_reset_token`, `ResetClaims`, `InvalidResetTokenError`, `hash_token_id`; the rows: `add_reset_token`, `count_recent_reset_tokens`, `delete_stale_reset_tokens`, `delete_reset_tokens`, `usable_reset_token` |
 | `src/api/mail.py` | `MailMessage`, the `MailSender` protocol, `SmtpSender`, `OutboxSender`, `reset_email` (the text), `send_quietly`, `build_mail_sender` |
 | `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
-| `src/api/routes/` | `auth.py`, `password_reset.py`, `me.py`, `users.py`, `health.py`: one router each |
+| `src/api/google_oidc.py` | Google's side of the sign-in: `GoogleOidc` (`authorization_url`, `swap_code`, `verify_id_token`; Google's public keys are fetched once and again only for an unknown key id), `GoogleIdentity`, `GoogleSignInError`, `code_challenge` (PKCE S256) |
+| `src/api/google_cookies.py` | The two short-lived signed cookies `google_flow` and `google_signup`: `new_flow`, `GoogleFlow`, `PendingSignup`, `issue_flow_cookie`, `read_flow_cookie`, `issue_signup_cookie`, `read_signup_cookie`, `InvalidGoogleCookieError`; `COOKIE_TTL` (10 minutes) |
+| `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_account`, `GoogleRefusal` (the six refusal codes), `GoogleRefusedError` |
+| `src/api/routes/` | `auth.py`, `password_reset.py`, `google.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
 | `src/db/migrations/versions/rev_0018_login_failures.py` | Migration 0018: the operational table `login_failures` with its two indexes and the type `login_key_kind`; the downgrade drops them |
 | `src/db/migrations/versions/rev_0019_password_changed_and_token_version.py` | Migration 0019: `users.token_version` (default 0, never below 0) and the audit action `password_changed` (no job, 3.20); the downgrade deletes that action's events, rebuilds the type without it and drops the column |
 | `src/db/migrations/versions/rev_0020_password_reset_tokens.py` | Migration 0020: the business table `password_reset_tokens` and the audit action `password_reset` (no job, 3.20); the downgrade drops the table, deletes that action's events, rebuilds the type without it and restores 0019's check |
+| `src/db/migrations/versions/rev_0021_user_identities_and_google_linked.py` | Migration 0021: the business table `user_identities`, the type `identity_provider` (`google`), the audit action `google_linked` (no job, 3.20) and `users.password_hash` allowed empty; the downgrade refuses while any user has no password (it names the count), and otherwise drops the table and the type, deletes that action's events, rebuilds the audit type without it, restores 0020's check and makes the hash required again |
 
 ### The routes
 
@@ -3854,6 +3859,11 @@ place money is spent is the background job an upload queues, after its answer is
 | `POST /me/password` | a logged-in user of any role | `204` with a new login cookie (every other session ends); `400` "the current password is wrong"; `429` with `Retry-After` while the user's email or the client IP has too many recent failures; `401` when not logged in; `422` for a body that does not fit (a new password outside 12 to 128 characters, say) |
 | `POST /auth/password-reset` | anyone | `202` with the same body whether the email has an account, has none or already got its links this hour; the email goes out after the answer; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
 | `POST /auth/password-reset/confirm` | anyone with a reset link | `204` (no login cookie; every session of the user ends); `400` "the reset link is not valid or has expired" for every token problem; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
+| `GET /auth/options` | anyone | `200` with `{"google": true}` or `{"google": false}`: whether "Continue with Google" is on |
+| `GET /auth/google/start` | anyone, while Google is on | `303` to Google, with the `google_flow` cookie; `404` while Google is off (as are the three routes below) |
+| `GET /auth/google/callback` | the browser, sent back by Google | always a `303`: to `/app/worklist` with the login cookie, to `/app/google/name-account` with the `google_signup` cookie, or to `/app/login?google=<code>` when refused (see "Signing in with Google") |
+| `GET /auth/google/signup` | a browser with the `google_signup` cookie | `200` with the verified Google email the new account will use; `401` "the Google sign-up has expired" without a usable cookie |
+| `POST /auth/google/signup` | a browser with the `google_signup` cookie | `201` with the new user and the login cookie; `409` when the account name or the email is taken or the Google account is linked to another login; `401` as above; `422` for a body that does not fit |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
 | `GET /health` | anyone | `200` with `{"status": "ok"}`; it touches no database |
 
@@ -3899,9 +3909,12 @@ to a `viewer`.
    `users` without an `account_id` filter: before login the account is not known. It is safe
    because an email belongs to exactly one account (`uq_users_email`) and nothing is
    returned unless the password matches. The password reset request uses the same lookup
-   and returns nothing at all (see "Resetting a forgotten password").
+   and returns nothing at all (see "Resetting a forgotten password"), and Google sign-in uses
+   it with an email Google has verified (see "Signing in with Google").
 5. For an unknown email the password is still checked against a fixed dummy hash, so that
    case takes about as long as a wrong password and the time does not tell which emails exist.
+   A user with no password yet (signed up with Google) is checked the same way: no password
+   opens them, and the answer is the same `401`.
 6. A match deletes the failures of the email's key and the try's own IP row (earlier IP
    failures stay) and sets the login cookie. Anything else keeps the rows written in step 2
    and is `401` with the message "email or password is wrong". An unknown email is counted the same
@@ -3934,7 +3947,10 @@ from the login, never from the body (`extra="forbid"` refuses any other field).
    stores the new hash, raises `users.token_version` by one, deletes the failures of the
    email's key and the try's own IP row (as a good login does), deletes the user's password
    reset tokens (so an emailed link no longer works), writes a `password_changed` audit
-   event (3.20) and sets a new login cookie carrying the new version.
+   event (3.20) and sets a new login cookie carrying the new version. A user with no password
+   yet (signed up with Google) gets `400` "this login has no password yet; use Forgot password
+   to set one"; the try's rows are deleted, so it does not count as a failure. A password
+   reset is how such a user sets a first password.
 6. Every token issued before the change carries the old version, so `current_user` refuses
    it from the next request on: every other session ends. This browser keeps working with the
    new cookie.
@@ -4016,6 +4032,79 @@ characters), `expires_at` and the timestamps. It links to the user on (`account_
 `user_id`) with `ON DELETE CASCADE`. An index on (`account_id`, `user_id`, `created_at`)
 serves the hourly cap. Used rows are deleted at use and stale ones at the user's next request,
 so there is no cleanup job.
+
+### Signing in with Google, step by step
+
+"Continue with Google" uses OpenID Connect's code flow, written by hand on `PyJWT` and `httpx`
+(no OAuth library). It is on only when both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are
+set; `GET /auth/options` tells the screens, and the four Google routes answer `404` while it
+is off. No model is called and no Google token is stored.
+
+1. **Start.** The button is a plain link to `GET /auth/google/start` (a full page load, not a
+   `fetch`). The route makes a random `state`, `nonce` and PKCE verifier, keeps them in the
+   `google_flow` cookie (below) and answers `303` to Google's sign-in page with the client ID,
+   `redirect_uri` (`APP_PUBLIC_URL` + `/auth/google/callback`, never built from the request's
+   `Host`), `scope=openid email`, the state, the nonce, the S256 code challenge and
+   `prompt=select_account`.
+2. **Google.** The user picks a Google account. Google sends the browser back to
+   `/auth/google/callback?code=...&state=...`, or with `?error=...` when the user cancels.
+3. **The flow cookie.** No `google_flow` cookie, or one that is damaged or over 10 minutes old:
+   refused (`expired`). The `state` must equal the cookie's (compared in constant time), and a
+   `code` must be there: otherwise refused (`failed`). Each value may be at most 2,048
+   characters. Whatever happens next, the answer deletes `google_flow`: it works once.
+4. **The ID token.** The code and the verifier are swapped at `GOOGLE_TOKEN_URL` for an ID
+   token (one call, at most 10 seconds). The token must be RS256, signed by one of Google's
+   public keys (`GOOGLE_JWKS_URL`, fetched once and again only for an unknown key id), with
+   `iss` in `GOOGLE_ISSUERS`, `aud` equal to the client ID, `exp` after now and `nonce` equal
+   to the cookie's. Any failure, at Google or in a check: refused (`failed`). The email is
+   trimmed and lowercased.
+5. **The user.** An email Google has not verified is refused (`not_verified`). The user is
+   found with `find_user_by_email` (the same lookup as login, 6.4); their Google identity is
+   then read with the user's `account_id`.
+   - Already linked to this Google account (same `sub`): logged in.
+   - Linked to a different Google account: refused (`use_password`).
+   - Not linked yet: linked only when Google vouches for the email today, that is a Gmail
+     address or a Google Workspace account (`hd` claim) (`may_link`); a verified other
+     address on a plain Google account might have been made by someone who controlled that
+     address once, so it is refused (`use_password`). A link writes a `user_identities` row
+     and a `google_linked` audit event (3.20) in the same transaction. A Google account
+     already linked to another user is refused (`linked_elsewhere`) by the unique key, not by
+     a search.
+6. **Logged in.** The login cookie is set (with the user's `token_version`, as at login) and
+   the answer is `303` to `/app/worklist`. The login limit is not used: Google checked the
+   person.
+7. **No user with that email.** Only an email Google vouches for (`may_link`, as in 5) may
+   start a new account; any other is refused (`use_signup`), because an account made by
+   whoever once controlled the address would hold it before its owner signs up, and its
+   Google login would survive the owner's password reset. Otherwise the answer is `303` to
+   `/app/google/name-account` with the `google_signup` cookie, which holds Google's `sub` and
+   the verified email. That screen reads
+   the email (`GET /auth/google/signup`) and sends only the account name
+   (`POST /auth/google/signup`): the email and the Google account come from the cookie, never
+   from the body. In one savepoint the route creates the account, its `admin` user with **no
+   password**, and the identity, then writes `account_created`, deletes `google_signup` and
+   sets the login cookie. A taken name or email, or a Google account linked meanwhile to
+   another user, is `409` and leaves nothing behind.
+
+Every refusal is a `303` to `/app/login?google=<code>`, one of `failed`, `not_verified`,
+`use_password`, `use_signup`, `linked_elsewhere`, `expired`; nothing is written. The login screen shows a
+fixed sentence per code (3.21) and never what Google sent.
+
+| Cookie | Holds | Path | SameSite | Lifetime |
+|---|---|---|---|---|
+| `google_flow` | `state`, `nonce`, PKCE verifier | `/auth/google/callback` | Lax: Google's return is a top-level page load started on Google's site, which a Strict cookie would miss | 10 minutes |
+| `google_signup` | Google's `sub`, the verified email | `/auth/google/signup` | Strict: the next request is the screen's own `fetch` | 10 minutes |
+
+Both are HttpOnly HS256 JWTs (`Secure` unless `AUTH_COOKIE_SECURE` is false), signed with a key
+made from `AUTH_TOKEN_SECRET` plus the label `google-sign-in`, so neither can pass as a login
+or reset token, and each names its kind (`typ`), so one cannot pass as the other.
+
+| Table | One row per | Holds |
+|---|---|---|
+| `user_identities` (business table, migration 0021) | linked Google account | `account_id`, the user (linked on `account_id`, `user_id`, deleted with the user), `provider` (`google`), `subject` (Google's permanent `sub`, never empty), `email_at_link` (the verified email when linked, lowercased); one Google account opens at most one user in the whole system (`uq_user_identities_provider_subject`) and a user has at most one identity per provider |
+
+`users.password_hash` may be empty since 0021: a user who signed up with Google has no
+password until they set one with "Forgot password".
 
 ### Sending email
 
@@ -4144,12 +4233,24 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `MAIL_FROM` | with `smtp` | The sender address, verified at the provider; also written into outbox files when set |
 | `PASSWORD_RESET_TTL_MINUTES` | no (default 30) | How long a reset link works, at least 1 |
 | `PASSWORD_RESET_PER_EMAIL_PER_HOUR` | no (default 3) | Links one user gets in one hour; more requests get the same `202` and no email; at least 1 |
+| `GOOGLE_CLIENT_ID` | for Google | The OAuth client ID from Google Cloud; Google sign-in is off unless this and the secret are set |
+| `GOOGLE_CLIENT_SECRET` | for Google | The OAuth client secret; a secret, hidden in error messages |
+| `GOOGLE_AUTH_URL` | no (default Google's) | Google's sign-in page, `https://accounts.google.com/o/oauth2/v2/auth`; must start with `https://` |
+| `GOOGLE_TOKEN_URL` | no (default Google's) | Where the code is swapped, `https://oauth2.googleapis.com/token`; must start with `https://` |
+| `GOOGLE_JWKS_URL` | no (default Google's) | Google's public keys, `https://www.googleapis.com/oauth2/v3/certs`; must start with `https://` |
+| `GOOGLE_ISSUERS` | no (default both of Google's) | The accepted `iss` values, comma-separated: `https://accounts.google.com,accounts.google.com` |
+
+The three Google URLs are the ones in Google's discovery document
+(`https://accounts.google.com/.well-known/openid-configuration`); they are settings only so
+that they are not hard-coded.
 
 The keys are in `ApiSettings`, not in `Settings`, and are loaded only when the app is built.
 The pipelines and their tests need no token secret. A missing or short secret fails when the
 app starts, with a message that names the key. So do a missing `APP_PUBLIC_URL`,
 `MAIL_BACKEND=smtp` without its four keys (the message names the missing ones), and
-`MAIL_BACKEND=outbox` with secure cookies. The database URL is read through the main
+`MAIL_BACKEND=outbox` with secure cookies, only one of the two Google keys (the message names
+the missing one), a Google URL that is not `https://` and a `GOOGLE_ISSUERS` with no issuer.
+The database URL is read through the main
 `Settings` (`DATABASE_URL`), so a missing required key there fails at the start too.
 
 ### Starting it
@@ -4180,7 +4281,11 @@ not. The reset routes log the account id and the user id when a link is made or 
 is reset, the user id when the hourly cap stops a link, and otherwise only "password reset
 asked", "too many tries" or "link not valid"; the mail senders log only "email written to the
 outbox", "email sent" or "email failed" with the error's class. No reset log line holds the
-email, the link or the token. The email, the password, its hash and the token are never logged, and no response
+email, the link or the token. Google sign-in logs the account id and the user id when a user
+is logged in or signed up, "no user yet" when it asks for an account name, the refusal code
+when it refuses, and only the error's class or the HTTP status when a call to Google fails; it
+never logs the email, the code, the state, the nonce, the ID token or what Google sent back
+with a cancel. The email, the password, its hash and the token are never logged, and no response
 carries the password or the hash. A `422` names each bad field (`loc`, `type`, `msg`) but
 never repeats the value that was sent: FastAPI's own answer does (`input`), which for a
 password would be the password, so `create_app` replaces it with `answer_validation_error`.
@@ -4221,6 +4326,27 @@ not carry the email or the hash. This holds for the pipelines too.
 - **One email, one account.** A person who works for two accounts needs two emails.
 - **No invite and no role change yet.** Every signed-up user is the `admin` of a new
   account; adding users to an account is a later branch.
+- **A changed Google email stops "Continue with Google".** A user whose Google account now
+  has another email is not found by the new one; there is no way to relink yet, so they log
+  in with their password (or set one with "Forgot password").
+- **A Google account with a non-Gmail address cannot link to an existing user or start a new
+  account** unless it is a Google Workspace account; such a user signs up and logs in with a
+  password.
+- **Two tabs starting Google sign-in at once: only the newest one finishes.** The flow cookie
+  is one per browser. If the older tab returns first, its `state` no longer matches and it is
+  refused (`failed`); if the newer one returns first, it finishes and the older one then
+  finds no flow cookie (`expired`). Either way the user tries again.
+- **No limit on accounts created through Google**, the same as password sign-up.
+- **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
+  match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
+  the app has a public address (Stage 6).
+- **uvicorn's access log would record `?code=...&state=...`** of the callback, since it logs
+  each path with its query. The code works once and needs the secret and the flow cookie, but
+  it should not sit in logs; the API container turns the access log off or drops the query
+  (Stage 6, `feat/containers`).
+- **The return from Google is checked in a real browser, not by tests.** The tests stand in for
+  Google with made-up keys (`httpx.MockTransport`) and cannot show how a browser treats the
+  `Lax` cookie on the way back.
 - **Isolation is enforced in the API code, not by the database.** A query that forgets the
   `account_id` filter is not stopped by Postgres. Row-level security would stop it, at the
   cost of much more setup.
@@ -4529,6 +4655,7 @@ The kind `edit_not_allowed` comes from the edit check.
 | `account_created` | sign-up (3.18) | none; no job |
 | `password_changed` | `POST /me/password` (3.18) | none; no job (migration 0019) |
 | `password_reset` | `POST /auth/password-reset/confirm` (3.18), a completed reset only | none; no job (migration 0020) |
+| `google_linked` | `GET /auth/google/callback` (3.18), when a Google account is linked to an existing user; a sign-up through Google writes `account_created` instead | none; no job (migration 0021) |
 | `upload_created` | `POST /uploads` (3.19) | none |
 | `draft_edited` | an edit | the new version |
 | `draft_approved` | an approve | the approved version |
@@ -4568,7 +4695,7 @@ All three are business tables with `account_id`.
 |---|---|---|
 | `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
 | `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
-| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed` and `password_reset`, a check since migration 0019, widened in 0020), `detail` as a JSON object |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed`, `password_reset` and `google_linked`, a check since migration 0019, widened in 0020 and 0021), `detail` as a JSON object |
 
 As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
 `job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
@@ -4654,18 +4781,19 @@ screen:
 | `frontend/src/queryClient.ts` | `createQueryClient()`: a `401` from any call ends the session (the login screen then empties the cache) |
 | `frontend/src/api/client.ts` | `apiRequest`, the one way a screen calls the API; `ApiError` with its kinds |
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
-| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`; `uploadLetter`, `fetchJob`; `fetchWorklist` |
-| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `clearAccountData`; the session is the cache key `["me"]` |
+| `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`, `fetchAuthOptions`, `fetchGoogleSignup`, `googleSignup`, and `GOOGLE_START_PATH` (a link, not a call); `uploadLetter`, `fetchJob`; `fetchWorklist` |
+| `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `useAuthOptions`, `useGoogleSignupInfo`, `useGoogleSignup`, `clearAccountData` (keeps the session and the options); the session is the cache key `["me"]`, the options `["auth-options"]` |
+| `frontend/src/auth/googleSignIn.ts` | `GOOGLE_NAME_ACCOUNT_PATH`, `GOOGLE_SIGNUP_EXPIRED`; `googleRefusalMessage`, the fixed sentence for the `?google=<code>` the API sends a refusal back with |
 | `frontend/src/auth/resetLink.ts` | `FORGOT_PASSWORD_PATH`, `RESET_PASSWORD_PATH`; `tokenFromHash`, the token from the link's `#token=` fragment; `PASSWORD_SET_STATE` and `isPasswordSetState`, the note the reset screen leaves for the login screen |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
 | `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm`, `checkGoogleSignup`: the empty, email-shape and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `ForgotPasswordScreen`, `ResetPasswordScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `ForgotPasswordScreen`, `ResetPasswordScreen`, `GoogleNameAccountScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4677,12 +4805,14 @@ screen:
 | `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
 | `/app/forgot-password` | anyone | `POST /auth/password-reset` |
 | `/app/reset-password` | anyone (opened from the emailed link) | `POST /auth/password-reset/confirm` |
+| `/app/google/name-account` | anyone the API sent there after a first Google sign-in | `GET` and `POST /auth/google/signup` |
 | `/app/worklist` | a logged-in user of any role | `GET /worklist` |
 | `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
 | `/app/account` | a logged-in user of any role | `POST /me/password` |
 | any other path | | sends to `/app/worklist` |
 
-Every screen under `/app/` other than login, sign-up and the two reset screens asks for the session first
+Every screen under `/app/` other than login, sign-up, the two reset screens and the Google
+name-your-account screen asks for the session first
 (`GET /me`) and shows the account, the user's email and role and a Log out button
 (`POST /auth/logout`).
 
@@ -4728,7 +4858,8 @@ The login and sign-up forms check their fields in the browser before anything is
 at sign-up a password outside 12 to 128 characters get one sentence under that field, and the
 focus moves to the first one. The API checks everything again; a login password is not
 checked for length, as the API answers a wrong length like a wrong password. The login form
-has a "Forgot password?" link (see "Forgot password"). There is no social login yet.
+has a "Forgot password?" link (see "Forgot password"), and both forms a "Continue with
+Google" button when the server has it on (see "Continue with Google").
 
 ### Changing the password
 
@@ -4765,6 +4896,29 @@ Two screens outside the login guard, both in `AuthFrame` with a "Remembered it? 
    an "Ask for a new link" link back to step 1; the button stays off when there is no token.
 5. On `204` the screen goes to `/app/login` with `PASSWORD_SET_STATE`, and the login screen
    says "Your password is set. Log in with it." The API does not log in after a reset (3.18).
+
+### Continue with Google
+
+1. The login and sign-up screens ask `GET /auth/options` once per page load (kept under
+   `["auth-options"]`, not removed by `clearAccountData`). Only when it says `google: true` does
+   `GoogleButton` show "Continue with Google" and an "or" above the email form; while it loads,
+   or if it fails, the email form is all there is.
+2. The button is a link to `/auth/google/start`, not a `fetch`: the browser itself goes to
+   Google and comes back to the API (3.18). The screens never see a Google token.
+3. A refused sign-in comes back to `/app/login?google=<code>`. The login screen shows the one
+   fixed sentence for that code (`googleRefusalMessage`, a `Map` lookup); an unknown code shows
+   nothing, so text in the address is never shown.
+4. A first Google sign-in with no user lands on `/app/google/name-account` ("Name your
+   account"). The screen shows "Signing up as" the verified email (`GET /auth/google/signup`)
+   and asks only for the account name (`checkGoogleSignup`: not empty; the field takes at most
+   200 characters). `POST /auth/google/signup` creates the account, with the user as its
+   `admin`, and logs in; the cache is emptied and the session written, as at sign-up, and the
+   screen goes to the worklist. A `409` shows the API's own sentence (name taken, email taken,
+   Google account linked elsewhere). A `401`, on opening or on sending, shows "The Google
+   sign-up has expired. Continue with Google again." with a link to login.
+5. A user who signed up with Google has no password. On the Account screen a password change
+   gets the API's own `400` sentence, "this login has no password yet; use Forgot password to
+   set one".
 
 ### An upload, step by step
 

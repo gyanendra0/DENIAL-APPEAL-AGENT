@@ -44,11 +44,18 @@ export function expectEveryRequestAnswered() {
   }
 }
 
+// The login and sign-up screens ask which ways in the server offers; unless a test says otherwise,
+// Google sign-in is off, so those screens show only the email and password form.
+const GOOGLE_OFF: Record<string, Answer> = {
+  "GET /auth/options": () => jsonResponse(200, { google: false }),
+};
+
 // Stubs `fetch` with one answer per "METHOD /path"; a request with no answer fails the test.
 export function stubApi(answers: Record<string, Answer>) {
+  const known = { ...GOOGLE_OFF, ...answers };
   const fetchStub = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${String(input)}`;
-    const answer = answers[key];
+    const answer = known[key];
     if (answer === undefined) {
       unanswered.push(key);
       throw new Error(`no stubbed answer for ${key}`);

@@ -11,11 +11,11 @@ def authenticate(session: Session, *, email: str, password: str) -> User | None:
     """Return the user with `email` if `password` is theirs, else None.
 
     `email` must already be trimmed and lowercased. An unknown email is still checked against
-    the dummy hash, so it takes about as long as a wrong password. Takes tens of milliseconds
-    on purpose.
+    the dummy hash, so it takes about as long as a wrong password; so is a user with no
+    password yet, whom no password opens. Takes tens of milliseconds on purpose.
     """
     user = find_user_by_email(session, email)
-    if user is None:
+    if user is None or user.password_hash is None:
         verify_dummy_password(password)
         return None
     if not verify_password(user.password_hash, password):

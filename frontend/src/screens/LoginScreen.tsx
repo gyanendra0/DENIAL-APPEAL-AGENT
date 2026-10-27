@@ -5,12 +5,14 @@ import { Link, useLocation, useNavigate } from "react-router";
 
 import { checkLogin, focusFirstError } from "../auth/credentialCheck";
 import type { FieldErrors, LoginField } from "../auth/credentialCheck";
+import { googleRefusalMessage } from "../auth/googleSignIn";
 import { afterLoginPath } from "../auth/redirect";
 import { FORGOT_PASSWORD_PATH, isPasswordSetState } from "../auth/resetLink";
 import { clearAccountData, useLogin } from "../auth/session";
 import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
 import { describeError } from "./errorMessage";
+import { GoogleButton } from "./GoogleButton";
 import { MailIcon } from "./icons";
 
 export function LoginScreen() {
@@ -21,6 +23,7 @@ export function LoginScreen() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const googleRefusal = googleRefusalMessage(location.search);
 
   // A 401 from any call ends up here; by now the screens that showed the account's data are gone,
   // so emptying the cache makes none of them ask again.
@@ -56,6 +59,12 @@ export function LoginScreen() {
       {isPasswordSetState(location.state) && (
         <p role="status">Your password is set. Log in with it.</p>
       )}
+      {googleRefusal !== null && (
+        <p className="error" role="alert">
+          {googleRefusal}
+        </p>
+      )}
+      <GoogleButton />
       <form className="form auth-form" noValidate onSubmit={onSubmit}>
         <AuthField
           label="Email"

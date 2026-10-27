@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 
+import { ApiError } from "../api/client";
 import {
   MAX_PASSWORD_CHARACTERS,
   MIN_PASSWORD_CHARACTERS,
@@ -10,12 +11,16 @@ import {
 import type { FieldErrors, PasswordChangeField } from "../auth/credentialCheck";
 import { useChangePassword } from "../auth/session";
 import { PasswordField } from "./AuthField";
-import { describeError } from "./errorMessage";
+import { asSentence, describeError } from "./errorMessage";
 
-// The API's 400 is its one fixed sentence; the client has no kind for 400, so the screen names it.
-const PASSWORD_CHANGE_MESSAGES: Partial<Record<number, string>> = {
-  400: "The current password is wrong.",
-};
+// The API's 400 is one of two fixed sentences: the current password is wrong, or the login has no
+// password yet (a Google sign-up). The client has no kind for 400, so the screen shows the API's.
+function passwordChangeError(error: unknown): string {
+  if (error instanceof ApiError && error.status === 400) {
+    return asSentence(error.message);
+  }
+  return describeError(error);
+}
 
 // Every role can change their own password. The API keeps this browser logged in with a new
 // cookie and ends every other session.
@@ -71,7 +76,7 @@ export function AccountScreen() {
         />
         {changeMutation.isError && (
           <p className="error" role="alert">
-            {describeError(changeMutation.error, PASSWORD_CHANGE_MESSAGES)}
+            {passwordChangeError(changeMutation.error)}
           </p>
         )}
         {changeMutation.isSuccess && (

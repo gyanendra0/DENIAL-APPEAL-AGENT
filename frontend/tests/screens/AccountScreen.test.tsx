@@ -83,6 +83,21 @@ describe("AccountScreen", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("says a Google sign-up has no password yet on that 400", async () => {
+    stubChange(() =>
+      jsonResponse(400, {
+        detail: "this login has no password yet; use Forgot password to set one",
+      }),
+    );
+    renderAt("/app/account");
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This login has no password yet; use Forgot password to set one.",
+    );
+  });
+
   it("asks to wait after too many tries", async () => {
     stubChange(() => jsonResponse(429, { detail: "too many failed logins" }));
     renderAt("/app/account");

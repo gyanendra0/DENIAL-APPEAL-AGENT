@@ -22,7 +22,7 @@ def _token(now: datetime | None = None, ttl_minutes: int = 60) -> str:
     )
 
 
-def _raw(payload: dict[str, Any], algorithm: str = "HS256", secret: str | None = SECRET) -> str:
+def _raw(payload: dict[str, Any], algorithm: str = "HS256", secret: str = SECRET) -> str:
     return jwt.encode(payload, secret, algorithm=algorithm)
 
 
@@ -91,7 +91,7 @@ def test_rejects_another_algorithm_even_with_the_right_key() -> None:
 
 
 def test_rejects_an_unsigned_token() -> None:
-    token = _raw(_payload(), algorithm="none", secret=None)
+    token = _raw(_payload(), algorithm="none", secret="")
     with pytest.raises(InvalidTokenError):
         read_token(token, secret=SECRET)
 

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from src.api.passwords import hash_password
 from src.db.models import User, UserRole
+from tests.api.conftest import VERIFIED_AT, signup_and_verify
 from tests.jobs.helpers import Member
 from tests.review.helpers import add_job_with_draft, finish_job
 
@@ -12,11 +13,8 @@ PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 
 
 def _signup(client: TestClient, name: str, email: str) -> Member:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body = signed_up
     return Member(account_id=body["account_id"], user_id=body["user_id"])
 
 
@@ -55,6 +53,7 @@ def test_a_viewer_reads_the_overview(api_client: TestClient, db_session: Session
             email="viewer@a.org",
             password_hash=hash_password(PASSWORD),
             role=UserRole.VIEWER,
+            email_verified_at=VERIFIED_AT,
         )
     )
     db_session.commit()

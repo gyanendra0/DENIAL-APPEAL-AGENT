@@ -26,6 +26,7 @@ from src.api.routes import (
     password_reset,
     review,
     users,
+    verify_email,
 )
 from src.api.upload_limit import UploadSizeLimit
 from src.config.settings import (
@@ -135,6 +136,7 @@ def create_app(
         auth.router,
         google.router,
         password_reset.router,
+        verify_email.router,
         me.router,
         users.router,
         jobs.router,

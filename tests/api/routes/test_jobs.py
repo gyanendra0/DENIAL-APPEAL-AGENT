@@ -23,7 +23,14 @@ from src.extraction.prompts import ExtractionPrompt
 from src.jobs.run import JobContext, run_upload_job
 from src.llm.gateway import LlmRequest
 from tests.agent.helpers import fixed_model
-from tests.api.conftest import API_SECRET, BASE_URL, PUBLIC_URL, RecordingSender
+from tests.api.conftest import (
+    API_SECRET,
+    BASE_URL,
+    PUBLIC_URL,
+    VERIFIED_AT,
+    RecordingSender,
+    signup_and_verify,
+)
 from tests.drafting.helpers import PROMPT, drafting_gateway
 from tests.extraction.helpers import LETTER, PROMPT_VERSION, StubProvider, fields_json, system_text
 from tests.ingest.helpers import write_text_pdf
@@ -36,17 +43,20 @@ LETTER_TEXT = b"Made-up denial letter for Zebulon Quillfeather, claim 999.\n"
 
 
 def _signup(client: TestClient, name: str, email: str) -> dict[str, int]:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body: dict[str, int] = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body: dict[str, int] = signed_up
     return body
 
 
 def _add_user(session: Session, account_id: int, email: str, role: UserRole) -> None:
     session.add(
-        User(account_id=account_id, email=email, password_hash=hash_password(PASSWORD), role=role)
+        User(
+            account_id=account_id,
+            email=email,
+            password_hash=hash_password(PASSWORD),
+            role=role,
+            email_verified_at=VERIFIED_AT,
+        )
     )
     session.commit()
 

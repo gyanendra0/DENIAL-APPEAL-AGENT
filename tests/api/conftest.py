@@ -6,7 +6,10 @@ is given (`job_calls`), so no job runs and no model is called; its mail sender o
 messages it is given (`sent_mail`), so no email leaves.
 """
 
+import re
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +26,10 @@ API_TTL_MINUTES = 60
 # The cookie is `Secure`, so the test client must talk HTTPS for it to be sent back.
 BASE_URL = "https://testserver"
 PUBLIC_URL = "https://app.example.test"
+# When a user a test adds straight to the database confirmed their email, so login lets them in.
+VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+# The emailed code sits alone on an indented line.
+_CODE_LINE = re.compile(r"^ {4}([0-9]{6})$", re.MULTILINE)
 
 
 def api_settings() -> ApiSettings:
@@ -43,6 +50,28 @@ class RecordingSender:
 
     def send(self, message: MailMessage) -> None:
         self.sent.append(message)
+
+
+def code_in(message: MailMessage) -> str:
+    """The 6-digit code an emailed message carries."""
+    found = _CODE_LINE.search(message.body)
+    assert found is not None, "no code in the email"
+    return found.group(1)
+
+
+def signup_and_verify(client: TestClient, *, name: str, email: str, password: str) -> Any:
+    """Sign up, type the emailed code and return the logged-in user's JSON (as the code
+    screen would). The client is then logged in as that user; the sign-up email is taken out
+    of the recorded mail again, so a test sees only the mail it caused itself."""
+    response = client.post(
+        "/auth/signup", json={"account_name": name, "email": email, "password": password}
+    )
+    assert response.status_code == 201, response.text
+    sender: RecordingSender = client.app.state.mail_sender  # type: ignore[attr-defined]
+    verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})
+    assert verified.status_code == 200, verified.text
+    sender.sent.pop()
+    return verified.json()
 
 
 @pytest.fixture

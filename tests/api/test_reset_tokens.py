@@ -28,6 +28,9 @@ from src.api.signup import create_account_with_admin
 from src.api.tokens import issue_token
 from src.db.models import PasswordResetToken, User
 
+# The users made here count as having confirmed their email.
+VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
 SECRET = "a-made-up-reset-test-secret-of-forty-chars"  # noqa: S105  (made up)
 OTHER_SECRET = "another-made-up-reset-secret-of-forty-chr"  # noqa: S105  (made up)
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
@@ -155,7 +158,9 @@ def test_a_token_with_every_claim_right_reads() -> None:
 
 
 def _user(session: Session, email: str = "ann@x.org", name: str = "One") -> User:
-    return create_account_with_admin(session, account_name=name, email=email, password=PASSWORD)
+    return create_account_with_admin(
+        session, account_name=name, email=email, password=PASSWORD, verified_at=VERIFIED_AT
+    )
 
 
 def _add(session: Session, user: User, at: datetime, ttl_minutes: int = 30) -> ResetClaims:

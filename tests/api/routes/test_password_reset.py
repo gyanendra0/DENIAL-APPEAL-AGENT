@@ -16,7 +16,7 @@ from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.mail import MailMessage
 from src.api.routes.password_reset import RESET_ASKED, RESET_LINK_INVALID, RESET_PATH
 from src.db.models import AuditAction, AuditEvent, PasswordResetToken, User
-from tests.api.conftest import PUBLIC_URL, RecordingSender
+from tests.api.conftest import PUBLIC_URL, RecordingSender, signup_and_verify
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 NEW_PASSWORD = "a-new-made-up-password"  # noqa: S105  (made up)
@@ -43,11 +43,8 @@ def clock(api_client: TestClient) -> Iterator[_Clock]:
 
 
 def _signup(client: TestClient, name: str = "One", email: str = "a@x.org") -> int:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    user_id: int = response.json()["user_id"]
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    user_id: int = signed_up["user_id"]
     return user_id
 
 

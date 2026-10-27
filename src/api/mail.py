@@ -1,4 +1,4 @@
-"""Outgoing email: the password reset message and the two ways it leaves the app.
+"""Outgoing email: the code and password reset messages and the two ways they leave the app.
 
 `SmtpSender` sends through any provider's SMTP server (STARTTLS). `OutboxSender` writes each
 message as a `.eml` file instead, for local development; the app refuses it with secure cookies,
@@ -17,6 +17,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from src.config.settings import ApiSettings
+from src.db.models import EmailCodePurpose
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,30 @@ To choose a new password, open this link within {ttl_minutes} minutes:
 
 The link works once. If you did not ask for this, ignore this email; your password stays the same.
 """
+
+# Plain text, and the code is never in the subject, so a lock-screen preview does not show it.
+CODE_SUBJECTS = {
+    EmailCodePurpose.VERIFY_EMAIL: "Your sign-up code",
+    EmailCodePurpose.PASSWORD_RESET: "Your password reset code",
+}
+_CODE_BODIES = {
+    EmailCodePurpose.VERIFY_EMAIL: """\
+Your code to confirm this email address is:
+
+    {code}
+
+It works for {ttl_minutes} minutes. If you did not sign up, ignore this email; without the code no
+account can use this address.
+""",
+    EmailCodePurpose.PASSWORD_RESET: """\
+Your code to reset your password is:
+
+    {code}
+
+It works for {ttl_minutes} minutes. If you did not ask for this, ignore this email; your password
+stays the same.
+""",
+}
 
 
 class MailMessage(BaseModel):
@@ -57,6 +82,12 @@ def reset_email(*, to: str, link: str, ttl_minutes: int) -> MailMessage:
     return MailMessage(
         to=to, subject=RESET_SUBJECT, body=_RESET_BODY.format(ttl_minutes=ttl_minutes, link=link)
     )
+
+
+def code_email(purpose: EmailCodePurpose, *, to: str, code: str, ttl_minutes: int) -> MailMessage:
+    """The email that gives `to` a code for `purpose`."""
+    body = _CODE_BODIES[purpose].format(code=code, ttl_minutes=ttl_minutes)
+    return MailMessage(to=to, subject=CODE_SUBJECTS[purpose], body=body)
 
 
 def _email_message(message: MailMessage, sender: str) -> EmailMessage:

@@ -13,16 +13,19 @@ from pydantic import SecretStr
 
 from src.api import mail
 from src.api.mail import (
+    CODE_SUBJECTS,
     OUTBOX_FROM,
     RESET_SUBJECT,
     MailMessage,
     OutboxSender,
     SmtpSender,
     build_mail_sender,
+    code_email,
     reset_email,
     send_quietly,
 )
 from src.config.settings import ApiSettings
+from src.db.models import EmailCodePurpose
 
 SECRET = "a-made-up-mail-test-secret-of-forty-chars"  # noqa: S105  (made up)
 LINK = "https://app.example.test/app/reset-password#token=made.up.token"
@@ -42,6 +45,23 @@ def test_the_reset_email_holds_the_link_and_the_lifetime_and_nothing_else() -> N
     assert "within 30 minutes" in message.body
     assert "works once" in message.body
     assert "ann@x.org" not in message.body
+
+
+@pytest.mark.parametrize(
+    ("purpose", "subject", "warning"),
+    [
+        (EmailCodePurpose.VERIFY_EMAIL, "Your sign-up code", "If you did not sign up"),
+        (EmailCodePurpose.PASSWORD_RESET, "Your password reset code", "If you did not ask"),
+    ],
+)
+def test_a_code_email_holds_the_code_and_its_lifetime_but_not_in_the_subject(
+    purpose: EmailCodePurpose, subject: str, warning: str
+) -> None:
+    message = code_email(purpose, to="ann@x.org", code="012345", ttl_minutes=10)
+    assert (message.to, message.subject, CODE_SUBJECTS[purpose]) == ("ann@x.org", subject, subject)
+    assert "\n    012345\n" in message.body
+    assert "It works for 10 minutes." in message.body and warning in message.body
+    assert "012345" not in message.subject
 
 
 def test_the_outbox_writes_one_readable_file_per_message(tmp_path: Path) -> None:

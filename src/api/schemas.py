@@ -113,6 +113,32 @@ class PasswordResetAnswer(BaseModel):
     detail: str
 
 
+class VerifyEmailRequest(BaseModel):
+    """The 6-digit code from the sign-up email. The account and the user come from the signed
+    `email_verify` cookie, never from the body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: Annotated[str, Field(pattern=r"^[0-9]{6}$")]
+
+
+class EmailNotVerifiedAnswer(BaseModel):
+    """The answer to a login with the right password whose email is not confirmed yet."""
+
+    model_config = ConfigDict(frozen=True)
+
+    detail: str
+    code: str
+
+
+class CodeSentAnswer(BaseModel):
+    """The answer when a new code is on its way."""
+
+    model_config = ConfigDict(frozen=True)
+
+    detail: str
+
+
 class AuthOptions(BaseModel):
     """The ways in besides email and password that this server offers."""
 

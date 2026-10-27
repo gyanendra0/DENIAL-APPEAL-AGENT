@@ -182,6 +182,8 @@ def test_routes_are_registered() -> None:
         "/auth/google/signup",
         "/auth/password-reset",
         "/auth/password-reset/confirm",
+        "/auth/verify-email",
+        "/auth/verify-email/resend",
         "/me",
         "/me/password",
         "/users/{user_id}",

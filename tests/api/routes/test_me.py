@@ -17,6 +17,7 @@ from src.api.routes.me import NO_PASSWORD_YET, WRONG_CURRENT_PASSWORD
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
 from src.db.models import AuditAction, AuditEvent, LoginFailure, LoginKeyKind, User
 from src.db.query import for_account
+from tests.api.conftest import signup_and_verify
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 NEW_PASSWORD = "a-new-made-up-password"  # noqa: S105  (made up)
@@ -25,12 +26,14 @@ NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 
 
 def _signup(client: TestClient, name: str, email: str) -> dict[str, object]:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201, response.text
-    body: dict[str, object] = response.json()
+    signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
+    body: dict[str, object] = signed_up
     return body
+
+
+def _failure_ids(session: Session) -> list[int]:
+    session.expire_all()
+    return list(session.scalars(select(LoginFailure.id).order_by(LoginFailure.id)))
 
 
 def test_me_returns_the_user_and_the_account(api_client: TestClient) -> None:
@@ -158,6 +161,7 @@ def test_a_user_with_no_password_is_400_told_so_and_nothing_counts(
         update(User).where(User.id == signed_up["user_id"]).values(password_hash=None)
     )
     db_session.commit()
+    counted = _failure_ids(db_session)
     response = api_client.post(
         "/me/password", json={"current_password": WRONG, "new_password": NEW_PASSWORD}
     )
@@ -167,7 +171,7 @@ def test_a_user_with_no_password_is_400_told_so_and_nothing_counts(
     assert stored is None
     assert _password_events(db_session) == []
     # Nothing was guessed, so neither the email nor the IP count grows.
-    assert db_session.scalars(select(LoginFailure)).all() == []
+    assert _failure_ids(db_session) == counted
 
 
 @pytest.mark.parametrize("length", [11, 129])
@@ -176,6 +180,7 @@ def test_a_new_password_outside_12_to_128_is_422_and_changes_nothing(
 ) -> None:
     signed_up = _signup(api_client, "One", "a@x.org")
     before = _hash(db_session, signed_up["user_id"])
+    counted = _failure_ids(db_session)
     response = api_client.post(
         "/me/password", json={"current_password": PASSWORD, "new_password": "n" * length}
     )
@@ -183,7 +188,7 @@ def test_a_new_password_outside_12_to_128_is_422_and_changes_nothing(
     assert "n" * length not in response.text and PASSWORD not in response.text
     assert _hash(db_session, signed_up["user_id"]) == before
     # Refused before the route runs, so it is not counted toward the login limit.
-    assert db_session.scalars(select(LoginFailure)).all() == []
+    assert _failure_ids(db_session) == counted
 
 
 def test_change_password_without_a_login_is_401(api_client: TestClient, clock: _Clock) -> None:
@@ -286,7 +291,8 @@ def test_a_change_clears_the_email_count_but_not_the_ip_count(
         assert _change(api_client, current=WRONG) == 400
     assert _change(api_client) == 204
     kinds = db_session.scalars(select(LoginFailure.key_kind)).all()
-    assert list(kinds) == [LoginKeyKind.IP] * 4
+    # The sign-up's own IP try stays too.
+    assert list(kinds) == [LoginKeyKind.IP] * 5
 
 
 def test_a_current_password_over_the_cap_is_400_without_hashing(

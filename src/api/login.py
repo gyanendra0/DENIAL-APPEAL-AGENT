@@ -26,10 +26,13 @@ def authenticate(session: Session, *, email: str, password: str) -> User | None:
 def find_user_by_email(session: Session, email: str) -> User | None:
     """Return the user with `email` (already trimmed and lowercased), or None.
 
-    Only for login and the password reset request, where the account is not known yet.
+    Only for login, the password reset request, Google sign-in and sign-up, where the account
+    is not known yet.
     """
     # The only query on `users` without an `account_id` filter (06-conventions 6.4). It is safe
-    # because an email belongs to exactly one account (`uq_users_email`), and neither caller
-    # returns anything to the client unless the password matches (login) or at all (the reset
-    # request always gives the same answer).
+    # because an email belongs to exactly one account (`uq_users_email`), and no caller returns
+    # anything to the client unless the password matches (login) or at all (the reset request
+    # always gives the same answer); Google sign-in uses only an email Google verified; sign-up
+    # only replaces a holder who never confirmed the email, and otherwise answers the same 409
+    # the unique key already gave.
     return session.scalars(select(User).where(User.email == email)).one_or_none()

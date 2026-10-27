@@ -14,8 +14,6 @@ MAX_ACCOUNT_NAME_CHARACTERS = 200  # the length of `accounts.name`
 MAX_EMAIL_CHARACTERS = 320  # the length of `users.email`
 # Far above any sign-up password, so it only stops a huge body from being hashed at login.
 MAX_LOGIN_PASSWORD_CHARACTERS = 1024
-# A reset token is a few hundred characters; the cap only stops a huge body from being parsed.
-MAX_RESET_TOKEN_CHARACTERS = 2048
 
 
 def normalize_email(value: str) -> str:
@@ -88,7 +86,7 @@ class PasswordChangeRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    """The email a reset link is asked for. The answer never says whether it has an account."""
+    """The email a reset code is asked for. The answer never says whether it has an account."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,12 +94,12 @@ class PasswordResetRequest(BaseModel):
 
 
 class PasswordResetConfirm(BaseModel):
-    """The token from the emailed link and the new password. The account and the user come from
-    the signed token, never from the body."""
+    """The email, the 6-digit code emailed to it and the new password."""
 
     model_config = ConfigDict(extra="forbid")
 
-    token: Annotated[str, Field(min_length=1, max_length=MAX_RESET_TOKEN_CHARACTERS)]
+    email: Email
+    code: Annotated[str, Field(pattern=r"^[0-9]{6}$")]
     new_password: Password
 
 

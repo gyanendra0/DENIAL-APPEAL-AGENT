@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import AUTH_COOKIE_NAME, get_now
+from src.api.email_codes import CODE_INVALID
 from src.api.email_verification import MAIL_UNAVAILABLE
 from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.routes.auth import (
@@ -21,7 +22,6 @@ from src.api.routes.auth import (
 )
 from src.api.routes.verify_email import (
     ALREADY_VERIFIED,
-    CODE_INVALID,
     CODE_SENT,
     CODE_TOO_SOON,
     VERIFY_EXPIRED,

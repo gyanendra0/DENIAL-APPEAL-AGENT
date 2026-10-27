@@ -51,7 +51,6 @@ from src.db.models import (
     LoginKeyKind,
     MailSend,
     MetalLevel,
-    PasswordResetToken,
     PlanDenialStats,
     PlanType,
     StoredAppealDraft,
@@ -2492,9 +2491,7 @@ def test_rejects_unknown_login_key_kind(session: Session) -> None:
         session.execute(insert, {"key_hash": KEY_HASH})
 
 
-# A made-up SHA-256: 64 lowercase hex characters, as the reset link's stored part.
-TOKEN_HASH = "0123456789abcdef" * 4
-RESET_EXPIRES_AT = datetime(2026, 10, 26, 12, 30, tzinfo=UTC)
+VERIFIED_AT = datetime(2026, 10, 26, 12, 30, tzinfo=UTC)
 
 
 def _user_of(session: Session, account: Account, email: str = "ada@example.test") -> User:
@@ -2502,82 +2499,6 @@ def _user_of(session: Session, account: Account, email: str = "ada@example.test"
     session.add(user)
     session.flush()
     return user
-
-
-def _reset_token(session: Session, user: User, **overrides: Any) -> PasswordResetToken:
-    fields: dict[str, Any] = {
-        "account_id": user.account_id,
-        "user_id": user.id,
-        "token_hash": TOKEN_HASH,
-        "expires_at": RESET_EXPIRES_AT,
-    }
-    token = PasswordResetToken(**(fields | overrides))
-    session.add(token)
-    session.flush()
-    return token
-
-
-def test_stores_a_password_reset_token_with_its_user_hash_expiry_and_timestamps(
-    session: Session,
-) -> None:
-    user = _user_of(session, _account(session, "a"))
-    token = _reset_token(session, user)
-    session.expire_all()
-
-    stored = session.get(PasswordResetToken, token.id)
-    assert stored is not None
-    assert (stored.account_id, stored.user_id) == (user.account_id, user.id)
-    assert stored.token_hash == TOKEN_HASH
-    assert stored.expires_at == RESET_EXPIRES_AT
-    assert stored.created_at is not None
-    assert stored.updated_at is not None
-
-
-@pytest.mark.parametrize(
-    "token_hash",
-    [TOKEN_HASH[:63], TOKEN_HASH.upper(), "g" + TOKEN_HASH[1:], ""],
-    ids=["too-short", "uppercase", "not-hex", "empty"],
-)
-def test_rejects_a_password_reset_token_whose_hash_is_not_64_lowercase_hex(
-    session: Session, token_hash: str
-) -> None:
-    user = _user_of(session, _account(session, "a"))
-
-    with pytest.raises(IntegrityError, match="ck_password_reset_tokens_token_hash_format"):
-        _reset_token(session, user, token_hash=token_hash)
-
-
-def test_rejects_the_same_password_reset_hash_twice_even_in_another_account(
-    session: Session,
-) -> None:
-    _reset_token(session, _user_of(session, _account(session, "a")))
-    other = _user_of(session, _account(session, "other"), "bob@example.test")
-
-    with pytest.raises(IntegrityError, match="uq_password_reset_tokens_token_hash"):
-        _reset_token(session, other)
-
-
-def test_rejects_a_password_reset_token_naming_a_user_of_another_account(
-    session: Session,
-) -> None:
-    other = _user_of(session, _account(session, "other"), "bob@example.test")
-    account = _account(session, "a")
-
-    with pytest.raises(IntegrityError, match="fk_password_reset_tokens_user"):
-        _reset_token(session, other, account_id=account.id)
-
-
-def test_deleting_a_user_removes_their_password_reset_tokens_only(session: Session) -> None:
-    account = _account(session, "a")
-    user = _user_of(session, account)
-    kept = _user_of(session, account, "bob@example.test")
-    _reset_token(session, user)
-    kept_token = _reset_token(session, kept, token_hash="fedcba9876543210" * 4)
-
-    session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
-    session.expire_all()
-
-    assert [row.id for row in session.scalars(select(PasswordResetToken))] == [kept_token.id]
 
 
 # A made-up Google subject; real ones are digit strings of about 21 characters.
@@ -2699,11 +2620,11 @@ def test_a_new_user_has_no_verified_email_until_one_is_stored(session: Session) 
     session.expire_all()
     assert user.email_verified_at is None
 
-    user.email_verified_at = RESET_EXPIRES_AT
+    user.email_verified_at = VERIFIED_AT
     session.flush()
     session.expire_all()
 
-    assert user.email_verified_at == RESET_EXPIRES_AT
+    assert user.email_verified_at == VERIFIED_AT
 
 
 # A made-up HMAC-SHA256: 64 lowercase hex characters, as an emailed code's stored hash.

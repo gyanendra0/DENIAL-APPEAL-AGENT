@@ -13,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import get_api_settings, get_mail_sender, get_now, get_session_factory
-from src.api.email_codes import check_code, delete_codes
+from src.api.email_codes import CODE_INVALID, check_code, delete_codes
 from src.api.email_verification import (
     MAIL_UNAVAILABLE,
     PURPOSE,
@@ -49,8 +49,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# One sentence for every code problem: wrong, expired, replaced or out of tries.
-CODE_INVALID = "the code is wrong or has expired"
 VERIFY_EXPIRED = "the code screen has expired; log in again to get a new code"
 ALREADY_VERIFIED = "the email is already confirmed; log in"
 CODE_SENT = "a new code is on its way"

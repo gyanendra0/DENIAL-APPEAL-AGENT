@@ -19,8 +19,8 @@ from src.api.google_cookies import (
     read_flow_cookie,
     read_signup_cookie,
 )
-from src.api.reset_tokens import issue_reset_token
 from src.api.tokens import issue_token
+from src.api.verify_cookie import issue_verify_cookie
 
 SECRET = "a-made-up-test-secret-of-forty-characters"  # noqa: S105  (made up)
 OTHER_SECRET = "another-made-up-secret-of-forty-characters"  # noqa: S105  (made up)
@@ -67,12 +67,12 @@ def test_a_flow_cookie_is_not_a_signup_cookie_and_back() -> None:
         read_flow_cookie(signup_value, secret=SECRET, now=NOW)
 
 
-def test_a_login_or_reset_token_is_not_a_google_cookie() -> None:
+def test_a_login_token_or_a_verify_cookie_is_not_a_google_cookie() -> None:
     login = issue_token(
         user_id=1, account_id=1, token_version=0, secret=SECRET, ttl_minutes=60, now=NOW
     )
-    reset = issue_reset_token(user_id=1, account_id=1, secret=SECRET, ttl_minutes=30, now=NOW)
-    for value in (login, reset.token):
+    verify = issue_verify_cookie(user_id=1, account_id=1, secret=SECRET, now=NOW)
+    for value in (login, verify):
         with pytest.raises(InvalidGoogleCookieError):
             read_flow_cookie(value, secret=SECRET, now=NOW)
         with pytest.raises(InvalidGoogleCookieError):

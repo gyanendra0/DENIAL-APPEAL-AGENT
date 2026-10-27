@@ -63,6 +63,7 @@ from src.db.models import (
 UPLOAD_TABLES = ("upload_drafts", "upload_agent_runs", "upload_extractions", "jobs", "uploads")
 # Added by 0017, children before parents.
 REVIEW_TABLES = ("audit_events", "draft_revisions")
+# Added by 0020, dropped by 0022.
 RESET_TABLE = "password_reset_tokens"
 IDENTITY_TABLE = "user_identities"
 EMAIL_CODE_TABLE = "email_codes"
@@ -74,7 +75,6 @@ BUSINESS_TABLES = {
     "denials",
     *UPLOAD_TABLES,
     *REVIEW_TABLES,
-    RESET_TABLE,
     IDENTITY_TABLE,
     EMAIL_CODE_TABLE,
 }
@@ -985,16 +985,24 @@ def test_users_token_version_starts_at_zero_and_refuses_a_negative_number(
             conn.execute(text("DELETE FROM accounts"))
 
 
-def test_password_reset_tokens_has_its_keys_the_cascading_user_link_indexes_and_check(
-    engine: Engine,
+def test_downgrade_to_0021_makes_password_reset_tokens_again_with_its_keys_link_and_check(
+    engine: Engine, alembic_config: Config
 ) -> None:
-    # Without the index Postgres makes for the unique key; that key is checked below.
-    indexes = {
-        i["name"]: i["column_names"]
-        for i in inspect(engine).get_indexes(RESET_TABLE)
-        if "duplicates_constraint" not in i
-    }
-    unique, foreign, checks = _keys_links_and_checks(engine, RESET_TABLE)
+    command.downgrade(alembic_config, "0021")
+    try:
+        # Without the index Postgres makes for the unique key; that key is checked below.
+        indexes = {
+            i["name"]: i["column_names"]
+            for i in inspect(engine).get_indexes(RESET_TABLE)
+            if "duplicates_constraint" not in i
+        }
+        unique, foreign, checks = _keys_links_and_checks(engine, RESET_TABLE)
+        with engine.connect() as conn:
+            rows = conn.scalar(text(f"SELECT count(*) FROM {RESET_TABLE}"))  # noqa: S608
+    finally:
+        command.upgrade(alembic_config, "head")
+
+    assert rows == 0
 
     assert indexes == {
         "ix_password_reset_tokens_account_id": ["account_id"],
@@ -1023,9 +1031,8 @@ def test_migration_0020_lists_the_same_audit_actions_and_check_rules_as_the_mode
         migration_0020.NEW_AUDIT_ACTION,
     ) == migration_0021.AUDIT_ACTION_BEFORE
     assert migration_0021.JOB_MATCHES_ACTION_BEFORE == migration_0020.JOB_MATCHES_ACTION
-    assert _model_checks((RESET_TABLE,)) == {
-        "ck_password_reset_tokens_token_hash_format": migration_0020.TOKEN_HASH_FORMAT
-    }
+    # 0022 dropped the table; its downgrade makes the check again from its own copy.
+    assert migration_0022.TOKEN_HASH_FORMAT == migration_0020.TOKEN_HASH_FORMAT
 
 
 def test_user_identities_has_its_keys_the_cascading_user_link_index_and_checks(
@@ -1288,6 +1295,7 @@ def test_downgrade_to_0021_removes_the_code_and_send_tables_email_verified_and_i
         tables = set(inspect(engine).get_table_names())
         assert EMAIL_CODE_TABLE not in tables
         assert MAIL_SEND_TABLE not in tables
+        assert RESET_TABLE in tables
         assert _type_names(engine, migration_0022.NEW_ENUMS) == set()
         assert "email_verified_at" not in _users_columns(engine)
         assert _audit_action_values(engine) == list(migration_0022.AUDIT_ACTION_BEFORE)
@@ -1307,7 +1315,9 @@ def test_downgrade_to_0021_removes_the_code_and_send_tables_email_verified_and_i
             conn.execute(text("DELETE FROM accounts"))
 
     assert _audit_action_values(engine) == [member.value for member in AuditAction]
-    assert {EMAIL_CODE_TABLE, MAIL_SEND_TABLE} <= set(inspect(engine).get_table_names())
+    tables = set(inspect(engine).get_table_names())
+    assert {EMAIL_CODE_TABLE, MAIL_SEND_TABLE} <= tables
+    assert RESET_TABLE not in tables
     assert "email_verified_at" in _users_columns(engine)
 
 
@@ -1381,6 +1391,8 @@ def test_downgrade_to_0019_removes_the_reset_table_password_reset_and_its_rows(
 ) -> None:
     try:
         _store_audit_events_with_sql(engine, ("password_changed", "password_reset"))
+        # The table exists only between 0020 and 0022.
+        command.downgrade(alembic_config, "0021")
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -1410,7 +1422,8 @@ def test_downgrade_to_0019_removes_the_reset_table_password_reset_and_its_rows(
             conn.execute(text("DELETE FROM accounts"))
 
     assert _audit_action_values(engine) == [member.value for member in AuditAction]
-    assert RESET_TABLE in set(inspect(engine).get_table_names())
+    # Back at head: 0020 made the table again and 0022 dropped it again.
+    assert RESET_TABLE not in set(inspect(engine).get_table_names())
 
 
 def test_downgrade_to_0018_removes_password_changed_its_rows_and_the_token_version(

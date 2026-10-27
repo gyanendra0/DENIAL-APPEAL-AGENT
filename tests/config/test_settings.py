@@ -444,7 +444,6 @@ MAIL_KEYS = (
     "MAIL_SMTP_USERNAME",
     "MAIL_SMTP_PASSWORD",
     "MAIL_FROM",
-    "PASSWORD_RESET_TTL_MINUTES",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
 )
 # Not in `.env.example` yet; the docs task of the email-code branch adds them.
@@ -632,7 +631,6 @@ def test_mail_and_reset_settings_default_to_the_outbox_30_minutes_and_3_an_hour(
     assert settings.app_public_url is None
     assert (settings.mail_backend, settings.mail_outbox_dir) == ("outbox", Path("var/outbox"))
     assert settings.mail_smtp_port == 587
-    assert settings.password_reset_ttl_minutes == 30
     assert settings.password_reset_per_email_per_hour == 3
 
 
@@ -681,7 +679,6 @@ def test_the_public_url_must_be_http_and_loses_a_trailing_slash(
     [
         ("MAIL_BACKEND", "carrier-pigeon"),
         ("MAIL_SMTP_PORT", "0"),
-        ("PASSWORD_RESET_TTL_MINUTES", "0"),
         ("PASSWORD_RESET_PER_EMAIL_PER_HOUR", "0"),
     ],
 )

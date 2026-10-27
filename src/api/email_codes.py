@@ -22,6 +22,8 @@ from src.db.query import for_account
 # Mixed into the token secret, so the code key is never a key that signs tokens.
 _KEY_LABEL = b"email-code"
 CODE_DIGITS = 6
+# One sentence for every code problem: wrong, expired, replaced or out of tries.
+CODE_INVALID = "the code is wrong or has expired"
 # The hourly cap counts the codes of this last stretch of time.
 CAP_WINDOW = timedelta(hours=1)
 

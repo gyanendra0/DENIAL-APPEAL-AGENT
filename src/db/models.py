@@ -1263,43 +1263,6 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
     )
 
 
-class PasswordResetToken(AccountScopedMixin, TimestampMixin, Base):
-    """One emailed password reset link, stored only as the SHA-256 of its random part.
-
-    Business table. The link is signed and carries `account_id` and the user, so the row is
-    found with an `account_id` filter even though nobody is logged in. `token_hash` is the
-    SHA-256 (lowercase hex) of the random part; the link itself is never stored. A row works
-    once (deleted at use) until `expires_at`. The link to the user carries `account_id` and
-    cascades: a reset link means nothing once its user is gone.
-    """
-
-    __tablename__ = "password_reset_tokens"
-    __table_args__ = (
-        UniqueConstraint("token_hash", name="uq_password_reset_tokens_token_hash"),
-        ForeignKeyConstraint(
-            ["account_id", "user_id"],
-            ["users.account_id", "users.id"],
-            name="fk_password_reset_tokens_user",
-            ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            "token_hash ~ '^[0-9a-f]{64}$'", name="ck_password_reset_tokens_token_hash_format"
-        ),
-        # The per-email cap counts a user's rows of the last hour by `created_at`.
-        Index(
-            "ix_password_reset_tokens_account_id_user_id_created_at",
-            "account_id",
-            "user_id",
-            "created_at",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class EmailCode(AccountScopedMixin, TimestampMixin, Base):
     """One emailed 6-digit code, stored only as a keyed hash.
 

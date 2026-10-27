@@ -1,8 +1,8 @@
-"""Outgoing email: the code and password reset messages and the two ways they leave the app.
+"""Outgoing email: the code messages and the two ways they leave the app.
 
 `SmtpSender` sends through any provider's SMTP server (STARTTLS). `OutboxSender` writes each
 message as a `.eml` file instead, for local development; the app refuses it with secure cookies,
-so a deployed app cannot silently drop emails. Nothing here logs an address, a link or a body.
+so a deployed app cannot silently drop emails. Nothing here logs an address, a code or a body.
 """
 
 import logging
@@ -24,17 +24,6 @@ logger = logging.getLogger(__name__)
 # The sender written into outbox files when no `MAIL_FROM` is set; outbox mail is never sent.
 OUTBOX_FROM = "no-reply@localhost"
 SMTP_TIMEOUT_SECONDS = 10.0
-
-RESET_SUBJECT = "Reset your password"
-# Plain text only, and nothing about the account: whoever reads the mailbox learns no more.
-_RESET_BODY = """\
-Someone asked to reset the password for this email address.
-
-To choose a new password, open this link within {ttl_minutes} minutes:
-{link}
-
-The link works once. If you did not ask for this, ignore this email; your password stays the same.
-"""
 
 # Plain text, and the code is never in the subject, so a lock-screen preview does not show it.
 CODE_SUBJECTS = {
@@ -75,13 +64,6 @@ class MailSender(Protocol):
     """Something that delivers a `MailMessage`. Raises on failure."""
 
     def send(self, message: MailMessage) -> None: ...
-
-
-def reset_email(*, to: str, link: str, ttl_minutes: int) -> MailMessage:
-    """The password reset email for `to`, holding `link`."""
-    return MailMessage(
-        to=to, subject=RESET_SUBJECT, body=_RESET_BODY.format(ttl_minutes=ttl_minutes, link=link)
-    )
 
 
 def code_email(purpose: EmailCodePurpose, *, to: str, code: str, ttl_minutes: int) -> MailMessage:

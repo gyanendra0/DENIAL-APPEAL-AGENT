@@ -24,7 +24,13 @@ from src.api.routes.google import (
     SIGNUP_EXPIRED,
 )
 from src.db.models import Account, AuditAction, AuditEvent, LoginFailure, User, UserIdentity
-from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender, signup_and_verify
+from tests.api.conftest import (
+    BASE_URL,
+    PUBLIC_URL,
+    RecordingSender,
+    code_in,
+    signup_and_verify,
+)
 from tests.api.fake_google import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -452,10 +458,8 @@ def test_a_user_with_no_password_sets_one_with_forgot_password(
 
     asked = client.post("/auth/password-reset", json={"email": "ann@gmail.com"})
     assert asked.status_code == 202
-    token = sender.sent[0].body.split("#token=", 1)[1].split("\n", 1)[0]
-    confirmed = client.post(
-        "/auth/password-reset/confirm", json={"token": token, "new_password": NEW_PASSWORD}
-    )
+    body = {"email": "ann@gmail.com", "code": code_in(sender.sent[0]), "new_password": NEW_PASSWORD}
+    confirmed = client.post("/auth/password-reset/confirm", json=body)
     assert confirmed.status_code == 204
 
     login = client.post("/auth/login", json={"email": "ann@gmail.com", "password": NEW_PASSWORD})

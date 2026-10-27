@@ -1,5 +1,5 @@
 """email_codes (emailed 6-digit codes), mail_sends (the daily send cap), users.email_verified_at
-and audit_action email_verified
+and audit_action email_verified; password_reset_tokens dropped (reset links became codes)
 
 Revision ID: 0022
 Revises: 0021
@@ -20,6 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 CODE_TABLE = "email_codes"
 SEND_TABLE = "mail_sends"
+RESET_TABLE = "password_reset_tokens"
 NEW_ENUMS = ("email_code_purpose",)
 EMAIL_CODE_PURPOSE = ("verify_email", "password_reset")
 NEW_AUDIT_ACTION = "email_verified"
@@ -48,6 +49,8 @@ JOB_MATCHES_ACTION_BEFORE = (
 )
 CODE_HASH_FORMAT = "code_hash ~ '^[0-9a-f]{64}$'"
 WRONG_TRIES_NOT_NEGATIVE = "wrong_tries >= 0"
+# The dropped table's check, as 0020 made it; the downgrade makes it again.
+TOKEN_HASH_FORMAT = "token_hash ~ '^[0-9a-f]{64}$'"  # noqa: S105  (a check rule, not a token)
 
 
 def _timestamps() -> list[sa.Column[Any]]:
@@ -119,8 +122,48 @@ def upgrade() -> None:
     )
     op.create_index("ix_mail_sends_created_at", SEND_TABLE, ["created_at"])
 
+    # A reset link no longer works, so its rows are useless.
+    op.drop_index("ix_password_reset_tokens_account_id_user_id_created_at", table_name=RESET_TABLE)
+    op.drop_index("ix_password_reset_tokens_account_id", table_name=RESET_TABLE)
+    op.drop_table(RESET_TABLE)
+
+
+def _create_reset_table() -> None:
+    """`password_reset_tokens` as 0020 made it, empty."""
+    op.create_table(
+        RESET_TABLE,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "account_id",
+            sa.Integer(),
+            sa.ForeignKey("accounts.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("token_hash", sa.String(64), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        *_timestamps(),
+        sa.UniqueConstraint("token_hash", name="uq_password_reset_tokens_token_hash"),
+        sa.ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["users.account_id", "users.id"],
+            name="fk_password_reset_tokens_user",
+            ondelete="CASCADE",
+        ),
+        sa.CheckConstraint(TOKEN_HASH_FORMAT, name="ck_password_reset_tokens_token_hash_format"),
+    )
+    op.create_index("ix_password_reset_tokens_account_id", RESET_TABLE, ["account_id"])
+    op.create_index(
+        "ix_password_reset_tokens_account_id_user_id_created_at",
+        RESET_TABLE,
+        ["account_id", "user_id", "created_at"],
+    )
+
 
 def downgrade() -> None:
+    # Made again empty: the codes of the newer revision cannot become links.
+    _create_reset_table()
+
     op.drop_index("ix_mail_sends_created_at", table_name=SEND_TABLE)
     op.drop_table(SEND_TABLE)
     op.drop_index("ix_email_codes_account_id_user_id_purpose_created_at", table_name=CODE_TABLE)

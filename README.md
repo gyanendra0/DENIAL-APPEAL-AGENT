@@ -65,11 +65,12 @@ Denial document
 ## Status
 
 **Stages 0 to 5 are released (`v0.6.0`); Stage 6, deployment, is in progress.** The API
-signs users up, takes an uploaded denial letter through extraction, rules, scoring, evidence
-and drafting, and lets a reviewer edit, approve or reject the draft. The web dashboard covers
-all of it in the browser: sign-up, login, the upload, the worklist, the denial beside its
-draft, the review, and an overview. A user can also change or reset a password, confirm their
-email with a 6-digit code, and sign in with Google. See the
+signs users up into one shared account, takes an uploaded denial letter through extraction,
+rules, scoring, evidence and drafting, lets a reviewer edit the draft and an admin approve or
+reject it. Each user sees only the letters they uploaded; an admin sees them all. The web
+dashboard covers all of it in the browser: sign-up, login, the upload, the worklist, the
+denial beside its draft, the review, and an overview. A user can also change or reset a
+password, confirm their email with a 6-digit code, and sign in with Google. See the
 [build plan](docs/05-build-plan.md).
 
 ## Running it locally
@@ -88,8 +89,11 @@ Settings come from a `.env` file; `.env.example` lists every key.
    alembic upgrade head
    ```
 3. Start the API on `http://127.0.0.1:8000`. It needs `AUTH_TOKEN_SECRET`,
-   `APP_PUBLIC_URL=http://127.0.0.1:5173` (Google sign-in returns there) and, on plain
-   HTTP as here, `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
+   `APP_PUBLIC_URL=http://127.0.0.1:5173` (Google sign-in returns there), the shared
+   account's name `SHARED_ACCOUNT_NAME`, your own email in `ADMIN_EMAILS` (only listed emails
+   are admins, and only they, the emails in `SIGNUP_ALLOWED_EMAILS` and the domains in
+   `SIGNUP_ALLOWED_DOMAINS` may sign up) and, on plain HTTP as here,
+   `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
    ```
    uvicorn src.api.app:create_app --factory
    ```
@@ -105,8 +109,8 @@ Settings come from a `.env` file; `.env.example` lists every key.
    npm ci
    npm run dev
    ```
-5. Open `http://127.0.0.1:5173/app/` and sign up, then type the code from the newest file
-   in `var/outbox/` to confirm the email and log in.
+5. Open `http://127.0.0.1:5173/app/` and sign up with an email from `ADMIN_EMAILS`, then
+   type the code from the newest file in `var/outbox/` to confirm the email and log in.
 
 "Continue with Google" is optional and off until both `GOOGLE_CLIENT_ID` and
 `GOOGLE_CLIENT_SECRET` are set. To turn it on (free, no model call):
@@ -138,8 +142,9 @@ screens) also runs from one compose file, the same one the production machine us
 Docker and the trained model files in `models/`.
 
 1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
-   usual keys, set `POSTGRES_PASSWORD` (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost`
-   and `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
+   usual keys (including `SHARED_ACCOUNT_NAME` and `ADMIN_EMAILS`), set `POSTGRES_PASSWORD`
+   (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost` and
+   `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
    `AUTH_COOKIE_SECURE=true` and set `MAIL_BACKEND=smtp` with the `MAIL_SMTP_*` and `MAIL_FROM`
    keys (the outbox is refused with secure cookies).
 2. Build the images and start everything:
@@ -160,8 +165,8 @@ Docker and the trained model files in `models/`.
      -t evidence_documents -t evidence_chunks -t evidence_chunk_embeddings \
      | docker compose -f deploy/prod/compose.yml exec -T db psql -U app -d app
    ```
-5. Open `https://localhost/app/`, accept the certificate warning, sign up and type the code from
-   the email.
+5. Open `https://localhost/app/`, accept the certificate warning, sign up with an email from
+   `ADMIN_EMAILS` and type the code from the email.
 
 Stop it with `docker compose -f deploy/prod/compose.yml down`; the data stays in its volume
 (`down -v` deletes it). How it is built: architecture

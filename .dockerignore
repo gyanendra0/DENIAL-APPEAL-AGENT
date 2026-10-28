@@ -4,5 +4,11 @@
 !alembic.ini
 !config/prompts/
 !deploy/api/requirements.lock
+!deploy/web/Caddyfile
+!frontend/
 !src/
+# The web image installs and builds the frontend itself.
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
 **/__pycache__/

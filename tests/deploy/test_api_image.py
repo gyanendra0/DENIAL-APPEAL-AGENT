@@ -63,4 +63,19 @@ def test_the_build_context_leaves_everything_out_unless_let_in() -> None:
     ]
     assert lines[0] == "*"
     allowed = {line.removeprefix("!") for line in lines if line.startswith("!")}
-    assert allowed == {"alembic.ini", "config/prompts/", "deploy/api/requirements.lock", "src/"}
+    assert allowed == {
+        "alembic.ini",
+        "config/prompts/",
+        "deploy/api/requirements.lock",
+        "deploy/web/Caddyfile",
+        "frontend/",
+        "src/",
+    }
+
+
+def test_the_build_context_keeps_the_frontends_installed_and_built_files_out() -> None:
+    lines = DOCKERIGNORE.read_text().splitlines()
+    # A later line wins, so each exclusion must come after `!frontend/`.
+    let_in = lines.index("!frontend/")
+    for folder in ("frontend/node_modules/", "frontend/dist/", "frontend/coverage/"):
+        assert lines.index(folder) > let_in

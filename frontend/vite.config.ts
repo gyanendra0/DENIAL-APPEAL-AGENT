@@ -5,7 +5,8 @@ import { defineConfig } from "vite";
 const API_TARGET = "http://127.0.0.1:8000";
 
 // Every top-level API path. The dev server forwards them, so the browser sees one site and the
-// HttpOnly login cookie (SameSite=strict) is sent. A new top-level API path must be added here.
+// HttpOnly login cookie (SameSite=strict) is sent. A new top-level API path must be added here
+// and to deploy/web/Caddyfile, which does the same in the containers (a test checks both lists).
 // Screens live under /app/... so a screen path never equals an API path.
 const API_PATHS = [
   "/auth",

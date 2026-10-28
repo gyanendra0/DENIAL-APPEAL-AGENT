@@ -10,7 +10,6 @@ import type { AuthOptions, GoogleSignupInfo, UserResponse } from "./types";
 export const GOOGLE_START_PATH = "/auth/google/start";
 
 export interface SignupInput {
-  account_name: string;
   email: string;
   password: string;
 }
@@ -37,10 +36,6 @@ export interface PasswordResetConfirmInput {
   email: string;
   code: string;
   new_password: string;
-}
-
-export interface GoogleSignupInput {
-  account_name: string;
 }
 
 // Answers 201 with the new user but does not log in: the API sets its own signed cookie for the
@@ -100,9 +95,11 @@ export async function fetchGoogleSignup(): Promise<GoogleSignupInfo | null> {
   }
 }
 
-// Creates the account with this name, its admin (no password) and the Google link, and logs in.
-export function googleSignup(input: GoogleSignupInput): Promise<UserResponse> {
-  return apiRequest<UserResponse>("/auth/google/signup", jsonRequest("POST", input));
+// The deliberate second click: adds the user (no password) to the shared account with the Google
+// link, and logs in. The body is empty; the email comes from the API's own signed cookie. A 403
+// says the settings no longer allow this email.
+export function googleSignup(): Promise<UserResponse> {
+  return apiRequest<UserResponse>("/auth/google/signup", jsonRequest("POST", {}));
 }
 
 // The logged-in user, or null when there is no session (a 401). Any other error is raised.

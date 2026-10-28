@@ -446,6 +446,12 @@ MAIL_KEYS = (
     "MAIL_FROM",
     "PASSWORD_RESET_PER_EMAIL_PER_HOUR",
 )
+SHARED_ACCOUNT_KEYS = (
+    "SHARED_ACCOUNT_NAME",
+    "ADMIN_EMAILS",
+    "SIGNUP_ALLOWED_EMAILS",
+    "SIGNUP_ALLOWED_DOMAINS",
+)
 EMAIL_CODE_KEYS = (
     "EMAIL_CODE_TTL_MINUTES",
     "EMAIL_CODE_MAX_WRONG_TRIES",
@@ -476,10 +482,12 @@ SMTP_ENV = {
 
 @pytest.fixture
 def api_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """Set the token secret and clear the optional API keys."""
-    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS):
+    """Set the token secret, the shared account and one admin; clear the optional API keys."""
+    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS, *SHARED_ACCOUNT_KEYS):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", TOKEN_SECRET)
+    monkeypatch.setenv("SHARED_ACCOUNT_NAME", "Example Clinic")
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.test")
     return monkeypatch
 
 
@@ -602,7 +610,7 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    keys = (*API_KEYS, *MAIL_KEYS, *EMAIL_CODE_KEYS, *GOOGLE_KEYS)
+    keys = (*API_KEYS, *MAIL_KEYS, *EMAIL_CODE_KEYS, *GOOGLE_KEYS, *SHARED_ACCOUNT_KEYS)
     for key in keys:
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
@@ -618,6 +626,10 @@ def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     assert not settings.google_enabled
     assert settings.google_client_secret is None
     # Worked out before the asserts, so a failure never prints the value of a real secret.
+    # Placeholders only: a real admin email or work domain is personal data.
+    assert all(email.endswith(".test") for email in settings.admin_email_set)
+    assert all(email.endswith(".test") for email in settings.signup_allowed_email_set)
+    assert all(domain.endswith(".test") for domain in settings.signup_allowed_domain_set)
     secret_is_placeholder = _is_placeholder(settings.auth_token_secret)
     mail_password = settings.mail_smtp_password
     mail_password_is_placeholder = mail_password is not None and _is_placeholder(mail_password)
@@ -781,3 +793,100 @@ def test_rejects_a_google_url_without_https_or_no_issuer(
     api_env.setenv(key, value)
     with pytest.raises(ValidationError, match=match):
         load_api_settings(env_file=None)
+
+
+def test_api_settings_read_the_shared_account_and_lowercase_the_lists(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    api_env.setenv("SHARED_ACCOUNT_NAME", "  Example Clinic  ")
+    api_env.setenv("ADMIN_EMAILS", " Ann@Example.test, bob@example.test ,ann@example.test,")
+    api_env.setenv("SIGNUP_ALLOWED_EMAILS", "Carol@Elsewhere.test")
+    api_env.setenv("SIGNUP_ALLOWED_DOMAINS", "Clinic.Example.test, partner.test")
+
+    settings = load_api_settings(env_file=None)
+
+    assert settings.shared_account_name == "Example Clinic"
+    assert settings.admin_email_set == {"ann@example.test", "bob@example.test"}
+    assert settings.signup_allowed_email_set == {"carol@elsewhere.test"}
+    assert settings.signup_allowed_domain_set == {"clinic.example.test", "partner.test"}
+
+
+def test_sign_up_lists_default_to_empty_so_only_the_admins_may_sign_up(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    api_env.setenv("SIGNUP_ALLOWED_EMAILS", "")
+    settings = load_api_settings(env_file=None)
+
+    assert settings.signup_allowed_email_set == frozenset()
+    assert settings.signup_allowed_domain_set == frozenset()
+
+
+@pytest.mark.parametrize("key", ["SHARED_ACCOUNT_NAME", "ADMIN_EMAILS"])
+@pytest.mark.parametrize("value", [None, "", "   "], ids=["missing", "empty", "blank"])
+def test_missing_shared_account_or_admin_emails_fails_naming_the_key(
+    api_env: pytest.MonkeyPatch, key: str, value: str | None
+) -> None:
+    if value is None:
+        api_env.delenv(key)
+    else:
+        api_env.setenv(key, value)
+
+    with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)
+
+
+def test_admin_emails_of_commas_only_fail_naming_the_key(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("ADMIN_EMAILS", " , ,")
+
+    with pytest.raises(ValidationError, match="ADMIN_EMAILS names no email"):
+        load_api_settings(env_file=None)
+
+
+def test_rejects_a_shared_account_name_longer_than_the_column(api_env: pytest.MonkeyPatch) -> None:
+    api_env.setenv("SHARED_ACCOUNT_NAME", "x" * 201)
+
+    with pytest.raises(ValidationError, match="shared_account_name"):
+        load_api_settings(env_file=None)
+
+
+@pytest.mark.parametrize("key", ["ADMIN_EMAILS", "SIGNUP_ALLOWED_EMAILS"])
+@pytest.mark.parametrize(
+    "bad", ["no-at-sign.example.test", "@example.test", "dan@", "a@b@example.test", "e e@x.test"]
+)
+def test_rejects_an_email_list_item_that_is_not_an_email_without_showing_it(
+    api_env: pytest.MonkeyPatch, key: str, bad: str
+) -> None:
+    api_env.setenv(key, f"admin@example.test,{bad}")
+
+    with pytest.raises(ValidationError, match=f"{key} holds an item") as caught:
+        load_api_settings(env_file=None)
+
+    assert bad not in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ["@clinic.test", "localhost", "https://clinic.test", "a..test"])
+def test_rejects_an_allowed_domain_that_is_not_a_bare_domain(
+    api_env: pytest.MonkeyPatch, bad: str
+) -> None:
+    api_env.setenv("SIGNUP_ALLOWED_DOMAINS", bad)
+
+    with pytest.raises(ValidationError, match="SIGNUP_ALLOWED_DOMAINS holds an item"):
+        load_api_settings(env_file=None)
+
+
+@pytest.mark.parametrize("public", ["gmail.com", "Outlook.com", "proton.me"])
+def test_rejects_a_public_mail_domain_so_sign_up_is_never_open_to_everyone(
+    api_env: pytest.MonkeyPatch, public: str
+) -> None:
+    api_env.setenv("SIGNUP_ALLOWED_DOMAINS", f"clinic.test, {public}")
+
+    with pytest.raises(ValidationError, match=f"public mail domain: {public.lower()}"):
+        load_api_settings(env_file=None)
+
+
+def test_an_email_at_a_public_domain_may_still_be_allowed_one_by_one(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    api_env.setenv("SIGNUP_ALLOWED_EMAILS", "made.up.person@gmail.com")
+
+    assert load_api_settings(env_file=None).signup_allowed_email_set == {"made.up.person@gmail.com"}

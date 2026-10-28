@@ -1,10 +1,10 @@
-// Opens the detail of job 9 for the draft review tests, as a reviewer unless told otherwise. Each read of the detail
+// Opens the detail of job 9 for the draft review tests, as an admin unless told otherwise. Each read of the detail
 // takes the next of `details` (the last one repeats), so a test sees what a refetch brings.
 
 import { act, screen, within } from "@testing-library/react";
 
 import type { JobDetail, JobResponse, UserResponse } from "../../src/api/types";
-import { NO_RECENT, REVIEWER, jsonResponse, renderAt, stubApi } from "../helpers";
+import { ADMIN, NO_RECENT, jsonResponse, renderAt, stubApi } from "../helpers";
 import type { Answer } from "../helpers";
 
 const DONE_JOB: JobResponse = {
@@ -20,7 +20,7 @@ const DONE_JOB: JobResponse = {
 export function openDetail(
   details: JobDetail[],
   answers: Record<string, Answer> = {},
-  user: UserResponse = REVIEWER,
+  user: UserResponse = ADMIN,
 ) {
   let reads = 0;
   const fetchStub = stubApi({

@@ -303,7 +303,7 @@ def test_a_code_of_another_email_is_400(
 def test_a_sign_up_code_is_not_a_reset_code(
     api_client: TestClient, clock: _Clock, sent_mail: RecordingSender
 ) -> None:
-    body = {"account_name": "One", "email": "a@x.org", "password": PASSWORD}
+    body = {"email": "a@x.org", "password": PASSWORD}
     assert api_client.post("/auth/signup", json=body).status_code == 201
     assert _confirm(api_client, code_in(sent_mail.sent[0])) == 400
 
@@ -380,7 +380,7 @@ def test_a_reset_lifts_the_login_limit_of_the_email(
 def test_a_reset_confirms_an_unverified_email_and_kills_its_sign_up_code(
     api_client: TestClient, clock: _Clock, sent_mail: RecordingSender, db_session: Session
 ) -> None:
-    body = {"account_name": "One", "email": "a@x.org", "password": PASSWORD}
+    body = {"email": "a@x.org", "password": PASSWORD}
     assert api_client.post("/auth/signup", json=body).status_code == 201
     signup_code = code_in(sent_mail.sent[0])
     _ask(api_client)
@@ -391,9 +391,23 @@ def test_a_reset_confirms_an_unverified_email_and_kills_its_sign_up_code(
     assert _code_rows(db_session) == 0
     assert api_client.post("/auth/verify-email", json={"code": signup_code}).status_code == 400
     assert _login(api_client, NEW_PASSWORD) == 200
-    # No `email_verified` row: the reset audits itself only.
-    actions = db_session.scalars(select(AuditEvent.action)).all()
-    assert AuditAction.EMAIL_VERIFIED not in actions
+    # No `email_verified` row: the reset audits itself, and that the user is now in the account.
+    actions = db_session.scalars(select(AuditEvent.action).order_by(AuditEvent.id)).all()
+    assert actions == [AuditAction.ACCOUNT_CREATED, AuditAction.PASSWORD_RESET]
+
+
+def test_a_reset_of_a_confirmed_user_audits_no_second_joining(
+    api_client: TestClient, clock: _Clock, sent_mail: RecordingSender, db_session: Session
+) -> None:
+    _signup(api_client)
+    _ask(api_client)
+    assert _confirm(api_client, code_in(sent_mail.sent[0])) == 204
+    actions = db_session.scalars(select(AuditEvent.action).order_by(AuditEvent.id)).all()
+    assert actions == [
+        AuditAction.ACCOUNT_CREATED,
+        AuditAction.EMAIL_VERIFIED,
+        AuditAction.PASSWORD_RESET,
+    ]
 
 
 def test_a_user_with_no_password_sets_a_first_one(

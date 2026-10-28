@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 
 from src.api.google_oidc import GoogleIdentity
 from src.api.login import find_user_by_email
-from src.api.signup import create_account_with_admin
+from src.api.signup import create_member
+from src.config.settings import ApiSettings
 from src.db.models import AuditAction, IdentityProvider, User, UserIdentity
 from src.db.query import for_account
 from src.review.audit import record_audit_event
@@ -33,6 +34,7 @@ class GoogleRefusal(StrEnum):
     NOT_VERIFIED = "not_verified"
     USE_PASSWORD = "use_password"  # noqa: S105  (a code, not a password)
     USE_SIGNUP = "use_signup"
+    NOT_ALLOWED = "not_allowed"
     LINKED_ELSEWHERE = "linked_elsewhere"
     EXPIRED = "expired"
 
@@ -89,12 +91,12 @@ def _add_identity(session: Session, user: User, identity: GoogleIdentity) -> Non
 
 def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | None:
     """Return the user `identity` opens, linking it first if allowed, or None if no verified
-    user has its email and Google vouches for it (the caller then offers a new account, which
-    replaces an unverified holder). Does not commit.
+    user has its email and Google vouches for it (the caller then offers to join the shared
+    account, which replaces an unverified holder). Does not commit.
 
     Refuses with `GoogleRefusedError`: an unverified email; a user already linked to another
     Google account; an email Google does not vouch for (`may_link`), for a link or a new
-    account; a Google account linked to another user. A new link writes a `google_linked`
+    user; a Google account linked to another user. A new link writes a `google_linked`
     audit event in the same transaction.
     """
     if not identity.email_verified:
@@ -103,7 +105,7 @@ def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | No
     # A user who never confirmed the email may be a stranger who typed it; linking would hand
     # the owner's Google login to that stranger's account. It is replaced at sign-up instead.
     if user is None or user.email_verified_at is None:
-        # A new account would hold the email before its owner signs up, and keep the Google
+        # A new user would hold the email before its owner signs up, and keep the Google
         # login after they reset the password; so it needs an email Google vouches for too.
         if not may_link(identity):
             raise GoogleRefusedError(GoogleRefusal.USE_SIGNUP)
@@ -125,21 +127,21 @@ def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | No
     return user
 
 
-def create_google_account(
-    session: Session, *, account_name: str, subject: str, email: str, now: datetime
+def create_google_member(
+    session: Session, *, settings: ApiSettings, subject: str, email: str, now: datetime
 ) -> User:
-    """Add an account, its `admin` user (no password, email verified at `now`: Google vouches
+    """Add a user of the shared account (no password, email verified at `now`: Google vouches
     for it) and the user's Google identity, and return the user. Does not commit; does not write
-    the audit event.
+    the audit events. The caller checks `may_sign_up` first.
 
-    All three rows are written inside one savepoint, so a refusal leaves none of them. Raises
-    `AccountNameTakenError` or `EmailTakenError` like sign-up, and
-    `GoogleRefusedError(LINKED_ELSEWHERE)` if the Google account opens another user.
+    Both rows are written inside one savepoint, so a refusal leaves neither. Raises
+    `EmailTakenError` like sign-up, and `GoogleRefusedError(LINKED_ELSEWHERE)` if the Google
+    account opens another user.
     """
     identity = GoogleIdentity(subject=subject, email=email, email_verified=True, hosted_domain=None)
     with session.begin_nested():
-        user = create_account_with_admin(
-            session, account_name=account_name, email=email, password=None, verified_at=now
+        user = create_member(
+            session, settings=settings, email=email, password=None, verified_at=now
         )
         _add_identity(session, user, identity)
     return user

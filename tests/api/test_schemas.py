@@ -1,11 +1,11 @@
-"""The request bodies: email and account name normalised, password length checked."""
+"""The request bodies: email normalised, password length checked, no account name taken."""
 
 import pytest
 from pydantic import ValidationError
 
 from src.api.schemas import (
-    MAX_ACCOUNT_NAME_CHARACTERS,
     MAX_EMAIL_CHARACTERS,
+    GoogleSignupRequest,
     LoginRequest,
     SignupRequest,
     normalize_email,
@@ -39,46 +39,43 @@ def test_accepts_an_email_of_exactly_the_column_length() -> None:
     assert normalize_email(longest) == longest
 
 
-def test_signup_trims_the_account_name_and_normalises_the_email() -> None:
-    body = SignupRequest(account_name="  Clinic One ", email=" A@X.org", password=PASSWORD)
-    assert (body.account_name, body.email) == ("Clinic One", "a@x.org")
+def test_signup_normalises_the_email() -> None:
+    assert SignupRequest(email=" A@X.org", password=PASSWORD).email == "a@x.org"
 
 
-@pytest.mark.parametrize("name", ["", "   "])
-def test_signup_refuses_an_empty_account_name(name: str) -> None:
+def test_signup_refuses_an_account_name() -> None:
     with pytest.raises(ValidationError, match="account_name"):
-        SignupRequest(account_name=name, email="a@x.org", password=PASSWORD)
-
-
-def test_signup_refuses_an_account_name_longer_than_the_column() -> None:
-    with pytest.raises(ValidationError, match="account_name"):
-        SignupRequest(
-            account_name="n" * (MAX_ACCOUNT_NAME_CHARACTERS + 1), email="a@x.org", password=PASSWORD
+        SignupRequest.model_validate(
+            {"account_name": "Clinic One", "email": "a@x.org", "password": PASSWORD}
         )
+
+
+def test_google_signup_takes_an_empty_body_and_refuses_an_account_name() -> None:
+    GoogleSignupRequest.model_validate({})
+    with pytest.raises(ValidationError, match="account_name"):
+        GoogleSignupRequest.model_validate({"account_name": "Clinic One"})
 
 
 @pytest.mark.parametrize("length", [11, 129])
 def test_signup_refuses_a_password_outside_12_to_128(length: int) -> None:
     with pytest.raises(ValidationError, match="password"):
-        SignupRequest(account_name="c", email="a@x.org", password="p" * length)
+        SignupRequest(email="a@x.org", password="p" * length)
 
 
 @pytest.mark.parametrize("length", [12, 128])
 def test_signup_accepts_a_password_of_12_or_128(length: int) -> None:
-    body = SignupRequest(account_name="c", email="a@x.org", password="p" * length)
+    body = SignupRequest(email="a@x.org", password="p" * length)
     assert len(body.password) == length
 
 
 def test_signup_keeps_spaces_in_the_password() -> None:
-    body = SignupRequest(account_name="c", email="a@x.org", password=f" {PASSWORD} ")
+    body = SignupRequest(email="a@x.org", password=f" {PASSWORD} ")
     assert body.password == f" {PASSWORD} "
 
 
 def test_signup_refuses_an_unknown_field() -> None:
     with pytest.raises(ValidationError, match="role"):
-        SignupRequest.model_validate(
-            {"account_name": "c", "email": "a@x.org", "password": PASSWORD, "role": "admin"}
-        )
+        SignupRequest.model_validate({"email": "a@x.org", "password": PASSWORD, "role": "admin"})
 
 
 def test_login_accepts_any_password_length() -> None:

@@ -3,7 +3,8 @@
 The upload text, the extracted letter fields with their confidence, the agent trace (statuses,
 versions, the score, the rules' verdict; it never holds text), and the draft: the model's
 letter, the latest version and the review. Every table read here is a business table and
-every query filters on `account_id`; a job of another account is answered as not found.
+every query filters on `account_id`; a job of another account, or another user's job when the
+`JobScope` has an owner, is answered as not found.
 No function here commits or calls a model.
 """
 
@@ -31,6 +32,7 @@ from src.db.models import (
 )
 from src.drafting.schemas import AppealLetter
 from src.extraction.schemas import DenialLetterExtraction
+from src.jobs.store import JobScope, scope_filter
 from src.review.actions import read_latest_draft
 
 
@@ -78,17 +80,18 @@ class JobDetail(BaseModel):
     draft: DraftDetail | None
 
 
-def read_job_detail(session: Session, account_id: int, job_id: int) -> JobDetail | None:
-    """Return the detail of the job `job_id` of `account_id`, or None (also for another account)."""
+def read_job_detail(session: Session, scope: JobScope, job_id: int) -> JobDetail | None:
+    """Return the detail of the job `job_id` in `scope`, or None (also for a job outside it)."""
     row = session.execute(
         select(Job, Upload, User.email)
         .join(Upload, and_(Upload.account_id == Job.account_id, Upload.id == Job.upload_id))
         .join(User, and_(User.account_id == Upload.account_id, User.id == Upload.user_id))
-        .where(Job.account_id == account_id, Job.id == job_id)
+        .where(*scope_filter(scope), Job.id == job_id)
     ).one_or_none()
     if row is None:
         return None
     job, upload, uploaded_by = row
+    account_id = scope.account_id
     fields = session.scalars(
         select(UploadExtraction.fields).where(
             UploadExtraction.account_id == account_id, UploadExtraction.job_id == job_id

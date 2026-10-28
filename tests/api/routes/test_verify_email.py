@@ -63,10 +63,8 @@ def clock(api_client: TestClient) -> Iterator[_Clock]:
     api_client.app.dependency_overrides.clear()  # type: ignore[attr-defined]
 
 
-def _signup(client: TestClient, name: str = "One", email: str = "ann@x.org") -> int:
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
-    )
+def _signup(client: TestClient, email: str = "ann@x.org") -> int:
+    response = client.post("/auth/signup", json={"email": email, "password": PASSWORD})
     assert response.status_code == 201, response.text
     user_id: int = response.json()["user_id"]
     return user_id
@@ -85,7 +83,9 @@ def _user(session: Session, user_id: int) -> User | None:
     return session.get(User, user_id)
 
 
-def _count(session: Session, model: type[Account] | type[EmailCode] | type[MailSend]) -> int:
+def _count(
+    session: Session, model: type[Account] | type[User] | type[EmailCode] | type[MailSend]
+) -> int:
     session.expire_all()
     return session.scalar(select(func.count()).select_from(model)) or 0
 
@@ -101,9 +101,7 @@ def _actions(session: Session) -> list[AuditAction]:
 def test_signup_emails_a_code_and_does_not_log_in(
     api_client: TestClient, db_session: Session, clock: _Clock, sent_mail: RecordingSender
 ) -> None:
-    response = api_client.post(
-        "/auth/signup", json={"account_name": "One", "email": "Ann@X.org", "password": PASSWORD}
-    )
+    response = api_client.post("/auth/signup", json={"email": "Ann@X.org", "password": PASSWORD})
     assert response.status_code == 201
     assert response.json()["email"] == "ann@x.org"
     assert AUTH_COOKIE_NAME not in api_client.cookies
@@ -117,7 +115,8 @@ def test_signup_emails_a_code_and_does_not_log_in(
     user = _user(db_session, response.json()["user_id"])
     assert user is not None and user.email_verified_at is None
     assert (_count(db_session, EmailCode), _count(db_session, MailSend)) == (1, 1)
-    assert _actions(db_session) == [AuditAction.ACCOUNT_CREATED]
+    # Nothing is audited until the code is typed.
+    assert _actions(db_session) == []
 
 
 def test_the_right_code_verifies_logs_in_and_clears_the_code(
@@ -184,11 +183,11 @@ def test_without_a_usable_cookie_both_routes_are_401(
 def test_a_new_sign_up_replaces_an_unverified_holder_of_the_email(
     api_client: TestClient, db_session: Session, clock: _Clock, sent_mail: RecordingSender
 ) -> None:
-    first = _signup(api_client, "Squatter")
+    first = _signup(api_client)
     first_code = code_in(sent_mail.sent[0])
     first_cookie = api_client.cookies[VERIFY_COOKIE_NAME]
     api_client.cookies.clear()
-    second = _signup(api_client, "Owner")
+    second = _signup(api_client)
     assert _user(db_session, first) is None and _user(db_session, second) is not None
     assert _count(db_session, Account) == 1
     # The replaced user's screen no longer works.
@@ -201,12 +200,10 @@ def test_a_new_sign_up_replaces_an_unverified_holder_of_the_email(
 def test_a_verified_holder_of_the_email_keeps_it(
     api_client: TestClient, db_session: Session, clock: _Clock, sent_mail: RecordingSender
 ) -> None:
-    _signup(api_client, "Owner")
+    _signup(api_client)
     assert _verify(api_client, code_in(sent_mail.sent[0])) == 200
     api_client.cookies.clear()
-    response = api_client.post(
-        "/auth/signup", json={"account_name": "Other", "email": "ann@x.org", "password": PASSWORD}
-    )
+    response = api_client.post("/auth/signup", json={"email": "ann@x.org", "password": PASSWORD})
     assert (response.status_code, response.json()) == (409, {"detail": EMAIL_TAKEN})
     assert _count(db_session, Account) == 1
 
@@ -219,9 +216,7 @@ def test_over_the_daily_cap_signup_is_503_and_creates_nothing(
         for _ in range(250)
     )
     db_session.commit()
-    response = api_client.post(
-        "/auth/signup", json={"account_name": "One", "email": "ann@x.org", "password": PASSWORD}
-    )
+    response = api_client.post("/auth/signup", json={"email": "ann@x.org", "password": PASSWORD})
     assert (response.status_code, response.json()) == (503, {"detail": MAIL_UNAVAILABLE})
     assert (_count(db_session, Account), _count(db_session, EmailCode)) == (0, 0)
     assert sent_mail.sent == []
@@ -232,13 +227,11 @@ def test_signup_counts_toward_the_ip_limit(
     api_client: TestClient, db_session: Session, clock: _Clock
 ) -> None:
     for number in range(20):
-        _signup(api_client, f"Clinic {number}", f"user{number}@x.org")
-    response = api_client.post(
-        "/auth/signup", json={"account_name": "Late", "email": "late@x.org", "password": PASSWORD}
-    )
+        _signup(api_client, f"user{number}@x.org")
+    response = api_client.post("/auth/signup", json={"email": "late@x.org", "password": PASSWORD})
     assert (response.status_code, response.json()) == (429, {"detail": TOO_MANY_LOGINS})
     assert int(response.headers["Retry-After"]) > 0
-    assert _count(db_session, Account) == 20
+    assert _count(db_session, User) == 20
 
 
 def test_verify_over_the_ip_limit_is_429_without_checking(
@@ -332,10 +325,10 @@ def test_a_new_code_for_a_confirmed_email_is_409(
 
 
 def test_a_new_code_for_a_replaced_user_is_401(api_client: TestClient, clock: _Clock) -> None:
-    _signup(api_client, "Squatter")
+    _signup(api_client)
     cookie = api_client.cookies[VERIFY_COOKIE_NAME]
     api_client.cookies.clear()
-    _signup(api_client, "Owner")
+    _signup(api_client)
     api_client.cookies.clear()
     api_client.cookies.set(VERIFY_COOKIE_NAME, cookie, path=VERIFY_COOKIE_PATH)
     clock.now = NOW + timedelta(minutes=1)
@@ -407,9 +400,7 @@ def test_nothing_secret_is_logged_or_answered(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO)
-    signup = api_client.post(
-        "/auth/signup", json={"account_name": "One", "email": "ann@x.org", "password": PASSWORD}
-    )
+    signup = api_client.post("/auth/signup", json={"email": "ann@x.org", "password": PASSWORD})
     code = code_in(sent_mail.sent[0])
     responses = [
         api_client.post(VERIFY_PATH, json={"code": _wrong(code)}),

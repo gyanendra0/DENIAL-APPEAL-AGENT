@@ -1,17 +1,26 @@
 import type { UserRole } from "../api/types";
 
-// Who may upload a denial letter. The UI hides the upload from anyone else; the API decides too
-// (403).
-const UPLOAD_ROLES: readonly UserRole[] = ["reviewer", "admin"];
+// The same role lists as `src/api/roles.py`. The UI hides what a role cannot do; the API decides
+// too (403).
+
+// Who may upload a denial letter: everyone. Each user sees only the letters they uploaded, an admin
+// sees every letter of the account.
+const UPLOAD_ROLES: readonly UserRole[] = ["viewer", "reviewer", "admin"];
 
 export function canUpload(role: UserRole | undefined): boolean {
   return role !== undefined && UPLOAD_ROLES.includes(role);
 }
 
-// Who may edit, approve or reject a draft (the API's `REVIEW_ROLES`). A viewer reads it only; the
-// API decides too (403).
-const REVIEW_ROLES: readonly UserRole[] = ["reviewer", "admin"];
+// Who may edit a draft. A viewer reads it only.
+const EDIT_ROLES: readonly UserRole[] = ["reviewer", "admin"];
 
-export function canReview(role: UserRole | undefined): boolean {
-  return role !== undefined && REVIEW_ROLES.includes(role);
+export function canEdit(role: UserRole | undefined): boolean {
+  return role !== undefined && EDIT_ROLES.includes(role);
+}
+
+// Who may approve or reject a draft: admins only.
+const DECIDE_ROLES: readonly UserRole[] = ["admin"];
+
+export function canDecide(role: UserRole | undefined): boolean {
+  return role !== undefined && DECIDE_ROLES.includes(role);
 }

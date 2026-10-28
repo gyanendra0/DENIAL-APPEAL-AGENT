@@ -1,7 +1,8 @@
 """Upload one denial letter, and read the status of the job that turns it into a draft.
 
 The `account_id` comes from the logged-in user, never from the path or the body: a job id of
-another account is answered with 404, the same as an id that does not exist. The file's name
+another account is answered with 404, the same as an id that does not exist; so is another
+user's job for anyone but an admin (`job_scope`). The file's name
 and text never reach a log line or an answer.
 """
 
@@ -19,12 +20,14 @@ from src.api.dependencies import (
     current_user,
     get_api_settings,
     get_job_runner,
+    job_scope,
     require_role,
 )
+from src.api.roles import UPLOAD_ROLES
 from src.api.upload_file import UploadFileError, read_uploaded_letter
 from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
-from src.db.models import AuditAction, EndState, JobFailure, JobStatus, UserRole
+from src.db.models import AuditAction, EndState, JobFailure, JobStatus
 from src.jobs.store import NewUpload, create_upload_job, find_job
 from src.review.audit import record_audit_event
 
@@ -64,7 +67,7 @@ class JobResponse(BaseModel):
 def upload_letter(
     file: UploadFile,
     background_tasks: BackgroundTasks,
-    user: Annotated[CurrentUser, Depends(require_role(UserRole.REVIEWER, UserRole.ADMIN))],
+    user: Annotated[CurrentUser, Depends(require_role(*UPLOAD_ROLES))],
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
     runner: Annotated[JobRunner, Depends(get_job_runner)],
     session: DbSession,
@@ -113,8 +116,9 @@ def get_job(
     user: Annotated[CurrentUser, Depends(current_user)],
     session: DbSession,
 ) -> JobResponse:
-    """Return one job of the user's account, or answer 404."""
-    job = find_job(session, user.account_id, job_id)
+    """Return one job the user may see, or answer 404 (also for another user's job when the
+    user is not an admin)."""
+    job = find_job(session, job_scope(user), job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, JOB_NOT_FOUND)
     return JobResponse(

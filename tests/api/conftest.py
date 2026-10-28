@@ -19,7 +19,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.app import create_app
 from src.api.mail import MailMessage
+from src.api.signup import create_member
 from src.config.settings import ApiSettings
+from src.db.models import Account, AuditAction, User, UserRole
+from src.review.audit import record_audit_event
 
 API_SECRET = "a-made-up-api-test-secret-of-forty-chars"  # noqa: S105  (made up, not a real secret)
 API_TTL_MINUTES = 60
@@ -33,8 +36,12 @@ _CODE_LINE = re.compile(r"^ {4}([0-9]{6})$", re.MULTILINE)
 
 
 def api_settings() -> ApiSettings:
-    """Made-up settings for an app built by a test."""
+    """Made-up settings for an app built by a test. Besides the admin, every `@x.org` email may
+    sign up, as most tests use one."""
     return ApiSettings(  # type: ignore[call-arg]
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        signup_allowed_domains="x.org",
         auth_token_secret=SecretStr(API_SECRET),
         auth_token_ttl_minutes=API_TTL_MINUTES,
         app_public_url=PUBLIC_URL,
@@ -59,13 +66,56 @@ def code_in(message: MailMessage) -> str:
     return found.group(1)
 
 
+def _with_admin(settings: ApiSettings, email: str) -> ApiSettings:
+    return settings.model_copy(update={"admin_emails": f"{settings.admin_emails},{email}"})
+
+
+def add_member(
+    session: Session,
+    *,
+    account_name: str,
+    email: str,
+    password: str | None,
+    verified_at: datetime | None,
+) -> User:
+    """Add a user with `email` straight to the account named `account_name` (made first if
+    there is none), as sign-up would with `SHARED_ACCOUNT_NAME` set to that name. Lets a test
+    put users in separate accounts. Stored as `reviewer`, like every sign-up."""
+    settings = api_settings().model_copy(update={"shared_account_name": account_name})
+    return create_member(
+        session, settings=settings, email=email, password=password, verified_at=verified_at
+    )
+
+
+def add_old_unverified_admin(session: Session, *, account_name: str, email: str) -> User:
+    """Add an account made before the shared account: its one `admin`, who never confirmed
+    `email`, and the `account_created` row that sign-up then wrote at once."""
+    account = Account(name=account_name)
+    session.add(account)
+    session.flush()
+    user = User(account_id=account.id, email=email, role=UserRole.ADMIN, email_verified_at=None)
+    session.add(user)
+    session.flush()
+    record_audit_event(session, account.id, user.id, AuditAction.ACCOUNT_CREATED, None)
+    session.flush()
+    return user
+
+
 def signup_and_verify(client: TestClient, *, name: str, email: str, password: str) -> Any:
     """Sign up, type the emailed code and return the logged-in user's JSON (as the code
     screen would). The client is then logged in as that user; the sign-up email is taken out
-    of the recorded mail again, so a test sees only the mail it caused itself."""
-    response = client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": password}
-    )
+    of the recorded mail again, so a test sees only the mail it caused itself.
+
+    The user signs up as an admin of the account named `name`: for the sign-up only, the app's
+    shared account is that name, and from then on the email is in its `ADMIN_EMAILS`. Two
+    names give two separate accounts."""
+    state = client.app.state  # type: ignore[attr-defined]
+    with_admin = _with_admin(state.api_settings, email)
+    state.api_settings = with_admin.model_copy(update={"shared_account_name": name})
+    try:
+        response = client.post("/auth/signup", json={"email": email, "password": password})
+    finally:
+        state.api_settings = with_admin
     assert response.status_code == 201, response.text
     sender: RecordingSender = client.app.state.mail_sender  # type: ignore[attr-defined]
     verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})

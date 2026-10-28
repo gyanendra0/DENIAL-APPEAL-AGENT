@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { JobDetail } from "../../src/api/types";
-import { ADMIN, VIEWER, jsonResponse, sentBody } from "../helpers";
+import { REVIEWER, VIEWER, jsonResponse, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED } from "./fixtures";
 import { detailReads, findDraft, openDetail, refocusWindow } from "./reviewHelpers";
 
@@ -175,13 +175,33 @@ describe("DraftActions", () => {
     for (const name of ["Edit", "Approve", "Reject"]) {
       expect(draft.queryByRole("button", { name })).not.toBeInTheDocument();
     }
+    expect(draft.queryByText("An admin approves or rejects this draft.")).not.toBeInTheDocument();
+  });
+
+  it("lets a reviewer edit but leaves approve and reject to an admin", async () => {
+    openDetail([DETAIL], {}, REVIEWER);
+    const user = userEvent.setup();
+    const draft = await findDraft();
+
+    expect(draft.getByText("An admin approves or rejects this draft.")).toBeInTheDocument();
+    for (const name of ["Approve", "Reject"]) {
+      expect(draft.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    await user.click(draft.getByRole("button", { name: "Edit" }));
+
+    expect(draft.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(draft.getByText("An admin approves or rejects this draft.")).toBeInTheDocument();
+    expect(draft.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   });
 
   it("shows the controls to an admin", async () => {
-    openDetail([DETAIL], {}, ADMIN);
+    openDetail([DETAIL]);
     const draft = await findDraft();
 
-    expect(draft.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    for (const name of ["Edit", "Approve", "Reject"]) {
+      expect(draft.getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(draft.queryByText("An admin approves or rejects this draft.")).not.toBeInTheDocument();
   });
 
   it("shows no controls on a draft already rejected", async () => {

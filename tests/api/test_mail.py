@@ -31,7 +31,11 @@ MESSAGE = MailMessage(to="ann@x.org", subject="Made up", body="A made-up body.\n
 
 def _settings(**changes: Any) -> ApiSettings:
     return ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), _env_file=None, **changes
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(SECRET),
+        _env_file=None,
+        **changes,
     )
 
 

@@ -1,5 +1,6 @@
 """`GET /overview`. Everything here is made up; no model is called."""
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -45,18 +46,40 @@ def test_the_overview_counts_the_accounts_jobs_and_costs(
     assert body["average_seconds"] == 30
 
 
-def test_a_viewer_reads_the_overview(api_client: TestClient, db_session: Session) -> None:
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_a_non_admin_sees_their_own_counts_and_no_cost(
+    api_client: TestClient, db_session: Session, role: UserRole
+) -> None:
     admin = _signup(api_client, "A", "admin@a.org")
-    db_session.add(
-        User(
-            account_id=admin.account_id,
-            email="viewer@a.org",
-            password_hash=hash_password(PASSWORD),
-            role=UserRole.VIEWER,
-            email_verified_at=VERIFIED_AT,
-        )
+    finish_job(
+        db_session, admin.account_id, add_job_with_draft(db_session, admin), cost_usd="0.002000"
+    )
+    user = User(
+        account_id=admin.account_id,
+        email="member@a.org",
+        password_hash=hash_password(PASSWORD),
+        role=role,
+        email_verified_at=VERIFIED_AT,
+    )
+    db_session.add(user)
+    db_session.flush()
+    member = Member(account_id=admin.account_id, user_id=user.id)
+    finish_job(
+        db_session,
+        admin.account_id,
+        add_job_with_draft(db_session, member),
+        seconds=20,
+        cost_usd="0.000500",
     )
     db_session.commit()
     api_client.cookies.clear()
-    api_client.post("/auth/login", json={"email": "viewer@a.org", "password": PASSWORD})
-    assert api_client.get("/overview").status_code == 200
+    api_client.post("/auth/login", json={"email": "member@a.org", "password": PASSWORD})
+
+    response = api_client.get("/overview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["jobs_by_status"]["done"] == 1
+    assert body["drafts_by_review_status"]["pending"] == 1
+    assert body["average_seconds"] == 20
+    assert (body["cost_usd_this_month"], body["cost_usd_total"]) == (None, None)

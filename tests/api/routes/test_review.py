@@ -47,17 +47,17 @@ def _signup(client: TestClient, name: str, email: str) -> Member:
     return Member(account_id=body["account_id"], user_id=body["user_id"])
 
 
-def _add_user(session: Session, account_id: int, email: str, role: UserRole) -> None:
-    session.add(
-        User(
-            account_id=account_id,
-            email=email,
-            password_hash=hash_password(PASSWORD),
-            role=role,
-            email_verified_at=VERIFIED_AT,
-        )
+def _add_user(session: Session, account_id: int, email: str, role: UserRole) -> Member:
+    user = User(
+        account_id=account_id,
+        email=email,
+        password_hash=hash_password(PASSWORD),
+        role=role,
+        email_verified_at=VERIFIED_AT,
     )
+    session.add(user)
     session.commit()
+    return Member(account_id=account_id, user_id=user.id)
 
 
 def _login(client: TestClient, email: str) -> None:
@@ -103,10 +103,12 @@ def other_job_id(api_client: TestClient, db_session: Session, admin: Member) -> 
     return job
 
 
-def _as(client: TestClient, session: Session, admin: Member, role: UserRole) -> None:
+def _as(client: TestClient, session: Session, admin: Member, role: UserRole) -> Member:
+    """Add a user with `role` to account A and log in as them."""
     email = f"{role.value}@a.org"
-    _add_user(session, admin.account_id, email, role)
+    member = _add_user(session, admin.account_id, email, role)
     _login(client, email)
+    return member
 
 
 def _edited() -> AppealLetter:
@@ -175,12 +177,30 @@ def test_the_worklist_refuses_a_bad_query(
     assert api_client.get("/worklist", params=params).status_code == 422
 
 
-def test_a_viewer_reads_the_worklist_and_the_detail(
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_a_non_admin_reads_only_their_own_jobs(
+    api_client: TestClient, db_session: Session, admin: Member, job_id: int, role: UserRole
+) -> None:
+    own = _drafted_job(db_session, _as(api_client, db_session, admin, role))
+
+    worklist = api_client.get("/worklist")
+    others = api_client.get(f"/jobs/{job_id}/detail")
+
+    assert [item["job_id"] for item in worklist.json()["items"]] == [own]
+    assert api_client.get(f"/jobs/{own}/detail").status_code == 200
+    assert (others.status_code, others.json()) == (404, {"detail": JOB_NOT_FOUND})
+
+
+def test_an_admin_reads_every_users_jobs(
     api_client: TestClient, db_session: Session, admin: Member, job_id: int
 ) -> None:
-    _as(api_client, db_session, admin, UserRole.VIEWER)
-    assert api_client.get("/worklist").status_code == 200
-    assert api_client.get(f"/jobs/{job_id}/detail").status_code == 200
+    reviewers = _drafted_job(db_session, _as(api_client, db_session, admin, UserRole.REVIEWER))
+    _login(api_client, "admin@a.org")
+
+    worklist = api_client.get("/worklist")
+
+    assert [item["job_id"] for item in worklist.json()["items"]] == [reviewers, job_id]
+    assert api_client.get(f"/jobs/{reviewers}/detail").status_code == 200
 
 
 @pytest.mark.parametrize("path", ["/worklist", "/jobs/1/detail", "/overview", "/audit"])
@@ -282,15 +302,12 @@ def test_a_viewer_may_not_act_on_a_draft(
     api_client: TestClient,
     db_session: Session,
     admin: Member,
-    job_id: int,
     action: Any,
 ) -> None:
-    _as(api_client, db_session, admin, UserRole.VIEWER)
-    response = (
-        action(api_client, job_id, _edited()) if action is _put else action(api_client, job_id)
-    )
+    own = _drafted_job(db_session, _as(api_client, db_session, admin, UserRole.VIEWER))
+    response = action(api_client, own, _edited()) if action is _put else action(api_client, own)
     assert (response.status_code, response.json()) == (403, {"detail": NOT_ALLOWED})
-    assert _draft(db_session, job_id).review_status is DraftReviewStatus.PENDING
+    assert _draft(db_session, own).review_status is DraftReviewStatus.PENDING
 
 
 def test_a_viewer_gets_404_not_403_for_another_accounts_job(
@@ -301,11 +318,23 @@ def test_a_viewer_gets_404_not_403_for_another_accounts_job(
     assert (response.status_code, response.json()) == (404, {"detail": JOB_NOT_FOUND})
 
 
-def test_a_reviewer_edits_and_approves(
-    api_client: TestClient, db_session: Session, admin: Member, job_id: int
+@pytest.mark.parametrize("action", [_approve, _reject])
+def test_a_reviewer_edits_but_may_not_approve_or_reject(
+    api_client: TestClient, db_session: Session, admin: Member, action: Any
 ) -> None:
-    _as(api_client, db_session, admin, UserRole.REVIEWER)
+    own = _drafted_job(db_session, _as(api_client, db_session, admin, UserRole.REVIEWER))
+    assert _put(api_client, own, _edited()).json()["version"] == 1
+    response = action(api_client, own, 1) if action is _approve else action(api_client, own)
+    assert (response.status_code, response.json()) == (403, {"detail": NOT_ALLOWED})
+    assert _draft(db_session, own).review_status is DraftReviewStatus.PENDING
+
+
+def test_an_admin_approves_a_reviewers_edit(
+    api_client: TestClient, db_session: Session, admin: Member
+) -> None:
+    job_id = _drafted_job(db_session, _as(api_client, db_session, admin, UserRole.REVIEWER))
     assert _put(api_client, job_id, _edited()).json()["version"] == 1
+    _login(api_client, "admin@a.org")
     response = _approve(api_client, job_id, version=1)
     assert (response.status_code, response.json()) == (
         200,
@@ -313,7 +342,53 @@ def test_a_reviewer_edits_and_approves(
     )
     draft = api_client.get(f"/jobs/{job_id}/detail").json()["draft"]
     assert (draft["review_status"], draft["approved_version"]) == ("approved", 1)
-    assert draft["reviewed_by"] == "reviewer@a.org"
+    assert draft["reviewed_by"] == "admin@a.org"
+
+
+@pytest.mark.parametrize("action", [_approve, _reject])
+def test_a_stored_admin_not_in_admin_emails_may_not_approve_or_reject(
+    api_client: TestClient, db_session: Session, admin: Member, job_id: int, action: Any
+) -> None:
+    former = _add_user(db_session, admin.account_id, "former@a.org", UserRole.ADMIN)
+    own = _drafted_job(db_session, former)
+    _login(api_client, "former@a.org")
+    response = action(api_client, own)
+    assert (response.status_code, response.json()) == (403, {"detail": NOT_ALLOWED})
+    assert _draft(db_session, own).review_status is DraftReviewStatus.PENDING
+    # Acting as a reviewer, the former admin no longer sees the admin's job.
+    assert api_client.get(f"/jobs/{job_id}/detail").status_code == 404
+
+
+@pytest.mark.parametrize("action", [_put, _approve, _reject])
+def test_a_reviewer_gets_404_not_403_for_another_accounts_job(
+    api_client: TestClient, db_session: Session, admin: Member, other_job_id: int, action: Any
+) -> None:
+    _as(api_client, db_session, admin, UserRole.REVIEWER)
+    response = (
+        action(api_client, other_job_id, _edited())
+        if action is _put
+        else action(api_client, other_job_id)
+    )
+    assert (response.status_code, response.json()) == (404, {"detail": JOB_NOT_FOUND})
+
+
+@pytest.mark.parametrize("action", [_put, _approve, _reject])
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_another_users_job_in_the_account_is_404_and_unchanged(
+    api_client: TestClient,
+    db_session: Session,
+    admin: Member,
+    job_id: int,
+    action: Any,
+    role: UserRole,
+) -> None:
+    _as(api_client, db_session, admin, role)
+    response = (
+        action(api_client, job_id, _edited()) if action is _put else action(api_client, job_id)
+    )
+    assert (response.status_code, response.json()) == (404, {"detail": JOB_NOT_FOUND})
+    draft = _draft(db_session, job_id)
+    assert (draft.review_status, draft.reviewed_by) == (DraftReviewStatus.PENDING, None)
 
 
 # --- approve and reject ---

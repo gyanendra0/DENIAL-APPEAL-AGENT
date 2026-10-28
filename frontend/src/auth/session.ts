@@ -21,7 +21,6 @@ import {
   verifyEmail,
 } from "../api/auth";
 import type {
-  GoogleSignupInput,
   LoginInput,
   PasswordChangeInput,
   PasswordResetAskInput,
@@ -94,7 +93,7 @@ export function useAuthOptions() {
   });
 }
 
-// Asked when the "name your account" screen opens; a retry would not bring back an expired cookie.
+// Asked when the Google "join" screen opens; a retry would not bring back an expired cookie.
 export function useGoogleSignupInfo() {
   return useQuery({ queryKey: ["google-signup"], queryFn: fetchGoogleSignup, retry: false });
 }
@@ -102,7 +101,7 @@ export function useGoogleSignupInfo() {
 export function useGoogleSignup() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: GoogleSignupInput) => googleSignup(input),
+    mutationFn: () => googleSignup(),
     onSuccess: (user: UserResponse) => {
       clearAccountData(queryClient);
       queryClient.setQueryData(SESSION_KEY, user);

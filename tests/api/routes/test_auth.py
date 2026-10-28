@@ -15,19 +15,31 @@ from src.api.app import create_app
 from src.api.dependencies import AUTH_COOKIE_NAME, get_now
 from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.routes import auth as auth_module
-from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN, LOGIN_FAILED
+from src.api.routes.auth import EMAIL_TAKEN, LOGIN_FAILED, SIGNUP_NOT_OPEN
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
-from src.db.models import Account, LoginFailure, LoginKeyKind, User, UserRole
+from src.db.models import (
+    Account,
+    AuditAction,
+    AuditEvent,
+    EmailCode,
+    LoginFailure,
+    LoginKeyKind,
+    User,
+    UserRole,
+)
 from tests.api.conftest import (
     API_TTL_MINUTES,
     BASE_URL,
     RecordingSender,
     api_settings,
+    code_in,
     signup_and_verify,
 )
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 WRONG = "a-made-up-wrong-password"  # noqa: S105  (made up)
+# In `ADMIN_EMAILS` of the test settings, so always allowed to sign up.
+ADMIN = "admin@example.test"
 NOW = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 
 
@@ -51,40 +63,111 @@ def _set_cookie_header(client: TestClient, path: str, json: dict[str, str] | Non
     return response.headers["set-cookie"].lower()
 
 
-def test_signup_creates_an_admin_and_logs_in(api_client: TestClient, db_session: Session) -> None:
+def test_an_admin_email_acts_as_admin_and_logs_in_once_confirmed(
+    api_client: TestClient, db_session: Session
+) -> None:
     body = _signup(api_client)
     assert body["email"] == "ann@x.org"
     assert body["role"] == UserRole.ADMIN
     assert body["account_name"] == "Clinic One"
     assert AUTH_COOKIE_NAME in api_client.cookies
     assert api_client.get("/me").json()["user_id"] == body["user_id"]
+    assert api_client.get("/me").json()["role"] == UserRole.ADMIN
+    # Stored as reviewer like everyone: `ADMIN_EMAILS` makes the admin on each request.
     stored = db_session.scalars(select(User)).one()
-    assert (stored.email, stored.role) == ("ann@x.org", UserRole.ADMIN)
+    assert (stored.email, stored.role) == ("ann@x.org", UserRole.REVIEWER)
 
 
-@pytest.mark.parametrize(
-    ("name", "email", "detail"),
-    [("Clinic One", "other@x.org", ACCOUNT_NAME_TAKEN), ("Clinic Two", "ann@x.org", EMAIL_TAKEN)],
-)
-def test_signup_with_a_taken_name_or_email_is_409_and_creates_nothing(
-    api_client: TestClient, db_session: Session, name: str, email: str, detail: str
-) -> None:
-    _signup(api_client)
-    before = _counts(db_session)
-    response = api_client.post(
-        "/auth/signup", json={"account_name": name, "email": email, "password": PASSWORD}
+def _post_signup(client: TestClient, email: str) -> int:
+    response = client.post("/auth/signup", json={"email": email, "password": PASSWORD})
+    return response.status_code
+
+
+def _verify(client: TestClient, sender: RecordingSender) -> dict[str, object]:
+    verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})
+    assert verified.status_code == 200, verified.text
+    body: dict[str, object] = verified.json()
+    return body
+
+
+def _actions(session: Session) -> list[tuple[str, AuditAction]]:
+    rows = session.execute(
+        select(User.email, AuditEvent.action)
+        .join(User, (User.account_id == AuditEvent.account_id) & (User.id == AuditEvent.user_id))
+        .order_by(AuditEvent.id)
     )
-    assert (response.status_code, response.json()["detail"]) == (409, detail)
+    return [(email, action) for email, action in rows]
+
+
+def test_an_allowed_email_joins_the_shared_account_as_a_reviewer(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender
+) -> None:
+    assert _post_signup(api_client, ADMIN) == 201
+    admin = _verify(api_client, sent_mail)
+    assert _post_signup(api_client, "Bob@X.org") == 201
+    bob = _verify(api_client, sent_mail)
+    assert (admin["role"], bob["role"]) == (UserRole.ADMIN, UserRole.REVIEWER)
+    assert admin["account_id"] == bob["account_id"]
+    assert bob["account_name"] == "Example Clinic"
+    assert _counts(db_session) == (1, 2)
+
+
+@pytest.mark.parametrize("email", ["ann@y.org", "ann@sub.x.org", "admin@example.test.evil.org"])
+def test_signup_for_an_email_not_allowed_is_403_and_writes_and_sends_nothing(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, email: str
+) -> None:
+    response = api_client.post("/auth/signup", json={"email": email, "password": PASSWORD})
+    assert (response.status_code, response.json()) == (403, {"detail": SIGNUP_NOT_OPEN})
+    assert "email_verify" not in response.headers.get("set-cookie", "")
+    assert _counts(db_session) == (0, 0)
+    assert db_session.scalars(select(EmailCode)).all() == []
+    assert sent_mail.sent == []
+
+
+def test_signup_with_an_account_name_is_422_and_creates_nothing(
+    api_client: TestClient, db_session: Session
+) -> None:
+    response = api_client.post(
+        "/auth/signup", json={"account_name": "Mine", "email": ADMIN, "password": PASSWORD}
+    )
+    assert response.status_code == 422
+    assert _counts(db_session) == (0, 0)
+
+
+def test_signup_with_a_taken_email_is_409_and_creates_nothing(
+    api_client: TestClient, db_session: Session
+) -> None:
+    _signup(api_client, email=ADMIN)
+    before = _counts(db_session)
+    response = api_client.post("/auth/signup", json={"email": ADMIN, "password": PASSWORD})
+    assert (response.status_code, response.json()["detail"]) == (409, EMAIL_TAKEN)
     assert _counts(db_session) == before
+
+
+def test_signup_audits_nothing_until_the_code_is_typed(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender
+) -> None:
+    assert _post_signup(api_client, "ann@x.org") == 201
+    assert _post_signup(api_client, "bob@x.org") == 201
+    assert _actions(db_session) == []
+    # The client's code cookie is Bob's, so Bob confirms first and creates the account; Ann
+    # signs up again (replacing her unverified user) and joins it.
+    _verify(api_client, sent_mail)
+    assert _post_signup(api_client, "ann@x.org") == 201
+    _verify(api_client, sent_mail)
+    assert _actions(db_session) == [
+        ("bob@x.org", AuditAction.ACCOUNT_CREATED),
+        ("bob@x.org", AuditAction.EMAIL_VERIFIED),
+        ("ann@x.org", AuditAction.USER_JOINED),
+        ("ann@x.org", AuditAction.EMAIL_VERIFIED),
+    ]
 
 
 @pytest.mark.parametrize("length", [11, 129])
 def test_signup_with_a_password_outside_12_to_128_is_422(
     api_client: TestClient, db_session: Session, length: int
 ) -> None:
-    response = api_client.post(
-        "/auth/signup", json={"account_name": "c", "email": "a@x.org", "password": "p" * length}
-    )
+    response = api_client.post("/auth/signup", json={"email": ADMIN, "password": "p" * length})
     assert response.status_code == 422
     assert _counts(db_session) == (0, 0)
 
@@ -145,9 +228,9 @@ def test_no_response_carries_the_password_or_the_hash(
     responses = [
         api_client.post(
             "/auth/signup",
-            json={"account_name": "One", "email": "a@x.org", "password": PASSWORD},
+            json={"email": ADMIN, "password": PASSWORD},
         ),
-        api_client.post("/auth/login", json={"email": "a@x.org", "password": PASSWORD}),
+        api_client.post("/auth/login", json={"email": ADMIN, "password": PASSWORD}),
         api_client.get("/me"),
     ]
     password_hash = db_session.scalars(select(User.password_hash)).one()
@@ -169,10 +252,10 @@ def test_signup_raises_when_the_new_user_cannot_be_read_back(
 @pytest.mark.parametrize(
     "body",
     [
-        {"account_name": "c", "email": "a@x.org", "password": "short-pw"},
-        {"account_name": "c", "email": "a@x.org", "password": "short-pw" * 17},
+        {"email": "a@x.org", "password": "short-pw"},
+        {"email": "a@x.org", "password": "short-pw" * 17},
         ["short-pw"],
-        {"account_name": "c", "email": "a@x.org", "password": "short-pw", "extra": "short-pw"},
+        {"email": "a@x.org", "password": "short-pw", "extra": "short-pw"},
     ],
 )
 def test_a_422_names_the_field_but_never_repeats_what_was_sent(
@@ -231,7 +314,7 @@ def test_signup_whose_commit_fails_is_not_answered_201(api_connection: Connectio
     client = TestClient(app, base_url=BASE_URL, raise_server_exceptions=False)
     response = client.post(
         "/auth/signup",
-        json={"account_name": "c", "email": "a@x.org", "password": PASSWORD},
+        json={"email": ADMIN, "password": PASSWORD},
     )
     assert response.status_code == 500
     assert "set-cookie" not in response.headers

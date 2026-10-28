@@ -3,13 +3,13 @@ import type { RouteObject } from "react-router";
 
 import { RequireSession } from "./auth/RequireSession";
 import { VERIFY_EMAIL_PATH } from "./auth/emailCode";
-import { GOOGLE_NAME_ACCOUNT_PATH } from "./auth/googleSignIn";
+import { GOOGLE_JOIN_PATH } from "./auth/googleSignIn";
 import { FORGOT_PASSWORD_PATH } from "./auth/passwordReset";
 import { HOME_PATH } from "./auth/redirect";
 import { AccountScreen } from "./screens/AccountScreen";
 import { AppLayout } from "./screens/AppLayout";
 import { ForgotPasswordScreen } from "./screens/ForgotPasswordScreen";
-import { GoogleNameAccountScreen } from "./screens/GoogleNameAccountScreen";
+import { GoogleJoinScreen } from "./screens/GoogleJoinScreen";
 import { JobDetailScreen } from "./screens/JobDetailScreen";
 import { LoginScreen } from "./screens/LoginScreen";
 import { OverviewScreen } from "./screens/OverviewScreen";
@@ -24,7 +24,7 @@ export const routes: RouteObject[] = [
   { path: "/app/signup", element: <SignupScreen /> },
   { path: FORGOT_PASSWORD_PATH, element: <ForgotPasswordScreen /> },
   { path: VERIFY_EMAIL_PATH, element: <VerifyEmailScreen /> },
-  { path: GOOGLE_NAME_ACCOUNT_PATH, element: <GoogleNameAccountScreen /> },
+  { path: GOOGLE_JOIN_PATH, element: <GoogleJoinScreen /> },
   {
     path: "/app",
     element: (

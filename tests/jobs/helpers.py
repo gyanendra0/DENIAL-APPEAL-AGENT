@@ -22,7 +22,7 @@ from src.db.models import (
     UserRole,
 )
 from src.db.session import create_session_factory, session_scope
-from src.jobs.store import NewUpload, create_upload_job
+from src.jobs.store import JobScope, NewUpload, create_upload_job
 
 ACCOUNT_NAMES = ("Made Up Jobs Clinic A", "Made Up Jobs Clinic B")
 MADE_UP_HASH = "$argon2id$v=19$m=65536,t=3,p=4$bWFkZXVw$bWFkZXVwaGFzaA"
@@ -50,6 +50,29 @@ def add_member(session: Session, name: str) -> Member:
     session.add(user)
     session.flush()
     return Member(account_id=account.id, user_id=user.id)
+
+
+def add_user(session: Session, member: Member, role: UserRole) -> Member:
+    """A second user of `member`'s account, with `role`; returned as a `Member` of that account."""
+    user = User(
+        account_id=member.account_id,
+        email=f"{role.value}-{member.account_id}-{member.user_id}@example.com",
+        password_hash=MADE_UP_HASH,
+        role=role,
+    )
+    session.add(user)
+    session.flush()
+    return Member(account_id=member.account_id, user_id=user.id)
+
+
+def account_scope(account_id: int) -> JobScope:
+    """What an admin of `account_id` reads: every job of the account."""
+    return JobScope(account_id=account_id, owner_id=None)
+
+
+def owner_scope(member: Member) -> JobScope:
+    """What a non-admin `member` reads: the jobs of their own uploads."""
+    return JobScope(account_id=member.account_id, owner_id=member.user_id)
 
 
 def new_upload(member: Member, text: str = UPLOAD_TEXT) -> NewUpload:

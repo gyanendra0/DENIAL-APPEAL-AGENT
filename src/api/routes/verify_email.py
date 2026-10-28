@@ -31,6 +31,7 @@ from src.api.login_limit import (
 )
 from src.api.mail import MailMessage, MailSender, send_quietly
 from src.api.schemas import CodeSentAnswer, UserResponse, VerifyEmailRequest
+from src.api.signup import record_joined
 from src.api.user_lookup import find_user_response
 from src.api.verify_cookie import (
     VERIFY_COOKIE_NAME,
@@ -94,10 +95,11 @@ def verify_email(
 ) -> UserResponse:
     """Confirm the email if `code` is the user's newest unexpired sign-up code, and log in.
 
-    Marks the email verified, deletes the user's sign-up codes, audits it, sets the login cookie
-    and clears the `email_verify` cookie. A wrong code is a 400 and counts one wrong try against
-    the code (it dies after `EMAIL_CODE_MAX_WRONG_TRIES`) and one against the client IP's limit;
-    over that limit, 429 without checking. No usable cookie: 401.
+    Marks the email verified, deletes the user's sign-up codes, audits it (and that the user
+    created or joined the account, `record_joined`), sets the login cookie and clears the
+    `email_verify` cookie. A wrong code is a 400 and counts one wrong try against the code (it
+    dies after `EMAIL_CODE_MAX_WRONG_TRIES`) and one against the client IP's limit; over that
+    limit, 429 without checking. No usable cookie: 401.
     """
     claims = _claims(request, settings, now)
     ip_hash = _ip_hash(request, settings)
@@ -124,6 +126,7 @@ def verify_email(
             delete_codes(session, account_id=user.account_id, user_id=user.id, purpose=PURPOSE)
             # A good try does not count, as at login.
             release_ip_failure(session, row_id)
+            record_joined(session, user)
             record_audit_event(session, user.account_id, user.id, AuditAction.EMAIL_VERIFIED, None)
             set_login_cookie(
                 response,
@@ -134,7 +137,9 @@ def verify_email(
             )
             delete_verify_cookie(response, settings)
             logger.info("email verified: account %d, user %d", user.account_id, user.id)
-            found = find_user_response(session, account_id=user.account_id, user_id=user.id)
+            found = find_user_response(
+                session, settings=settings, account_id=user.account_id, user_id=user.id
+            )
             if found is None:
                 # The user was locked in this same transaction; missing now is a bug.
                 raise RuntimeError(f"user {user.id} of account {user.account_id} vanished")
@@ -143,7 +148,7 @@ def verify_email(
         logger.info("email verify refused: too many tries")
         raise too_many_tries(retry_after)
     if gone:
-        # The account was replaced by a new sign-up for the same email.
+        # The user was replaced by a new sign-up for the same email.
         logger.info("email verify refused: user no longer exists")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, VERIFY_EXPIRED)
     logger.info("email verify failed: code not valid")

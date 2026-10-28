@@ -246,12 +246,12 @@ describe("UploadScreen", () => {
     expect(router.state.location.pathname).toBe("/app/login");
   });
 
-  it("shows a viewer that the role cannot upload, without the form", async () => {
+  it("lets a viewer upload too", async () => {
     stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, VIEWER) });
 
     renderAt("/app/upload");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Your role cannot do this.");
-    expect(screen.queryByLabelText("Denial letter")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Denial letter")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

@@ -70,10 +70,10 @@ file, and not in object storage) and queues a background job that extracts the f
 the same loop and stores the result in the account's own tables; `GET /jobs/{id}` gives its
 status (see 3.19). Sign-up, login and the logged-in user's own record work through the API
 (see 3.18). Step 7 works through the API: a reviewer reads the worklist and the denial
-detail, edits, approves or rejects the draft, and each action is written to the audit log
-(see 3.20). In the browser, the web dashboard covers sign-up, login, the upload with its job
-status and the worklist (see 3.21), and the denial detail, the draft review and the overview
-(see 3.22).
+detail and edits the draft, an admin approves or rejects it, and each action is written to
+the audit log (see 3.20). In the browser, the web dashboard covers sign-up, login, the
+upload with its job status and the worklist (see 3.21), and the denial detail, the draft
+review and the overview (see 3.22).
 
 ## 3.4 Data model (core tables)
 
@@ -107,8 +107,9 @@ loaded from public sources, and operational tables such as `llm_calls` (see 3.8)
 `login_failures` (see 3.18). The rule
 is in [conventions 6.4](06-conventions.md#64-database).
 
-`accounts` and `users` are the first business tables the product uses: sign-up writes one
-row to each, and every API request reads the logged-in user (see 3.18). Since migration 0015
+`accounts` and `users` are the first business tables the product uses: everyone who signs up
+joins one shared account (the first sign-up writes its `accounts` row, every sign-up one
+`users` row), and every API request reads the logged-in user (see 3.18). Since migration 0015
 an email belongs to one user of one account, so login can find the account from the email.
 That lookup is the one query on `users` without an `account_id` filter.
 
@@ -3807,6 +3808,10 @@ with Google", one admin route and a health check. The upload and
 job routes are in 3.19, the worklist, the draft review, the audit log and the overview in
 3.20.
 
+Everyone who signs up joins **one shared account**, named by `SHARED_ACCOUNT_NAME`; only the
+emails the settings allow may sign up, and the emails in `ADMIN_EMAILS` are its admins (see
+"Roles" and "Sign-up, step by step").
+
 Three things hold for every route:
 
 - **The login token is only ever in a cookie.** It is an HttpOnly cookie, so page scripts
@@ -3827,12 +3832,13 @@ place money is spent is the background job an upload queues, after its answer is
 | File | Holds |
 |---|---|
 | `src/api/app.py` | `create_app(api_settings=None, session_factory=None, job_runner=None)`, the app factory; it puts the settings, the session factory and the job runner on `app.state`, answers a `422` with `answer_validation_error`, and at startup marks unfinished jobs `interrupted` (3.19) |
-| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_mail_sender`, `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)` and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
+| `src/api/dependencies.py` | `get_api_settings`, `get_db_session` used through `DbSession` (commits when the route returns, before the answer is sent; rolls back on any error), `get_session_factory` (for a route that needs more than one transaction), `get_mail_sender`, `get_now` (the time in UTC; tests override it), `current_user`, `current_user_short` (the same check, in a transaction that ends before the route runs), `CurrentUser`, `require_role(*roles)`, `job_scope(user)` (the jobs the user may read, 3.20) and the cookie name `AUTH_COOKIE_NAME` (`access_token`) |
 | `src/api/passwords.py` | `hash_password`, `verify_password`, `verify_dummy_password`, the length limits 12 and 128 |
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
 | `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetAnswer`, `VerifyEmailRequest`, `EmailNotVerifiedAnswer`, `CodeSentAnswer`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by login, the sign-up code check, the password change and Google sign-in |
-| `src/api/signup.py` | `create_account_with_admin`, `remove_unverified_holder` (an unconfirmed holder of the email is replaced), `AccountNameTakenError`, `EmailTakenError` |
+| `src/api/signup.py` | `may_sign_up` (the allow-list), `shared_account_id` (the shared account, added by the first sign-up), `create_member`, `remove_unverified_holder` (an unconfirmed holder of the email is replaced: only that user is deleted, or an older one alone in its own account with that account), `record_joined` (`account_created` or `user_joined` once the email is confirmed), `EmailTakenError` |
+| `src/api/roles.py` | `effective_role` (the role a user acts with, from `ADMIN_EMAILS` and the stored role) and the role sets `UPLOAD_ROLES`, `EDIT_ROLES`, `DECIDE_ROLES` |
 | `src/api/login.py` | `authenticate`; `find_user_by_email`, the lookup by email shared by login, sign-up, the two reset routes and Google sign-in |
 | `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS`, `too_many_tries` (the `429`); the IP-only helpers sign-up, the code routes and the reset routes use: `ip_key`, `reserve_ip_failure`, `ip_over_limit`, `release_ip_failure`, `ip_retry_after_seconds`, `count_ip_try` (write and commit the try's IP row), `refuse_over_ip_limit` |
 | `src/api/email_codes.py` | The 6-digit codes: `new_code`, `hash_code`, `add_code`, `resend_wait_seconds`, `check_code`, `delete_codes`; the sentence `CODE_INVALID` |
@@ -3840,10 +3846,10 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/api/mail_cap.py` | `reserve_mail_send`: the daily send cap over every account |
 | `src/api/verify_cookie.py` | The signed `email_verify` cookie: `issue_verify_cookie`, `read_verify_cookie`, `VerifyClaims`, `InvalidVerifyCookieError`, `set_verify_cookie`, `delete_verify_cookie` |
 | `src/api/mail.py` | `MailMessage`, the `MailSender` protocol, `SmtpSender`, `OutboxSender`, `code_email` and `CODE_SUBJECTS` (the texts), `send_quietly`, `build_mail_sender` |
-| `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name |
+| `src/api/user_lookup.py` | `find_user_response`: one user of one account, with the account's name and the role the user acts with |
 | `src/api/google_oidc.py` | Google's side of the sign-in: `GoogleOidc` (`authorization_url`, `swap_code`, `verify_id_token`; Google's public keys are fetched once and again only for an unknown key id), `GoogleIdentity`, `GoogleSignInError`, `code_challenge` (PKCE S256) |
 | `src/api/google_cookies.py` | The two short-lived signed cookies `google_flow` and `google_signup`: `new_flow`, `GoogleFlow`, `PendingSignup`, `issue_flow_cookie`, `read_flow_cookie`, `issue_signup_cookie`, `read_signup_cookie`, `InvalidGoogleCookieError`; `COOKIE_TTL` (10 minutes) |
-| `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_account`, `GoogleRefusal` (the six refusal codes), `GoogleRefusedError` |
+| `src/api/google_identity.py` | Who a checked Google identity opens: `sign_in_with_google`, `may_link`, `create_google_member`, `GoogleRefusal` (the seven refusal codes), `GoogleRefusedError` |
 | `src/api/routes/` | `auth.py`, `verify_email.py`, `password_reset.py`, `google.py`, `me.py`, `users.py`, `health.py`: one router each |
 | `src/config/settings.py` | `ApiSettings` and `load_api_settings` |
 | `src/db/migrations/versions/rev_0015_users_password_and_global_email.py` | Migration 0015: `users.password_hash`, email unique across all accounts, a check that the email is stored lowercased with no whitespace at either end; the downgrade restores the key per account and drops the hashes |
@@ -3852,12 +3858,13 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/db/migrations/versions/rev_0020_password_reset_tokens.py` | Migration 0020: the business table `password_reset_tokens` and the audit action `password_reset` (no job, 3.20); the downgrade drops the table, deletes that action's events, rebuilds the type without it and restores 0019's check; the table is dropped again in 0022 |
 | `src/db/migrations/versions/rev_0021_user_identities_and_google_linked.py` | Migration 0021: the business table `user_identities`, the type `identity_provider` (`google`), the audit action `google_linked` (no job, 3.20) and `users.password_hash` allowed empty; the downgrade refuses while any user has no password (it names the count), and otherwise drops the table and the type, deletes that action's events, rebuilds the audit type without it, restores 0020's check and makes the hash required again |
 | `src/db/migrations/versions/rev_0022_email_codes_and_mail_sends.py` | Migration 0022: the type `email_code_purpose` (`verify_email`, `password_reset`), the business table `email_codes`, the operational table `mail_sends`, `users.email_verified_at` (every existing user set to their `created_at`), the audit action `email_verified` (no job, 3.20); `password_reset_tokens` dropped. The downgrade re-creates `password_reset_tokens` empty as in 0020, drops both tables, the type and the column, deletes that action's events, rebuilds the audit type without it and restores 0021's check |
+| `src/db/migrations/versions/rev_0023_user_joined_and_uploads_owner_index.py` | Migration 0023: the audit action `user_joined` (no job, 3.20) and the index `ix_uploads_account_id_user_id` for the owner filter (3.20). The downgrade refuses while any `user_joined` event exists (it names the count; those events record who joined and are not deleted), and otherwise drops the index, rebuilds the audit type without the value and restores 0022's check |
 
 ### The routes
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /auth/signup` | anyone | `201` with the new user and the `email_verify` cookie, but **no login cookie** (a code is emailed, see "Confirming the email"); `409` when the account name or the email is taken; `429` with `Retry-After` while the client IP has too many recent tries; `503` "we cannot send email right now; try again later" when today's emails are at `MAIL_DAILY_LIMIT` (nothing is created); `422` for a body that does not fit |
+| `POST /auth/signup` | anyone | `201` with the new user and the `email_verify` cookie, but **no login cookie** (a code is emailed, see "Confirming the email"); `403` "sign-up is not open for this email" for an email the settings do not allow (nothing is created); `409` when the email is taken; `429` with `Retry-After` while the client IP has too many recent tries; `503` "we cannot send email right now; try again later" when today's emails are at `MAIL_DAILY_LIMIT` (nothing is created); `422` for a body that does not fit |
 | `POST /auth/login` | anyone | `200` with the user and the login cookie; `401` for an unknown email or a wrong password (one message for both); `403` `{"detail": ..., "code": "EMAIL_NOT_VERIFIED"}` with the `email_verify` cookie and no login cookie for the right password of a user whose email is not confirmed yet; `429` with `Retry-After` while the email or the client IP has too many recent failures (see "The login limit"); `422` for a body that does not fit |
 | `POST /auth/verify-email` | a browser with the `email_verify` cookie | `200` with the user and the login cookie (the email is confirmed); `400` "the code is wrong or has expired"; `401` "the code screen has expired; log in again to get a new code" without a usable cookie; `429` with `Retry-After` while the client IP has too many recent tries; `422` for a code that is not six digits |
 | `POST /auth/verify-email/resend` | a browser with the `email_verify` cookie | `202` "a new code is on its way"; `429` with `Retry-After` within `EMAIL_CODE_RESEND_SECONDS` of the last code, after `EMAIL_CODE_PER_USER_PER_HOUR` codes in an hour, or while the client IP has too many recent tries; `503` at the daily cap; `409` "the email is already confirmed; log in"; `401` as above |
@@ -3868,46 +3875,90 @@ place money is spent is the background job an upload queues, after its answer is
 | `POST /auth/password-reset/confirm` | anyone with a reset code | `204` (no login cookie; every session of the user ends); `400` "the code is wrong or has expired" for a wrong, expired, replaced or used-up code and for an email with no account; `429` with `Retry-After` while the client IP has too many recent failures; `422` for a body that does not fit |
 | `GET /auth/options` | anyone | `200` with `{"google": true}` or `{"google": false}`: whether "Continue with Google" is on |
 | `GET /auth/google/start` | anyone, while Google is on | `303` to Google, with the `google_flow` cookie; `404` while Google is off (as are the three routes below) |
-| `GET /auth/google/callback` | the browser, sent back by Google | always a `303`: to `/app/worklist` with the login cookie, to `/app/google/name-account` with the `google_signup` cookie, or to `/app/login?google=<code>` when refused (see "Signing in with Google") |
-| `GET /auth/google/signup` | a browser with the `google_signup` cookie | `200` with the verified Google email the new account will use; `401` "the Google sign-up has expired" without a usable cookie |
-| `POST /auth/google/signup` | a browser with the `google_signup` cookie | `201` with the new user and the login cookie; `409` when the account name or the email is taken or the Google account is linked to another login; `401` as above; `422` for a body that does not fit |
+| `GET /auth/google/callback` | the browser, sent back by Google | always a `303`: to `/app/worklist` with the login cookie, to `/app/google/name-account` (the "join the account" screen) with the `google_signup` cookie, or to `/app/login?google=<code>` when refused (see "Signing in with Google") |
+| `GET /auth/google/signup` | a browser with the `google_signup` cookie | `200` with the verified Google email the new user will have and the name of the account they will join; `401` "the Google sign-up has expired" without a usable cookie |
+| `POST /auth/google/signup` | a browser with the `google_signup` cookie | `201` with the new user and the login cookie; `403` "sign-up is not open for this email" when the settings no longer allow the email; `409` when the email is taken or the Google account is linked to another login; `401` as above; `422` for a body that is not an empty object |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
 | `GET /health` | anyone | `200` with `{"status": "ok"}` when a connection opens within 5 s (`DB_CONNECT_TIMEOUT_SECONDS`, every route) and the database answers `SELECT 1` within 2 s; else `503` with `{"status": "unavailable"}`, without the error's text (3.23) |
 
-`GET /users/{user_id}` exists mainly to prove the isolation: its tests sign up two accounts
-and show that the admin of one gets `404` for the user of the other.
+`GET /users/{user_id}` exists mainly to prove the isolation: its tests make two accounts
+(the app's account name swapped between two sign-ups) and show that the admin of one gets
+`404` for the user of the other.
+
+### Roles
 
 The roles are `viewer`, `reviewer` and `admin` (the enum `user_role` since migration 0001).
-`GET /users/{user_id}` and `GET /audit` (3.20) check for `admin`; `POST /uploads` (3.19) and
-the edit, approve and reject of a draft (3.20) let `reviewer` and `admin` in and answer `403`
-to a `viewer`.
+`ADMIN_EMAILS` is the only source of `admin`: sign-up stores `reviewer` for everyone, and
+`current_user` works out the role the user acts with on every request (`effective_role`):
+
+- an email listed in `ADMIN_EMAILS` acts as `admin`, whatever is stored;
+- a stored `admin` whose email is no longer listed (an account made before this branch, say)
+  acts as `reviewer`;
+- anyone else acts with the stored role.
+
+So a change to `ADMIN_EMAILS` takes effect when the app restarts (it reads its settings once),
+for every user at their next request, with the same login token and no database change. Every
+answer that carries a user (`/me`, login, the code check, Google sign-up, `GET /users/{id}`)
+gives the effective role. A `viewer` is made only by hand in the database for now.
+
+| | `viewer` | `reviewer` | `admin` |
+|---|---|---|---|
+| Upload a letter (`POST /uploads`, 3.19) | yes | yes | yes |
+| Read jobs, details and drafts (3.19, 3.20) | own uploads only | own uploads only | every job of the account |
+| Edit a draft (3.20) | no (`403`) | yes, on own uploads | yes |
+| Approve or reject a draft (3.20) | no (`403`) | no (`403`) | yes |
+| Overview (3.20) | own jobs, no cost | own jobs, no cost | the account, with cost |
+| Audit log, `GET /users/{id}` | no (`403`) | no (`403`) | yes |
+
+Another user's job is answered `404`, like another account's; on the edit, approve and reject
+routes the `404` is decided before the role, so a role that may not act cannot probe for jobs
+it does not see (3.20).
 
 ### Sign-up, step by step
 
-1. The body is checked: the account name is trimmed and 1 to 200 characters; the email is
-   trimmed, lowercased and must look like an email (one `@`, text on both sides, no
-   whitespace, at most 320 characters); the password is 12 to 128 characters and is not
-   trimmed. Only the length is checked, following NIST SP 800-63B.
+1. The body is checked: the email is trimmed, lowercased and must look like an email (one
+   `@`, text on both sides, no whitespace, at most 320 characters); the password is 12 to 128
+   characters and is not trimmed. Only the length is checked, following NIST SP 800-63B. There
+   is no account name: everyone joins the shared account.
 2. The try is counted against the client IP's limit, as a reset request is (see "The login
    limit"): its IP row is written and committed first; over the limit the row is deleted again
    and the answer is `429` with `Retry-After`. Otherwise the row stays, so one address cannot
    sign up (and send code emails) without end.
-3. The password is hashed with Argon2id (`argon2-cffi`). The hash is salted, so two users
+3. The email must be allowed (`may_sign_up`): listed in `ADMIN_EMAILS` or
+   `SIGNUP_ALLOWED_EMAILS`, or under a domain in `SIGNUP_ALLOWED_DOMAINS` (the exact domain,
+   not its subdomains). Any other is `403` "sign-up is not open for this email" and nothing is
+   written but the IP row. Without the allow-list, anyone who signed up would read the
+   account's letters.
+4. The password is hashed with Argon2id (`argon2-cffi`). The hash is salted, so two users
    with the same password get different hashes.
-4. If a user who never confirmed it holds the email, their account is deleted first
-   (`remove_unverified_holder`, which finds them with `find_user_by_email`, 6.4). Such an
-   account is brand new: it was never logged in and no route adds users to an account.
-   Without this, anyone could block an address by signing up with it. A confirmed holder is
-   left alone.
-5. The account and its first user, an `admin` with `email_verified_at` empty, are written
-   inside one savepoint. When the name or the email is taken, the database's unique key
-   refuses the row (`accounts_name_key` or `uq_users_email`), both rows are rolled back and
-   the answer is `409`. Sign-up never searches other accounts' rows to find out.
-6. An `account_created` audit event is written and a sign-up code is made (see "Email
-   codes"). Over the daily email cap the answer is `503` and nothing of the sign-up is kept.
+5. Inside one savepoint:
+   - If a user who never confirmed it holds the email, that **user** is deleted first
+     (`remove_unverified_holder`, which finds them with `find_user_by_email`, 6.4, then locks
+     and reads the row again, so a code confirmed at the same moment keeps its user). Such a
+     user was never logged in, so has no uploads or reviews; the shared account and its other
+     users stay. A holder alone in an older account (made before the shared account, when
+     sign-up gave each user an account and wrote `account_created` at once) is deleted with
+     that account, so its audit row goes too; deleting the user alone would be refused by
+     `fk_audit_events_user`. Without this, anyone could block an address by signing up with
+     it. A confirmed holder is left alone.
+   - The shared account is read, or added if there is none yet (`shared_account_id`:
+     `INSERT ... ON CONFLICT (name) DO NOTHING`, then a read by name), so two first sign-ups
+     at the same moment both join one account.
+   - The user is written as a `reviewer` with `email_verified_at` empty. When the email is
+     taken, the database's unique key refuses the row (`uq_users_email`), the savepoint is
+     rolled back and the answer is `409`. Sign-up never searches other accounts' rows to find
+     out.
+6. A sign-up code is made (see "Email codes"). Over the daily email cap the answer is `503`
+   and nothing of the sign-up is kept. No audit event is written yet: a user who never
+   confirms the email never joined.
 7. The answer is `201` with the user and the `email_verify` cookie, and **no login cookie**:
    the user is logged in once they type the code (see "Confirming the email"). The email goes
    out after the answer.
+
+When the email is confirmed (the right sign-up code, or a reset code for a user who never
+confirmed it), `record_joined` writes `account_created` for the account's first confirmed user
+and `user_joined` for every later one, in the same transaction. It locks the account row
+first, so two users confirmed at the same moment do not both write `account_created`.
 
 ### Login, step by step
 
@@ -4020,7 +4071,7 @@ checks, so two requests at the same moment cannot both pass a cap or skip a wron
 
 ### Confirming the email, step by step
 
-A new account starts with `users.email_verified_at` empty and cannot log in. Nobody is logged
+A new user starts with `users.email_verified_at` empty and cannot log in. Nobody is logged
 in, so the screen's requests carry the **`email_verify` cookie** instead, set by sign-up and
 by a login refused with `EMAIL_NOT_VERIFIED`:
 
@@ -4039,12 +4090,13 @@ six digits or `422`):
 1. No cookie, or a damaged or expired one: `401` "the code screen has expired; log in again
    to get a new code".
 2. The try's IP row is written and committed first; over the IP limit, `429` without checking.
-3. The user row is locked. Gone (the account was replaced by a new sign-up for the same
+3. The user row is locked. Gone (the user was replaced by a new sign-up for the same
    email): the same `401`.
 4. A wrong, expired or replaced code is `400` "the code is wrong or has expired" and counts a
    wrong try (see "Email codes"); the IP row stays.
 5. The right code, in one transaction: `email_verified_at` set, the user's sign-up codes
-   deleted, the try's IP row deleted (a good try does not count, as at login), an
+   deleted, the try's IP row deleted (a good try does not count, as at login),
+   `account_created` or `user_joined` (`record_joined`, see "Sign-up, step by step") and an
    `email_verified` audit event (3.20), the login cookie set and `email_verify` cleared. The
    answer is `200` with the user.
 
@@ -4098,7 +4150,8 @@ The email is never a limit key here, so no answer depends on it.
    IP row stays, so guessing counts toward both limits.
 5. Success, in one transaction: the new hash, `users.token_version` + 1 (every session of the
    user ends, see "The login token"), **every** code of the user deleted (both purposes),
-   `email_verified_at` set if it was empty (the code proved the mailbox), the failures of
+   `email_verified_at` set if it was empty (the code proved the mailbox; the user then also
+   gets `account_created` or `user_joined`, `record_joined`), the failures of
    the email's login key and the try's own IP row deleted (so a user locked out by wrong
    passwords can log in at once), and a `password_reset` audit event (3.20).
 6. The answer is `204` with **no login cookie**: the screen sends the user to login.
@@ -4155,22 +4208,25 @@ is off. No model is called and no Google token is stored.
    the answer is `303` to `/app/worklist`. The login limit is not used: Google checked the
    person.
 7. **No user with that email.** Only an email Google vouches for (`may_link`, as in 5) may
-   start a new account; any other is refused (`use_signup`), because an account made by
-   whoever once controlled the address would hold it before its owner signs up, and its
-   Google login would survive the owner's password reset. Otherwise the answer is `303` to
-   `/app/google/name-account` with the `google_signup` cookie, which holds Google's `sub` and
-   the verified email. That screen reads
-   the email (`GET /auth/google/signup`) and sends only the account name
-   (`POST /auth/google/signup`): the email and the Google account come from the cookie, never
-   from the body. In one savepoint the route replaces an unconfirmed holder of the email (as
-   at sign-up), creates the account, its `admin` user with **no password** and the email
-   confirmed (Google vouches for it), and the identity, then writes `account_created`, deletes
-   `google_signup` and sets the login cookie. A taken name or email, or a Google account linked
+   start a new user; any other is refused (`use_signup`), because a user made by whoever once
+   controlled the address would hold it before its owner signs up, and its Google login would
+   survive the owner's password reset. An email the settings do not allow (`may_sign_up`, as
+   at sign-up) is refused (`not_allowed`). Otherwise the answer is `303` to
+   `/app/google/name-account`, the "join the account" screen, with the `google_signup` cookie,
+   which holds Google's `sub` and the verified email. That screen reads the email and the
+   account's name (`GET /auth/google/signup`) and, only after the person clicks Join, sends
+   an empty body (`POST /auth/google/signup`): the email and the Google account come from the
+   cookie, the account from the settings, never from the body. The route checks the allow-list
+   again (`403` if the email was removed meanwhile); then in one savepoint it replaces an
+   unconfirmed holder of the email (as at sign-up), adds a `reviewer` user of the shared
+   account with **no password** and the email confirmed (Google vouches for it), and the
+   identity; it then writes `account_created` or `user_joined` (`record_joined`), deletes
+   `google_signup` and sets the login cookie. A taken email, or a Google account linked
    meanwhile to another user, is `409` and leaves nothing behind.
 
 Every refusal is a `303` to `/app/login?google=<code>`, one of `failed`, `not_verified`,
-`use_password`, `use_signup`, `linked_elsewhere`, `expired`; nothing is written. The login
-screen shows a fixed sentence per code (3.21) and never what Google sent.
+`use_password`, `use_signup`, `not_allowed`, `linked_elsewhere`, `expired`; nothing is
+written. The login screen shows a fixed sentence per code (3.21) and never what Google sent.
 
 | Cookie | Holds | Path | SameSite | Lifetime |
 |---|---|---|---|---|
@@ -4302,9 +4358,11 @@ then has to log in once more (tokens last at most 60 minutes anyway).
    user's current `token_version` (it was issued before a password change) gets the same
    `401`.
 3. It returns `CurrentUser` (user id, account id, email, role), read from the database on
-   every request, so a deleted user is logged out at once.
+   every request, so a deleted user is logged out at once. The role is the one the user acts
+   with (`effective_role`, see "Roles"), so `ADMIN_EMAILS` applies on the next request.
 
-A route then passes `user.account_id` to every query. `require_role(...)` wraps
+A route then passes `user.account_id` to every query, and a route that reads jobs builds the
+user's `JobScope` from it with `job_scope(user)` (3.20). `require_role(...)` wraps
 `current_user` and answers `403` when the user's role is not one of the allowed ones.
 
 ### Settings
@@ -4314,6 +4372,10 @@ A route then passes `user.account_id` to every query. `require_role(...)` wraps
 | `AUTH_TOKEN_SECRET` | yes | The key that signs the tokens; at least 32 characters after trimming; hidden in error messages |
 | `AUTH_TOKEN_TTL_MINUTES` | no (default 60) | How long one token stays valid, at least 1 |
 | `AUTH_COOKIE_SECURE` | no (default true) | Whether the cookie is sent only over HTTPS; set false only for local development over plain HTTP |
+| `SHARED_ACCOUNT_NAME` | yes | The name of the one account everyone joins, 1 to 200 characters; the first sign-up adds it. A new name starts a new, empty account; users of the old one stay there |
+| `ADMIN_EMAILS` | yes | The admins' emails, comma-separated, at least one; trimmed and lowercased. They may always sign up, and only they act as `admin`. An item that is not an email stops the app at startup without the value being shown |
+| `SIGNUP_ALLOWED_EMAILS` | no (default none) | Other emails that may sign up (as `reviewer`), comma-separated; checked like `ADMIN_EMAILS` |
+| `SIGNUP_ALLOWED_DOMAINS` | no (default none) | Domains whose every email may sign up, comma-separated, exact (`example.org` does not allow `mail.example.org`). A public mail domain (`gmail.com`, `outlook.com` and others in `PUBLIC_MAIL_DOMAINS`) is refused at startup, by name, since it would let anyone in. With both allow-lists empty only the admins may sign up |
 | `LOGIN_LIMIT_WINDOW_MINUTES` | no (default 15) | How far back failed logins are counted, at least 1 |
 | `LOGIN_LIMIT_PER_EMAIL` | no (default 5) | Failures for one email inside the window before its logins are refused, at least 1 |
 | `LOGIN_LIMIT_PER_IP` | no (default 20) | Failures from one client IP inside the window before its logins are refused, at least 1 |
@@ -4379,13 +4441,14 @@ id when it succeeds, and only "wrong current password" or "too many failures" wh
 not. The reset routes log the account id and the user id when a code is made or a password
 is reset, the user id when the hourly cap stops a code, and otherwise only "password reset
 asked", "too many tries" or "code not valid". The sign-up code logs the account id and the
-user id when a code is made or the email is confirmed, a replaced unconfirmed account by its
-id, and otherwise only why it refused ("too soon", "too many tries", "code not valid", "user
+user id when a code is made or the email is confirmed, a replaced unconfirmed user by its
+id and its account's id, a sign-up refused by the allow-list only as "email not allowed", and
+otherwise only why it refused ("too soon", "too many tries", "code not valid", "user
 no longer exists"); the daily cap logs only that its limit is reached. The mail senders log
 only "email written to the outbox", "email sent" or "email failed" with the error's class. No
 code or reset log line holds the email, the code or a cookie. Google sign-in logs the account
-id and the user id when a user is logged in or signed up, "no user yet" when it asks for an
-account name, the refusal code when it refuses, and only the error's class or the HTTP status
+id and the user id when a user is logged in or signed up, "no user yet" when it asks to join
+the account, the refusal code when it refuses, and only the error's class or the HTTP status
 when a call to Google fails; it never logs the email, the code, the state, the nonce, the ID
 token or what Google sent back with a cancel. The email, the password, its hash and the token
 are never logged, and no response carries the password or the hash. A `422` names each bad
@@ -4417,11 +4480,13 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
 - **The daily cap is shared by every account.** Past `MAIL_DAILY_LIMIT` emails in a UTC day,
   sign-ups are refused (`503`) and reset codes are not sent until midnight UTC. Two requests
   at the same moment may both pass at the cap, so one or two more may go out.
-- **An unconfirmed account is taken over by the next sign-up for its email.** It holds
-  nothing yet (it was never logged in), so nothing is lost but the name.
-- **Old code rows of an unconfirmed account can stay.** An account nobody signs up over again
-  keeps its last codes (at most `EMAIL_CODE_PER_USER_PER_HOUR` an hour, while it keeps asking)
-  until its next code or the account is deleted; there is no cleanup job.
+- **An unconfirmed user is replaced by the next sign-up for its email.** It holds no uploads
+  or reviews yet (it was never logged in), so nothing is lost; one alone in an older account
+  goes with that account and its `account_created` row.
+- **Unconfirmed users and their code rows can stay.** A user nobody signs up over again keeps
+  its row and its last codes (at most `EMAIL_CODE_PER_USER_PER_HOUR` an hour, while it keeps
+  asking) until its next code or the user is deleted; there is no cleanup job. Such a user
+  sees nothing: it cannot log in.
 - **The code screen works in the browser that signed up, for 24 hours.** Elsewhere, or
   later, the user logs in with their password to get a new `email_verify` cookie and code.
 - **People behind one shared address share the IP limit.** An office or a mobile carrier
@@ -4438,8 +4503,18 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   (3.23).
 - **A new `AUTH_TOKEN_SECRET` resets every count**, because the hash key comes from it.
 - **One email, one account.** A person who works for two accounts needs two emails.
-- **No invite and no role change yet.** Every signed-up user is the `admin` of a new
-  account; adding users to an account is a later branch.
+- **Everyone joins one account; admins come from `ADMIN_EMAILS`.** There is no invite, no
+  role screen and no way to deactivate a user. A `viewer` is made only with a hand `UPDATE`
+  of `users.role`; removing someone means removing them from the allow-list and deleting the
+  user by hand (their audited actions stop that until a later branch decides what to keep).
+  Changing `ADMIN_EMAILS` or the allow-lists needs a restart.
+- **Accounts made before the shared account stay as they were.** Their users keep their own
+  account and letters; a stored `admin` of such an account acts as `reviewer` unless listed
+  in `ADMIN_EMAILS`, and nobody else can join it.
+- **A non-admin sees what their own jobs cost.** The overview hides the costs from anyone but
+  an admin, but the job detail (`GET /jobs/{id}/detail`) still gives each job's `cost_usd`
+  to the user who uploaded it. It is the user's own job and a fraction of a cent; hiding it
+  too is a later choice.
 - **A changed Google email stops "Continue with Google".** A user whose Google account now
   has another email is not found by the new one; there is no way to relink yet, so they log
   in with their password (or set one with "Forgot password").
@@ -4450,8 +4525,8 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   is one per browser. If the older tab returns first, its `state` no longer matches and it is
   refused (`failed`); if the newer one returns first, it finishes and the older one then
   finds no flow cookie (`expired`). Either way the user tries again.
-- **No limit on accounts created through Google.** Password sign-up counts against the IP
-  limit; Google sign-up does not.
+- **No limit on users created through Google.** Password sign-up counts against the IP
+  limit; Google sign-up does not (only allowed emails can use it).
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
   match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
   the app has a public address (Stage 6).
@@ -4477,7 +4552,8 @@ Three things hold for every upload:
 
 - **The account comes from the logged-in user.** Both routes and every query of the job take
   `account_id` from `current_user`, and a job of another account is answered with `404`
-  (3.18, [conventions 6.4](06-conventions.md#64-database)).
+  (3.18, [conventions 6.4](06-conventions.md#64-database)). A user who is not an admin reads
+  only the jobs of their own uploads; another user's job is the same `404` (`JobScope`, 3.20).
 - **No document text reaches a job row, an answer or a log.** A failure is stored as one of
   six fixed codes; a log line gives the job id, the account id and an error's class name,
   never its message, the file name or an extracted value.
@@ -4494,7 +4570,7 @@ The letters used so far are made up, so no real patient data is involved.
 | `src/api/upload_limit.py` | `UploadSizeLimit`, the middleware that checks the declared size of `POST /uploads` before its body is read |
 | `src/api/upload_file.py` | `read_uploaded_letter(data)`: the file type from the first bytes and the text, or `UploadFileError` with a fixed message |
 | `src/ingest/pdf_text.py` | `read_pdf_bytes(data, name)`: the text of every page of a PDF held in memory (the reader of 2.3.2, for bytes) |
-| `src/jobs/store.py` | `NewUpload`, `create_upload_job`, `find_job`, `start_job`, `read_upload_text`, `save_upload_extraction`, `finish_job_done`, `finish_job_failed`, `mark_interrupted_jobs`; `JobNotFoundError`, `JobStateError` |
+| `src/jobs/store.py` | `JobScope` and `scope_filter` (the jobs one user may read, 3.20), `NewUpload`, `create_upload_job`, `find_job` (takes a `JobScope`), `start_job`, `read_upload_text`, `save_upload_extraction`, `finish_job_done`, `finish_job_failed`, `mark_interrupted_jobs`; `JobNotFoundError`, `JobStateError` |
 | `src/jobs/run.py` | `run_upload_job(...)`, one job from `queued` to its end; `JobContext`, what every job runs with; `UploadLetter`, the letter as the loop reads it |
 | `src/jobs/context.py` | `build_job_context(...)`: the gateway, the default letter extraction and drafting prompts and the win model, loaded once |
 | `src/ml/features.py` | `build_letter_features(letter)`: the three model features from the letter's extracted fields |
@@ -4509,8 +4585,8 @@ The letters used so far are made up, so no real patient data is involved.
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /uploads` | a `reviewer` or an `admin` | `202` with the job id and status `queued`; `401` when not logged in; `403` for a `viewer`; `411` without a `Content-Length` header or with a `Transfer-Encoding` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (step 1); `422` for a file that cannot be read as a letter (one fixed message per case, below) |
-| `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account or no job at all |
+| `POST /uploads` | a logged-in user of any role | `202` with the job id and status `queued`; `401` when not logged in; `411` without a `Content-Length` header or with a `Transfer-Encoding` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (step 1); `422` for a file that cannot be read as a letter (one fixed message per case, below) |
+| `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account, another user's job for anyone but an admin, or no job at all |
 
 The upload is a form field `file` (`multipart/form-data`, read by `python-multipart`).
 
@@ -4673,7 +4749,10 @@ Four things hold for every route here:
 - **The account comes from the logged-in user**, and a job of another account is answered
   with `404`, the same as a job that does not exist (3.18,
   [conventions 6.4](06-conventions.md#64-database)). For edit, approve and reject the `404`
-  is decided before the role, so a `viewer` cannot probe for other accounts' jobs.
+  is decided before the role, so a role that may not act cannot probe for jobs it does not
+  see.
+- **A user who is not an admin sees only their own uploads.** Every job read takes a
+  `JobScope` (below); another user's job is the same `404`.
 - **No draft is approved unless every `policy` paragraph has a valid citation.** Every edit
   and every approve checks the letter again ([conventions 6.8](06-conventions.md#68-hard-rules)).
   The check follows the paragraph kinds; see the known limits.
@@ -4693,7 +4772,7 @@ Four things hold for every route here:
 | `src/review/audit_log.py` | `list_audit_events`, `AuditEntry`, `AuditPage` |
 | `src/review/worklist.py` | `list_worklist`, `WorklistItem`, `WorklistPage` |
 | `src/review/detail.py` | `read_job_detail`, `JobDetail`, `DraftDetail` |
-| `src/review/overview.py` | `read_overview`, `Overview` |
+| `src/review/overview.py` | `read_overview`, `Overview` (costs `None` for a scope with an owner) |
 | `src/review/paging.py` | Keyset paging shared by the worklist and the audit log; `DEFAULT_PAGE_SIZE` 50, `MAX_PAGE_SIZE` 100 |
 | `src/drafting/letter_check.py` | `check_letter(letter, chunks, fields)`: a stored letter checked again; `LetterProblem`, `LetterProblemKind` |
 | `src/drafting/cited_chunks.py` | `read_cited_chunks(session, letter)`: the stored chunks a letter cites |
@@ -4705,13 +4784,23 @@ Four things hold for every route here:
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `GET /worklist` | a logged-in user of any role | `200` with one page of the account's jobs, newest first; filters `status` and `review_status`; `before` + `limit` (1 to 100, default 50) |
-| `GET /jobs/{job_id}/detail` | any role | `200` with the upload text, the extracted fields with their confidence, the trace, the model's draft, the latest version and the review; `404` for a job of another account or no job |
+| `GET /worklist` | a logged-in user of any role | `200` with one page of the jobs the user may read (an admin: the account's; anyone else: their own uploads), newest first; filters `status` and `review_status`; `before` + `limit` (1 to 100, default 50) |
+| `GET /jobs/{job_id}/detail` | any role | `200` with the upload text, the extracted fields with their confidence, the trace, the model's draft, the latest version, the review and the job's `cost_usd`; `404` for a job of another account, another user's job for anyone but an admin, or no job |
 | `PUT /jobs/{job_id}/draft` | a `reviewer` or an `admin` | `200` with the new version; `404` (job, then draft); `403` for a `viewer`; `409` when the draft is decided or `based_on_version` is not the latest; `422` when the letter fails the checks |
-| `POST /jobs/{job_id}/draft/approve` | a `reviewer` or an `admin` | `200` with `approved`; the same `404` / `403` / `409` / `422` as an edit; `version` must be the latest |
-| `POST /jobs/{job_id}/draft/reject` | a `reviewer` or an `admin` | `200` with `rejected`; `404` / `403`; `409` when already decided; `reason` is one of the rubric's five values (3.17), never free text |
+| `POST /jobs/{job_id}/draft/approve` | an `admin` | `200` with `approved`; the same `404` / `409` / `422` as an edit, `403` for a `viewer` or `reviewer`; `version` must be the latest |
+| `POST /jobs/{job_id}/draft/reject` | an `admin` | `200` with `rejected`; `404`; `403` for a `viewer` or `reviewer`; `409` when already decided; `reason` is one of the rubric's five values (3.17), never free text |
 | `GET /audit` | an `admin` | `200` with one page of the account's events, newest first; `403` for another role |
-| `GET /overview` | any role | `200` with the counts, the costs and the average time |
+| `GET /overview` | any role | `200` with the counts, the costs and the average time, over the jobs the user may read; the costs are `null` for anyone but an admin |
+
+**Whose jobs a user reads.** `job_scope(user)` (`src/api/dependencies.py`) builds a
+`JobScope(account_id, owner_id)` from the logged-in user: `owner_id` is empty for an admin
+(the whole account) and the user's own id for anyone else. `find_job`, `list_worklist`,
+`read_job_detail` and `read_overview` take the scope, and `scope_filter` turns it into the
+conditions on `jobs`: always `account_id`, and with an owner also
+`upload_id IN (SELECT id FROM uploads WHERE account_id = ... AND user_id = ...)`, served by the
+index `ix_uploads_account_id_user_id` (migration 0023). The owner filter comes on top of the
+`account_id` filter, never instead of it. The background job runner reads its job by
+`account_id` only: it runs every upload, whoever made it.
 
 A worklist line has no document text: the file name, who uploaded it and when, the job's
 status, failure and end state, the review status, the denial reason and the win probability.
@@ -4732,9 +4821,10 @@ A draft is `pending` until it is approved or rejected. Both are final: a decided
 be edited or decided again (`409`). Version 0 is the model's draft, which never changes; each
 edit stores the next version in `draft_revisions`.
 
-1. **Lock.** Each action first locks the draft row (`SELECT ... FOR UPDATE`, filtered by
-   `account_id`). Two reviewers acting at once are served one after the other, and the second
-   one's version is then stale (`409`).
+1. **Lock.** Each action first checks that the user may read the job (its `JobScope`), then
+   locks the draft row (`SELECT ... FOR UPDATE`, filtered by `account_id`). Two people acting
+   at once (the uploader editing, an admin approving) are served one after the other, and the
+   second one's version is then stale (`409`).
 2. **Edit** (`PUT`). The body is the whole edited letter and the version it was based on,
    which must be the latest. The letter is first compared with the model's draft
    (`find_edit_problems`): a paragraph's text may change, and a paragraph or a citation may
@@ -4767,10 +4857,11 @@ The kind `edit_not_allowed` comes from the edit check.
 
 | Action | Written by | Detail |
 |---|---|---|
-| `account_created` | sign-up (3.18) | none; no job |
+| `account_created` | the first user of an account to confirm their email (3.18) | none; no job |
+| `user_joined` | every later user of the account to confirm their email, by code, reset or Google sign-up (3.18) | none; no job (migration 0023) |
 | `password_changed` | `POST /me/password` (3.18) | none; no job (migration 0019) |
 | `password_reset` | `POST /auth/password-reset/confirm` (3.18), a completed reset only | none; no job (migration 0020) |
-| `google_linked` | `GET /auth/google/callback` (3.18), when a Google account is linked to an existing user; a sign-up through Google writes `account_created` instead | none; no job (migration 0021) |
+| `google_linked` | `GET /auth/google/callback` (3.18), when a Google account is linked to an existing user; a sign-up through Google writes `account_created` or `user_joined` instead | none; no job (migration 0021) |
 | `email_verified` | `POST /auth/verify-email` (3.18), when a new sign-up types the right code; a reset that confirms the email writes `password_reset` only | none; no job (migration 0022) |
 | `upload_created` | `POST /uploads` (3.19) | none |
 | `draft_edited` | an edit | the new version |
@@ -4779,9 +4870,10 @@ The kind `edit_not_allowed` comes from the edit check.
 
 An event holds the account, the user, the action, the job, the time and a detail with fixed
 keys only (`AuditDetail`: `version`, `reject_reason`). It never holds document text, letter
-text or a file name. Sign-up, the email code, the password change, the password reset and the
+text or a file name. The email code, Google sign-up, the password change, the password reset and the
 upload write their event in the same transaction as their rows. Asking for a reset code writes
-no event: an unknown email has no account to write it to. The code only inserts events; nothing
+no event: an unknown email has no account to write it to. A password sign-up writes none
+either, until its email is confirmed. The code only inserts events; nothing
 updates or deletes one.
 
 The links from an event to its user and its job have no cascade, so an audited user or job
@@ -4795,12 +4887,14 @@ account spent. Each job stores its own cost instead: the job runs inside the gat
 meter, and its total goes into `jobs.cost_usd` (`Numeric(12, 6)`, default 0, never below 0)
 when the job ends `done` or `failed` (3.19). `llm_calls` is unchanged.
 
-`GET /overview` gives, for the account:
+`GET /overview` gives, for the jobs the user may read (the account for an admin, their own
+uploads for anyone else):
 
 - the jobs by status, the `done` jobs by end state and the drafts by review status, every
   value present (0 when none);
 - `cost_usd_this_month` (the jobs uploaded this month, by the database clock) and
-  `cost_usd_total`, exact decimals;
+  `cost_usd_total`, exact decimals; both `null` for anyone but an admin (only admins see what
+  the model costs; see the 3.18 known limit on the job detail);
 - `average_seconds`, from upload to job end over the jobs that started and ended (None when
   there is none).
 
@@ -4812,7 +4906,7 @@ All three are business tables with `account_id`.
 |---|---|---|
 | `upload_drafts` (new columns) | job | `review_status` (`pending` / `approved` / `rejected`, default `pending`), `reviewed_by`, `reviewed_at`, `reject_reason`, `approved_version` (0 = the model's draft); one check keeps them matching the status |
 | `draft_revisions` | edit | the job, `version` (1 and up, unique per job), the letter as JSON, its hash, `edited_by` |
-| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `password_changed`, `password_reset`, `google_linked` and `email_verified`, a check since migration 0019, widened in 0020, 0021 and 0022), `detail` as a JSON object |
+| `audit_events` | action | the user, `action`, the job (empty exactly for `account_created`, `user_joined`, `password_changed`, `password_reset`, `google_linked` and `email_verified`, a check since migration 0019, widened in 0020, 0021, 0022 and 0023), `detail` as a JSON object |
 
 As in 3.19, every link carries `account_id`: a revision links to its draft on (`account_id`,
 `job_id`) (new key `uq_upload_drafts_account_job_id`) and is deleted with it; the links to
@@ -4900,18 +4994,18 @@ screen:
 | `frontend/src/api/types.ts` | The API's answers as TypeScript types, written by hand from the Python schemas |
 | `frontend/src/api/auth.ts`, `jobs.ts`, `worklist.ts` | One function per route: `signup`, `verifyEmail`, `resendCode`, `login`, `logout`, `fetchMe`, `changePassword`, `askPasswordReset`, `confirmPasswordReset`, `fetchAuthOptions`, `fetchGoogleSignup`, `googleSignup`, and `GOOGLE_START_PATH` (a link, not a call); `uploadLetter`, `fetchJob`; `fetchWorklist` |
 | `frontend/src/auth/session.ts` | `useSession`, `useLogin`, `useSignup` (does not touch the session: a sign-up does not log in), `useVerifyEmail`, `useResendCode`, `useLogout`, `useChangePassword`, `useAskPasswordReset`, `useConfirmPasswordReset`, `useAuthOptions`, `useGoogleSignupInfo`, `useGoogleSignup`, `clearAccountData` (keeps the session and the options); the session is the cache key `["me"]`, the options `["auth-options"]` |
-| `frontend/src/auth/googleSignIn.ts` | `GOOGLE_NAME_ACCOUNT_PATH`, `GOOGLE_SIGNUP_EXPIRED`; `googleRefusalMessage`, the fixed sentence for the `?google=<code>` the API sends a refusal back with |
+| `frontend/src/auth/googleSignIn.ts` | `GOOGLE_JOIN_PATH`, `GOOGLE_SIGNUP_EXPIRED`; `googleRefusalMessage`, the fixed sentence for the `?google=<code>` the API sends a refusal back with |
 | `frontend/src/auth/passwordReset.ts` | `FORGOT_PASSWORD_PATH`; `PASSWORD_SET_STATE` and `isPasswordSetState`, the note the reset screen leaves for the login screen |
 | `frontend/src/auth/emailCode.ts` | `VERIFY_EMAIL_PATH`; `EMAIL_NOT_VERIFIED` and `isEmailNotVerified` (a login `403` with that `code`); `waitSentence`, "Wait 42 seconds before asking for another code." from a `Retry-After` (a minute or more in whole minutes, rounded up) |
 | `frontend/src/auth/RequireSession.tsx` | The login guard |
 | `frontend/src/auth/redirect.ts` | `afterLoginPath`: where to go after login; `HOME_PATH` (`/app/worklist`) |
-| `frontend/src/auth/roles.ts` | `canUpload`: `reviewer` and `admin` |
+| `frontend/src/auth/roles.ts` | The API's role sets (3.18 "Roles"): `canUpload` every role, `canEdit` `reviewer` and `admin`, `canDecide` `admin` only |
 | `frontend/src/jobs/useJob.ts` | `useUploadLetter`; `useJob`, which polls every `JOB_POLL_MS` (2,000 ms); a new upload and the first answer that shows a job finished (also for a job opened after it finished) refresh the worklist and the sidebar's Recent list, without making the upload wait |
-| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm` (the code and the new password), `checkCode`, `checkGoogleSignup`: the empty, email-shape, code-shape (six digits) and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, code, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
+| `frontend/src/auth/credentialCheck.ts` | `checkLogin`, `checkSignup`, `checkPasswordChange`, `checkResetAsk`, `checkResetConfirm` (the code and the new password), `checkCode`: the empty, email-shape, code-shape (six digits) and password-length (12 to 128, counted in characters as Python does) checks before a login, sign-up, code, password change or reset is sent, one sentence under each wrong field; `focusFirstError` |
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleNameAccountScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload for a `reviewer` or `admin`, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleJoinScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
@@ -4920,17 +5014,17 @@ screen:
 | Path | Who may see it | Calls |
 |---|---|---|
 | `/app/login` | anyone | `POST /auth/login` |
-| `/app/signup` | anyone | `POST /auth/signup` (a new account, its first user an `admin`) |
+| `/app/signup` | anyone | `POST /auth/signup` (email and password only: the user joins the shared account as a `reviewer`; an email the settings do not allow gets the API's "Sign-up is not open for this email.") |
 | `/app/verify-email` | anyone the API gave the `email_verify` cookie (after sign-up, or a login refused with `EMAIL_NOT_VERIFIED`) | `POST /auth/verify-email` and `POST /auth/verify-email/resend` |
 | `/app/forgot-password` | anyone | `POST /auth/password-reset`, then `POST /auth/password-reset/confirm` |
-| `/app/google/name-account` | anyone the API sent there after a first Google sign-in | `GET` and `POST /auth/google/signup` |
+| `/app/google/name-account` | anyone the API sent there after a first Google sign-in (the "join the account" screen; the path is the API's) | `GET` and `POST /auth/google/signup` |
 | `/app/worklist` | a logged-in user of any role | `GET /worklist` |
-| `/app/upload` | a `reviewer` or an `admin`; a `viewer` sees a sentence saying the role cannot upload | `POST /uploads`, then `GET /jobs/{id}` |
+| `/app/upload` | a logged-in user of any role | `POST /uploads`, then `GET /jobs/{id}` |
 | `/app/account` | a logged-in user of any role | `POST /me/password` |
 | any other path | | sends to `/app/worklist` |
 
 Every screen under `/app/` other than login, sign-up, the code screen, the reset screen and the
-Google name-your-account screen asks for the session first (`GET /me`) and shows the account,
+Google join screen asks for the session first (`GET /me`) and shows the account,
 the user's email and role and a Log out button (`POST /auth/logout`).
 
 ### How the browser reaches the API
@@ -5052,13 +5146,16 @@ starts again.
 3. A refused sign-in comes back to `/app/login?google=<code>`. The login screen shows the one
    fixed sentence for that code (`googleRefusalMessage`, a `Map` lookup); an unknown code shows
    nothing, so text in the address is never shown.
-4. A first Google sign-in with no user lands on `/app/google/name-account` ("Name your
-   account"). The screen shows "Signing up as" the verified email (`GET /auth/google/signup`)
-   and asks only for the account name (`checkGoogleSignup`: not empty; the field takes at most
-   200 characters). `POST /auth/google/signup` creates the account, with the user as its
-   `admin`, and logs in; the cache is emptied and the session written, as at sign-up, and the
-   screen goes to the worklist. A `409` shows the API's own sentence (name taken, email taken,
-   Google account linked elsewhere). A `401`, on opening or on sending, shows "The Google
+4. A first Google sign-in with no user lands on `/app/google/name-account`
+   (`GoogleJoinScreen`). The screen asks "Join <account> as <email>?" with the account's name
+   and the verified email from `GET /auth/google/signup`, and has one Join button; nothing is
+   sent before the click. Join sends `POST /auth/google/signup` with an empty body, which adds
+   the user to the shared account as a `reviewer` and logs in; the cache is emptied and the
+   session written, as at sign-up, and the screen goes to the worklist. A `403` (sign-up no
+   longer open for the email) or a `409` (email taken, Google account linked elsewhere) shows
+   the API's own sentence. An email the settings do not allow never reaches this screen: the
+   API sends it back to login with `?google=not_allowed`, which shows "Sign-up is not open for
+   this email. Ask an admin to add it." A `401`, on opening or on sending, shows "The Google
    sign-up has expired. Continue with Google again." with a link to login.
 5. A user who signed up with Google has no password. On the Account screen a password change
    gets the API's own `400` sentence, "this login has no password yet; use Forgot password to
@@ -5191,7 +5288,7 @@ The four rules of 3.21 hold here too. Two more:
 |---|---|
 | `frontend/src/api/review.ts`, `overview.ts` | `fetchJobDetail`, `saveDraft` (`PUT /jobs/{id}/draft`), `approveDraft`, `rejectDraft`; `fetchOverview` |
 | `frontend/src/api/client.ts` | Since this branch also `jsonRequest`, and `ApiError.letterProblems`, the refused-letter problems of a `422` |
-| `frontend/src/auth/roles.ts` | `canReview`: `reviewer` and `admin`, the API's `REVIEW_ROLES` |
+| `frontend/src/auth/roles.ts` | `canEdit` (`reviewer` and `admin`) and `canDecide` (`admin`), the API's `EDIT_ROLES` and `DECIDE_ROLES` |
 | `frontend/src/jobs/useJobDetail.ts` | `useJobDetail`, cache key `["job-detail", id]`, read once the job is finished |
 | `frontend/src/screens/JobDetailScreen.tsx` | The split view and the job facts |
 | `frontend/src/detail/ExtractionTable.tsx`, `AnalysisSection.tsx` | The extracted fields with their confidence; the rules, the score and the evidence matches |
@@ -5204,7 +5301,7 @@ The four rules of 3.21 hold here too. Two more:
 
 | Path | Who may see it | Calls |
 |---|---|---|
-| `/app/jobs/:id` | a logged-in user of any role; edit, approve and reject only for a `reviewer` or an `admin` | `GET /jobs/{id}` while the job runs, then `GET /jobs/{id}/detail`; `PUT /jobs/{id}/draft`, `POST /jobs/{id}/draft/approve`, `POST /jobs/{id}/draft/reject` |
+| `/app/jobs/:id` | a logged-in user of any role, for the jobs the API lets them read; edit for a `reviewer` or an `admin`, approve and reject for an `admin` | `GET /jobs/{id}` while the job runs, then `GET /jobs/{id}/detail`; `PUT /jobs/{id}/draft`, `POST /jobs/{id}/draft/approve`, `POST /jobs/{id}/draft/reject` |
 | `/app/overview` | a logged-in user of any role | `GET /overview` |
 
 The job id in the worklist links to `/app/jobs/:id`, and a finished upload shows "Open the
@@ -5257,16 +5354,19 @@ place.
    (`refreshAfterReview`) before the buttons come back, so no button shows a state that has
    passed.
 
-A `viewer` sees the draft and its review status, with no Edit, Approve or Reject; the API
-answers `403` to one anyway.
+A `viewer` sees the draft and its review status, with no Edit, Approve or Reject. A
+`reviewer` sees Edit and the line "An admin approves or rejects this draft." instead of
+Approve and Reject. The API answers `403` to either anyway.
 
 ### The overview
 
 `/app/overview` shows only what `GET /overview` returns: the jobs by status, the finished jobs
 by end state and the drafts by review status (every value, zeros included, in the worklist's
 sentences), the model cost this month and in all (the API's decimal strings, never added up in
-the browser), and the average time from upload to the end of a job in seconds ("No finished
-job yet." when there is none).
+the browser; for anyone but an admin the API sends `null`, the cost rows are left out and the
+heading "Cost and time" becomes "Time"; a sentence above says an admin sees the whole account
+and everyone else their own letters), and the average time from upload to the end of a job
+in seconds ("No finished job yet." when there is none).
 
 ### The session
 

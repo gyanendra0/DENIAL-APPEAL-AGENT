@@ -17,6 +17,7 @@ from src.db.models import (
     UploadAgentRun,
     UploadDraft,
     UploadExtraction,
+    UserRole,
 )
 from src.drafting.drafter import DraftResult
 from src.drafting.schemas import AppealLetter
@@ -38,7 +39,15 @@ from src.jobs.store import (
 )
 from src.rules.verdict import RULES_VERSION
 from tests.extraction.helpers import LETTER, MODEL_NAME, PROMPT_VERSION, fields_json
-from tests.jobs.helpers import UPLOAD_TEXT, Member, add_member, new_upload
+from tests.jobs.helpers import (
+    UPLOAD_TEXT,
+    Member,
+    account_scope,
+    add_member,
+    add_user,
+    new_upload,
+    owner_scope,
+)
 
 TEXT_HASH = text_sha256(UPLOAD_TEXT)
 TRACE = AgentTrace(
@@ -299,7 +308,7 @@ def test_unfinished_jobs_of_every_account_are_marked_interrupted(
 def test_finds_a_job_of_its_own_account(session: Session, members: tuple[Member, Member]) -> None:
     member, _ = members
     job_id = create_upload_job(session, member.account_id, new_upload(member))
-    found = find_job(session, member.account_id, job_id)
+    found = find_job(session, account_scope(member.account_id), job_id)
     assert found is not None
     assert (found.id, found.status) == (job_id, JobStatus.QUEUED)
 
@@ -309,5 +318,19 @@ def test_finds_no_job_of_another_account_or_an_unknown_id(
 ) -> None:
     member, other = members
     job_id = create_upload_job(session, member.account_id, new_upload(member))
-    assert find_job(session, other.account_id, job_id) is None
-    assert find_job(session, member.account_id, job_id + 1_000_000) is None
+    assert find_job(session, account_scope(other.account_id), job_id) is None
+    assert find_job(session, account_scope(member.account_id), job_id + 1_000_000) is None
+
+
+def test_an_owner_scope_finds_only_the_users_own_jobs(
+    session: Session, members: tuple[Member, Member]
+) -> None:
+    admin, _ = members
+    reviewer = add_user(session, admin, UserRole.REVIEWER)
+    own = create_upload_job(session, admin.account_id, new_upload(reviewer))
+    admins = create_upload_job(session, admin.account_id, new_upload(admin))
+
+    assert find_job(session, owner_scope(reviewer), own) is not None
+    assert find_job(session, owner_scope(reviewer), admins) is None
+    assert find_job(session, account_scope(admin.account_id), own) is not None
+    assert find_job(session, account_scope(admin.account_id), admins) is not None

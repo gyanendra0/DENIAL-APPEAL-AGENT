@@ -54,9 +54,11 @@ Now = Annotated[datetime, Depends(get_now)]
 
 
 @router.get("/me")
-def me(user: LoggedIn, session: DbSession) -> UserResponse:
+def me(user: LoggedIn, settings: Settings, session: DbSession) -> UserResponse:
     """Return the logged-in user and their account."""
-    found = find_user_response(session, account_id=user.account_id, user_id=user.user_id)
+    found = find_user_response(
+        session, settings=settings, account_id=user.account_id, user_id=user.user_id
+    )
     if found is None:
         # Deleted between the login check and this read.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN)

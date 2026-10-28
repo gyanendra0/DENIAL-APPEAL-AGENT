@@ -128,6 +128,48 @@ def load_llm_gateway_settings(env_file: str | None = ".env") -> LlmGatewaySettin
 
 
 MIN_TOKEN_SECRET_CHARACTERS = 32
+MAX_ACCOUNT_NAME_CHARACTERS = 200  # the length of `accounts.name`
+# Allowing one of these would open sign-up to anyone with a free mail address.
+PUBLIC_MAIL_DOMAINS = frozenset(
+    {
+        "aol.com",
+        "gmail.com",
+        "gmx.com",
+        "googlemail.com",
+        "hotmail.com",
+        "icloud.com",
+        "live.com",
+        "mail.com",
+        "me.com",
+        "msn.com",
+        "outlook.com",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+        "yandex.com",
+        "zoho.com",
+    }
+)
+
+
+def _split_list(value: str) -> list[str]:
+    """The trimmed, lowercased, non-empty items of a comma-separated value."""
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def _is_email_shaped(value: str) -> bool:
+    """The shape `normalize_email` in `src/api/schemas.py` accepts: one `@`, text on both sides,
+    no whitespace."""
+    local, at, domain = value.partition("@")
+    return (
+        bool(at and local and domain) and "@" not in domain and not any(c.isspace() for c in value)
+    )
+
+
+def _is_domain_shaped(value: str) -> bool:
+    """A bare domain with at least one dot, such as `clinic.example`; no `@`, no scheme."""
+    labels = value.split(".")
+    return len(labels) >= 2 and all(labels) and not any(c in value for c in "@/:")
 
 
 class ApiSettings(BaseSettings):
@@ -143,6 +185,11 @@ class ApiSettings(BaseSettings):
     `email_code_ttl_minutes` and dies after `email_code_max_wrong_tries` wrong tries; a user gets
     a new code at most every `email_code_resend_seconds` and `email_code_per_user_per_hour` an
     hour; the app sends at most `mail_daily_limit` emails a UTC day.
+
+    Every sign-up joins the one account named `shared_account_name`. The users whose email is in
+    `admin_emails` are admins; nobody else is. Sign-up is open only to those emails and to the
+    ones in `signup_allowed_emails` or under a domain in `signup_allowed_domains`. The three lists
+    are comma-separated; their emails are personal data, so a rejected value is never shown.
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -155,6 +202,10 @@ class ApiSettings(BaseSettings):
     )
 
     auth_token_secret: SecretStr
+    shared_account_name: str = Field(min_length=1, max_length=MAX_ACCOUNT_NAME_CHARACTERS)
+    admin_emails: str
+    signup_allowed_emails: str = ""
+    signup_allowed_domains: str = ""
     auth_token_ttl_minutes: int = Field(default=60, ge=1)
     auth_cookie_secure: bool = True
     upload_max_bytes: int = Field(default=1_000_000, ge=1)
@@ -189,6 +240,52 @@ class ApiSettings(BaseSettings):
     google_jwks_url: str = "https://www.googleapis.com/oauth2/v3/certs"
     # Comma-separated, so the environment can hold it as one plain value.
     google_issuers: str = "https://accounts.google.com,accounts.google.com"
+
+    @property
+    def admin_email_set(self) -> frozenset[str]:
+        """The admins' emails, trimmed and lowercased like a stored email."""
+        return frozenset(_split_list(self.admin_emails))
+
+    @property
+    def signup_allowed_email_set(self) -> frozenset[str]:
+        """The other emails that may sign up, trimmed and lowercased."""
+        return frozenset(_split_list(self.signup_allowed_emails))
+
+    @property
+    def signup_allowed_domain_set(self) -> frozenset[str]:
+        """The domains whose every email may sign up, lowercased."""
+        return frozenset(_split_list(self.signup_allowed_domains))
+
+    @field_validator("admin_emails")
+    @classmethod
+    def _admin_emails_must_be_emails(cls, value: str) -> str:
+        emails = _split_list(value)
+        if not emails:
+            raise ValueError("ADMIN_EMAILS names no email")
+        if not all(_is_email_shaped(email) for email in emails):
+            raise ValueError("ADMIN_EMAILS holds an item that is not an email address")
+        return value
+
+    @field_validator("signup_allowed_emails")
+    @classmethod
+    def _allowed_emails_must_be_emails(cls, value: str) -> str:
+        if not all(_is_email_shaped(email) for email in _split_list(value)):
+            raise ValueError("SIGNUP_ALLOWED_EMAILS holds an item that is not an email address")
+        return value
+
+    @field_validator("signup_allowed_domains")
+    @classmethod
+    def _allowed_domains_must_be_private_domains(cls, value: str) -> str:
+        domains = _split_list(value)
+        if not all(_is_domain_shaped(domain) for domain in domains):
+            raise ValueError("SIGNUP_ALLOWED_DOMAINS holds an item that is not a bare domain")
+        public = sorted(PUBLIC_MAIL_DOMAINS.intersection(domains))
+        if public:
+            # A public domain is not personal data, so naming it helps the operator.
+            raise ValueError(
+                f"SIGNUP_ALLOWED_DOMAINS must not hold a public mail domain: {', '.join(public)}"
+            )
+        return value
 
     @property
     def google_enabled(self) -> bool:

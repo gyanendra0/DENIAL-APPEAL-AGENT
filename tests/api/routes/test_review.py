@@ -24,7 +24,12 @@ from src.api.routes.review import (
 from src.db.models import AuditAction, AuditEvent, DraftReviewStatus, UploadDraft, User, UserRole
 from src.drafting.schemas import AppealLetter
 from src.jobs.store import create_upload_job
-from tests.api.conftest import VERIFIED_AT, RecordingSender, code_in, signup_and_verify
+from tests.api.conftest import (
+    VERIFIED_AT,
+    RecordingSender,
+    signup_and_verify,
+    signup_individual,
+)
 from tests.drafting.letter_helpers import (
     CHUNK_TEXT,
     CLOSING_TEXT,
@@ -44,6 +49,10 @@ PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 def _signup(client: TestClient, name: str, email: str) -> Member:
     signed_up = signup_and_verify(client, name=name, email=email, password=PASSWORD)
     body = signed_up
+    return Member(account_id=body["account_id"], user_id=body["user_id"])
+
+
+def _member(body: Any) -> Member:
     return Member(account_id=body["account_id"], user_id=body["user_id"])
 
 
@@ -203,20 +212,6 @@ def test_an_admin_reads_every_users_jobs(
     assert api_client.get(f"/jobs/{reviewers}/detail").status_code == 200
 
 
-def _individual(client: TestClient, sender: RecordingSender, email: str) -> Member:
-    """Open sign-up to individuals, sign `email` up into a personal account and log in."""
-    state = client.app.state  # type: ignore[attr-defined]
-    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": True})
-    client.cookies.clear()
-    signed_up = client.post("/auth/signup", json={"email": email, "password": PASSWORD})
-    assert signed_up.status_code == 201, signed_up.text
-    verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})
-    assert verified.status_code == 200, verified.text
-    body = verified.json()
-    assert (body["account_kind"], body["role"]) == ("personal", UserRole.ADMIN)
-    return Member(account_id=body["account_id"], user_id=body["user_id"])
-
-
 def test_an_individual_and_the_shared_admin_never_see_each_others_jobs(
     api_client: TestClient,
     db_session: Session,
@@ -224,7 +219,7 @@ def test_an_individual_and_the_shared_admin_never_see_each_others_jobs(
     admin: Member,
     job_id: int,
 ) -> None:
-    individual = _individual(api_client, sent_mail, "ann@elsewhere.test")
+    individual = _member(signup_individual(api_client, sent_mail, "ann@elsewhere.test"))
     own = _drafted_job(db_session, individual)
 
     worklist = api_client.get("/worklist")
@@ -246,7 +241,8 @@ def test_an_individual_and_the_shared_admin_never_see_each_others_jobs(
 def test_an_individual_approves_their_own_draft(
     api_client: TestClient, db_session: Session, sent_mail: RecordingSender, chunks: None
 ) -> None:
-    own = _drafted_job(db_session, _individual(api_client, sent_mail, "ann@elsewhere.test"))
+    individual = signup_individual(api_client, sent_mail, "ann@elsewhere.test")
+    own = _drafted_job(db_session, _member(individual))
     response = _approve(api_client, own)
     assert (response.status_code, response.json()) == (
         200,

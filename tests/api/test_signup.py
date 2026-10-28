@@ -3,7 +3,6 @@ individual sign-up is on) to a new personal account, and audits the joining only
 is confirmed."""
 
 import threading
-import time
 from datetime import UTC, datetime
 
 import pytest
@@ -33,7 +32,7 @@ from src.db.models import (
     User,
     UserRole,
 )
-from tests.api.conftest import add_old_unverified_admin, api_settings
+from tests.api.conftest import add_old_unverified_admin, api_settings, waits_on_a_lock
 
 # The users made here count as having confirmed their email.
 VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -333,21 +332,6 @@ def test_sign_up_itself_writes_no_audit_event(session: Session) -> None:
     assert _actions(session) == []
 
 
-def _waits_on_a_lock(engine: Engine, pid: int, timeout: float = 5.0) -> bool:
-    """True once backend `pid` waits on a lock; False after `timeout` seconds."""
-    deadline = time.monotonic() + timeout
-    with engine.connect() as watcher:
-        while time.monotonic() < deadline:
-            waiting = watcher.scalar(
-                text("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = :pid"),
-                {"pid": pid},
-            )
-            if waiting:
-                return True
-            time.sleep(0.02)
-    return False
-
-
 def test_two_sign_ups_at_the_same_moment_join_one_account(engine: Engine) -> None:
     """The second insert waits on the unique key, then reads the first one's account."""
     name = "Made-up Clinic Signing Up Twice"
@@ -359,7 +343,7 @@ def test_two_sign_ups_at_the_same_moment_join_one_account(engine: Engine) -> Non
             assert second_pid is not None
             worker = threading.Thread(target=lambda: found.append(shared_account_id(second, name)))
             worker.start()
-            assert _waits_on_a_lock(engine, second_pid)
+            assert waits_on_a_lock(engine, second_pid)
             first.commit()
             worker.join(timeout=5)
             second.rollback()

@@ -143,6 +143,7 @@ def test_valid_cookie_gives_the_current_user(client: TestClient, session: Sessio
         "account_id": user.account_id,
         "email": "a@example.com",
         "role": "reviewer",
+        "account_kind": "shared",
     }
 
 
@@ -346,11 +347,19 @@ def test_session_dependency_uses_the_factory_on_app_state(engine: Engine) -> Non
 
 
 def test_an_admins_job_scope_is_the_whole_account() -> None:
-    admin = CurrentUser(user_id=7, account_id=3, email="admin@x.org", role=UserRole.ADMIN)
+    admin = CurrentUser(
+        user_id=7,
+        account_id=3,
+        email="admin@x.org",
+        role=UserRole.ADMIN,
+        account_kind=AccountKind.SHARED,
+    )
     assert job_scope(admin) == JobScope(account_id=3, owner_id=None)
 
 
 @pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
 def test_a_non_admins_job_scope_is_their_own_uploads(role: UserRole) -> None:
-    user = CurrentUser(user_id=7, account_id=3, email="member@x.org", role=role)
+    user = CurrentUser(
+        user_id=7, account_id=3, email="member@x.org", role=role, account_kind=AccountKind.SHARED
+    )
     assert job_scope(user) == JobScope(account_id=3, owner_id=7)

@@ -19,7 +19,7 @@ from src.api.mail import MailSender
 from src.api.roles import effective_role
 from src.api.tokens import InvalidTokenError, read_token
 from src.config.settings import ApiSettings
-from src.db.models import Account, User, UserRole
+from src.db.models import Account, AccountKind, User, UserRole
 from src.db.query import for_account
 from src.db.session import session_scope
 from src.jobs.store import JobScope
@@ -37,7 +37,8 @@ JobRunner = Callable[[int, int], None]
 
 class CurrentUser(BaseModel):
     """The logged-in user, read from the database on every request. `role` is the role the user
-    acts with (`effective_role`: `ADMIN_EMAILS` decides who is admin), not the stored one."""
+    acts with (`effective_role`: `ADMIN_EMAILS` decides who is admin), not the stored one;
+    `account_kind` says whether the account is the shared one or the user's personal one."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -45,6 +46,7 @@ class CurrentUser(BaseModel):
     account_id: int
     email: str
     role: UserRole
+    account_kind: AccountKind
 
 
 def job_scope(user: CurrentUser) -> JobScope:
@@ -134,6 +136,7 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
         account_id=user.account_id,
         email=user.email,
         role=effective_role(settings, user.email, user.role, account_kind),
+        account_kind=account_kind,
     )
 
 

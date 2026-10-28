@@ -137,7 +137,9 @@ def verify_email(
             )
             delete_verify_cookie(response, settings)
             logger.info("email verified: account %d, user %d", user.account_id, user.id)
-            found = find_user_response(session, account_id=user.account_id, user_id=user.id)
+            found = find_user_response(
+                session, settings=settings, account_id=user.account_id, user_id=user.id
+            )
             if found is None:
                 # The user was locked in this same transaction; missing now is a bug.
                 raise RuntimeError(f"user {user.id} of account {user.account_id} vanished")

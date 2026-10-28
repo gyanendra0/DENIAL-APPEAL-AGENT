@@ -115,15 +115,16 @@ def test_a_reviewer_may_upload(api_client: TestClient, db_session: Session) -> N
     assert _upload(api_client)[0] == 202
 
 
-def test_a_viewer_may_not_upload(
-    api_client: TestClient, db_session: Session, job_calls: list[tuple[int, int]]
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_a_viewer_or_a_reviewer_may_upload(
+    api_client: TestClient, db_session: Session, job_calls: list[tuple[int, int]], role: UserRole
 ) -> None:
     admin = _signup(api_client, "A", "admin@a.org")
-    _add_user(db_session, admin["account_id"], "viewer@a.org", UserRole.VIEWER)
-    _login(api_client, "viewer@a.org")
-    assert _upload(api_client)[0] == 403
-    assert db_session.scalars(select(Job)).all() == []
-    assert job_calls == []
+    _add_user(db_session, admin["account_id"], f"{role.value}@a.org", role)
+    _login(api_client, f"{role.value}@a.org")
+    status_code, body = _upload(api_client)
+    assert status_code == 202
+    assert job_calls == [(admin["account_id"], body["job_id"])]
 
 
 def test_an_upload_needs_a_login(api_client: TestClient) -> None:

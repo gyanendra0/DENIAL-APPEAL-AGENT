@@ -63,7 +63,7 @@ def _set_cookie_header(client: TestClient, path: str, json: dict[str, str] | Non
     return response.headers["set-cookie"].lower()
 
 
-def test_signup_of_an_admin_email_makes_an_admin_and_logs_in_once_confirmed(
+def test_an_admin_email_acts_as_admin_and_logs_in_once_confirmed(
     api_client: TestClient, db_session: Session
 ) -> None:
     body = _signup(api_client)
@@ -72,8 +72,10 @@ def test_signup_of_an_admin_email_makes_an_admin_and_logs_in_once_confirmed(
     assert body["account_name"] == "Clinic One"
     assert AUTH_COOKIE_NAME in api_client.cookies
     assert api_client.get("/me").json()["user_id"] == body["user_id"]
+    assert api_client.get("/me").json()["role"] == UserRole.ADMIN
+    # Stored as reviewer like everyone: `ADMIN_EMAILS` makes the admin on each request.
     stored = db_session.scalars(select(User)).one()
-    assert (stored.email, stored.role) == ("ann@x.org", UserRole.ADMIN)
+    assert (stored.email, stored.role) == ("ann@x.org", UserRole.REVIEWER)
 
 
 def _post_signup(client: TestClient, email: str) -> int:

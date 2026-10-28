@@ -77,12 +77,10 @@ def add_member(
     password: str | None,
     verified_at: datetime | None,
 ) -> User:
-    """Add an admin with `email` straight to the account named `account_name` (made first if
+    """Add a user with `email` straight to the account named `account_name` (made first if
     there is none), as sign-up would with `SHARED_ACCOUNT_NAME` set to that name. Lets a test
-    put users in separate accounts."""
-    settings = _with_admin(api_settings(), email).model_copy(
-        update={"shared_account_name": account_name}
-    )
+    put users in separate accounts. Stored as `reviewer`, like every sign-up."""
+    settings = api_settings().model_copy(update={"shared_account_name": account_name})
     return create_member(
         session, settings=settings, email=email, password=password, verified_at=verified_at
     )

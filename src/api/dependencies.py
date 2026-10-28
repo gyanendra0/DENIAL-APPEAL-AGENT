@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.google_oidc import GoogleOidc
 from src.api.mail import MailSender
+from src.api.roles import effective_role
 from src.api.tokens import InvalidTokenError, read_token
 from src.config.settings import ApiSettings
 from src.db.models import User, UserRole
@@ -34,7 +35,8 @@ JobRunner = Callable[[int, int], None]
 
 
 class CurrentUser(BaseModel):
-    """The logged-in user, read from the database on every request."""
+    """The logged-in user, read from the database on every request. `role` is the role the user
+    acts with (`effective_role`: `ADMIN_EMAILS` decides who is admin), not the stored one."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -99,7 +101,8 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
 
     The user is looked up inside the token's account, so a token whose user and account do not
     belong together is refused like a missing one. A token issued before the user's last
-    password change carries an older version and is refused the same way.
+    password change carries an older version and is refused the same way. The role is worked
+    out again here, so a change to `ADMIN_EMAILS` applies from the next request.
     """
     token = request.cookies.get(AUTH_COOKIE_NAME)
     if not token:
@@ -114,7 +117,10 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
     if user is None or user.token_version != claims.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN)
     return CurrentUser(
-        user_id=user.id, account_id=user.account_id, email=user.email, role=user.role
+        user_id=user.id,
+        account_id=user.account_id,
+        email=user.email,
+        role=effective_role(settings, user.email, user.role),
     )
 
 

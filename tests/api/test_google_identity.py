@@ -182,8 +182,11 @@ def test_a_google_member_joins_the_shared_account_with_no_password_and_its_link(
     assert _actions(session) == []
 
 
-def test_a_google_member_with_an_admin_email_is_an_admin(session: Session) -> None:
-    assert _google_member(session, "admin@example.test").role == UserRole.ADMIN
+def test_a_google_member_with_an_admin_email_is_stored_as_a_reviewer_too(
+    session: Session,
+) -> None:
+    # `ADMIN_EMAILS` makes the admin on each request, not the stored role.
+    assert _google_member(session, "admin@example.test").role == UserRole.REVIEWER
 
 
 def test_a_google_account_already_linked_adds_nothing(session: Session) -> None:

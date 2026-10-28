@@ -76,8 +76,10 @@ def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
-def _user_response(session: Session, *, account_id: int, user_id: int) -> UserResponse:
-    found = find_user_response(session, account_id=account_id, user_id=user_id)
+def _user_response(
+    session: Session, settings: ApiSettings, *, account_id: int, user_id: int
+) -> UserResponse:
+    found = find_user_response(session, settings=settings, account_id=account_id, user_id=user_id)
     if found is None:
         # The user was written or read in this same transaction; missing now is a bug.
         raise RuntimeError(f"user {user_id} of account {account_id} vanished")
@@ -139,7 +141,7 @@ def signup(
             )
             background_tasks.add_task(send_quietly, sender, message)
             logger.info("signup: account %d, user %d", user.account_id, user.id)
-            return _user_response(session, account_id=user.account_id, user_id=user.id)
+            return _user_response(session, settings, account_id=user.account_id, user_id=user.id)
     logger.info("signup refused: too many tries")
     raise too_many_tries(retry_after)
 
@@ -221,7 +223,9 @@ def login(
                     token_version=user.token_version,
                 )
                 logger.info("login: account %d, user %d", user.account_id, user.id)
-                return _user_response(session, account_id=user.account_id, user_id=user.id)
+                return _user_response(
+                    session, settings, account_id=user.account_id, user_id=user.id
+                )
     if retry_after is not None:
         logger.info("login refused: too many failures")
         raise too_many_tries(retry_after)

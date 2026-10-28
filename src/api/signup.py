@@ -48,12 +48,6 @@ def may_sign_up(settings: ApiSettings, email: str) -> bool:
     return email.rpartition("@")[2] in settings.signup_allowed_domain_set
 
 
-def role_for(settings: ApiSettings, email: str) -> UserRole:
-    """The role a new user is stored with: `admin` for an email in `ADMIN_EMAILS`, else
-    `reviewer`."""
-    return UserRole.ADMIN if email in settings.admin_email_set else UserRole.REVIEWER
-
-
 def shared_account_id(session: Session, name: str) -> int:
     """Return the id of the account named `name`, adding it first if there is none.
 
@@ -102,12 +96,13 @@ def create_member(
     """Add a user with `email` to the shared account and return the user.
 
     `email` must already be trimmed and lowercased and allowed (`may_sign_up`); the caller
-    checks. The role comes from `role_for`. `password` is None for a user who signs in with
-    Google only (no password yet). `verified_at` is when the email was confirmed, or None until
-    the user types the emailed code. An unverified holder of `email` is replaced first
-    (`remove_unverified_holder`). The user is written inside one savepoint, together with that
-    replacement: a taken email rolls all of it back and raises `EmailTakenError`. Any other
-    database error propagates. Hashing takes tens of milliseconds on purpose.
+    checks. The user is stored as `reviewer`; `ADMIN_EMAILS` decides who acts as admin.
+    `password` is None for a user who signs in with Google only (no password yet).
+    `verified_at` is when the email was confirmed, or None until the user types the emailed
+    code. An unverified holder of `email` is replaced first (`remove_unverified_holder`). The
+    user is written inside one savepoint, together with that replacement: a taken email rolls
+    all of it back and raises `EmailTakenError`. Any other database error propagates. Hashing
+    takes tens of milliseconds on purpose.
     """
     password_hash = hash_password(password) if password is not None else None
     try:
@@ -118,7 +113,8 @@ def create_member(
                 account_id=account_id,
                 email=email,
                 password_hash=password_hash,
-                role=role_for(settings, email),
+                # `ADMIN_EMAILS` makes an admin on each request (`src/api/roles.py`).
+                role=UserRole.REVIEWER,
                 email_verified_at=verified_at,
             )
             session.add(user)

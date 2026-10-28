@@ -19,7 +19,6 @@ from src.api.signup import (
     create_member,
     may_sign_up,
     record_joined,
-    role_for,
     shared_account_id,
 )
 from src.config.settings import ApiSettings
@@ -86,13 +85,6 @@ def test_only_admins_and_allowed_emails_or_domains_may_sign_up(
     assert may_sign_up(settings, email) is allowed
 
 
-def test_an_admin_email_gets_admin_and_any_other_reviewer() -> None:
-    assert (role_for(ALLOW_X, ADMIN), role_for(ALLOW_X, "ann@x.org")) == (
-        UserRole.ADMIN,
-        UserRole.REVIEWER,
-    )
-
-
 def test_the_first_member_creates_the_shared_account_with_a_hashed_password(
     session: Session,
 ) -> None:
@@ -108,7 +100,8 @@ def test_later_members_join_the_same_account(session: Session) -> None:
     ann = _member(session, "ann@x.org")
     admin = _member(session, ADMIN)
     assert admin.account_id == ann.account_id
-    assert admin.role == UserRole.ADMIN
+    # Stored as reviewer too: `ADMIN_EMAILS` makes the admin on each request.
+    assert admin.role == UserRole.REVIEWER
     assert _counts(session) == (1, 2)
 
 

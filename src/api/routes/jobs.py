@@ -21,10 +21,11 @@ from src.api.dependencies import (
     get_job_runner,
     require_role,
 )
+from src.api.roles import UPLOAD_ROLES
 from src.api.upload_file import UploadFileError, read_uploaded_letter
 from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
-from src.db.models import AuditAction, EndState, JobFailure, JobStatus, UserRole
+from src.db.models import AuditAction, EndState, JobFailure, JobStatus
 from src.jobs.store import NewUpload, create_upload_job, find_job
 from src.review.audit import record_audit_event
 
@@ -64,7 +65,7 @@ class JobResponse(BaseModel):
 def upload_letter(
     file: UploadFile,
     background_tasks: BackgroundTasks,
-    user: Annotated[CurrentUser, Depends(require_role(UserRole.REVIEWER, UserRole.ADMIN))],
+    user: Annotated[CurrentUser, Depends(require_role(*UPLOAD_ROLES))],
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
     runner: Annotated[JobRunner, Depends(get_job_runner)],
     session: DbSession,

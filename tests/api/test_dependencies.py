@@ -229,10 +229,41 @@ def test_user_of_account_a_sees_only_account_a(client: TestClient, session: Sess
 
 
 def test_role_named_passes(client: TestClient, session: Session) -> None:
-    user = _user(session, "Clinic A", "a@example.com", UserRole.ADMIN)
+    user = _user(session, "Clinic A", "admin@example.test", UserRole.REVIEWER)
     _login(client, user_id=user.id, account_id=user.account_id)
     assert client.get("/admin-only").status_code == 200
     assert client.get("/reviewers").status_code == 200
+
+
+def test_an_email_in_admin_emails_acts_as_admin_whatever_is_stored(
+    client: TestClient, session: Session
+) -> None:
+    user = _user(session, "Clinic A", "admin@example.test", UserRole.VIEWER)
+    _login(client, user_id=user.id, account_id=user.account_id)
+    assert client.get("/whoami").json()["role"] == UserRole.ADMIN
+
+
+def test_a_stored_admin_not_in_admin_emails_acts_as_reviewer(
+    client: TestClient, session: Session
+) -> None:
+    user = _user(session, "Clinic A", "a@example.com", UserRole.ADMIN)
+    _login(client, user_id=user.id, account_id=user.account_id)
+    assert client.get("/whoami").json()["role"] == UserRole.REVIEWER
+    assert client.get("/admin-only").status_code == 403
+    assert client.get("/reviewers").status_code == 200
+
+
+def test_removing_an_email_from_admin_emails_demotes_on_the_next_request(
+    client: TestClient, session: Session
+) -> None:
+    user = _user(session, "Clinic A", "admin@example.test", UserRole.REVIEWER)
+    _login(client, user_id=user.id, account_id=user.account_id)
+    assert client.get("/admin-only").status_code == 200
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"admin_emails": "b@example.test"})
+    # The same login token, no new login: the next request already sees the change.
+    assert client.get("/admin-only").status_code == 403
+    assert client.get("/whoami").json()["role"] == UserRole.REVIEWER
 
 
 @pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])

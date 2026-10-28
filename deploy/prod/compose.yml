@@ -1,0 +1,106 @@
+# The whole app in containers: database, migrations, API and the web front door.
+#   docker compose -f deploy/prod/compose.yml up -d --build
+#
+# Settings and secrets come from deploy/prod/.env, next to this file (never in git; on the
+# machine `chmod 600`). Compose reads it twice: for the ${...} values below, and as the API's
+# environment. The keys are listed in .env.example. POSTGRES_PASSWORD goes inside DATABASE_URL,
+# so it must be URL-safe: make it with `openssl rand -hex 24`.
+#
+# Only the web container is reachable from outside (80 and 443). The database and the API
+# publish no port.
+
+# Not the repository folder's name: the development compose file at the root is named after the
+# folder, and the same project name would make this `db` replace the development database
+# container and use its data volume.
+name: denial-appeal-agent-prod
+
+services:
+  db:
+    # pgvector/pgvector:pg16, multi-arch index (amd64 + arm64); the digest names one exact image.
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/prod/.env}
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - app
+
+  # Runs once and ends. The API starts only after it succeeds, so a failed migration stops the
+  # start with its error in `docker compose logs migrate` and the data untouched.
+  migrate:
+    image: denial-appeal-agent-api
+    build:
+      context: ../..
+      dockerfile: deploy/api/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/prod/.env}@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - app
+
+  api:
+    image: denial-appeal-agent-api
+    env_file: .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://app:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/prod/.env}@db:5432/app
+      # Only the web container's fixed address (below) may name the client's address.
+      FORWARDED_ALLOW_IPS: 172.30.0.10
+    volumes:
+      # The trained win model, read-only at the image's MODEL_DIR (/app/models).
+      - ${MODEL_HOST_DIR:-../../models}:/app/models:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - app
+
+  web:
+    image: denial-appeal-agent-web
+    build:
+      context: ../..
+      dockerfile: deploy/web/Dockerfile
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in deploy/prod/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # Caddy's TLS certificates and keys survive a restart, so it does not ask for new ones.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      app:
+        ipv4_address: 172.30.0.10
+
+networks:
+  app:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

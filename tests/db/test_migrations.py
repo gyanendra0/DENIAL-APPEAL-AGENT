@@ -32,6 +32,9 @@ from src.db.migrations.versions import (
     rev_0021_user_identities_and_google_linked as migration_0021,
 )
 from src.db.migrations.versions import rev_0022_email_codes_and_mail_sends as migration_0022
+from src.db.migrations.versions import (
+    rev_0023_user_joined_and_uploads_owner_index as migration_0023,
+)
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -1118,18 +1121,27 @@ def test_mail_sends_has_only_its_purpose_timestamps_and_created_at_index(engine:
 
 
 def test_migration_0022_lists_the_same_values_and_check_rules_as_the_models() -> None:
-    assert tuple(member.value for member in AuditAction) == (
+    # 0023 added one audit action and replaced the job rule; its test compares the new ones.
+    assert (
         *migration_0022.AUDIT_ACTION_BEFORE,
         migration_0022.NEW_AUDIT_ACTION,
-    )
+    ) == migration_0023.AUDIT_ACTION_BEFORE
+    assert migration_0023.JOB_MATCHES_ACTION_BEFORE == migration_0022.JOB_MATCHES_ACTION
     assert tuple(member.value for member in EmailCodePurpose) == migration_0022.EMAIL_CODE_PURPOSE
-    assert _model_checks(REVIEW_TABLES)[migration_0022.JOB_CHECK_NAME] == (
-        migration_0022.JOB_MATCHES_ACTION
-    )
     assert _model_checks((EMAIL_CODE_TABLE,)) == {
         "ck_email_codes_code_hash_format": migration_0022.CODE_HASH_FORMAT,
         "ck_email_codes_wrong_tries_not_negative": migration_0022.WRONG_TRIES_NOT_NEGATIVE,
     }
+
+
+def test_migration_0023_lists_the_same_audit_actions_and_check_rule_as_the_models() -> None:
+    assert tuple(member.value for member in AuditAction) == (
+        *migration_0023.AUDIT_ACTION_BEFORE,
+        migration_0023.NEW_AUDIT_ACTION,
+    )
+    assert _model_checks(REVIEW_TABLES)[migration_0023.JOB_CHECK_NAME] == (
+        migration_0023.JOB_MATCHES_ACTION
+    )
 
 
 def test_migrated_database_has_the_same_columns_keys_and_links_as_the_models(
@@ -1254,6 +1266,82 @@ def _users_password_hash_nullable(engine: Engine) -> bool:
 
 def _users_columns(engine: Engine) -> set[str]:
     return {column["name"] for column in inspect(engine).get_columns("users")}
+
+
+def _uploads_indexes(engine: Engine) -> dict[str | None, list[str | None]]:
+    return {i["name"]: i["column_names"] for i in inspect(engine).get_indexes("uploads")}
+
+
+def _job_rule(engine: Engine) -> str:
+    with engine.connect() as conn:
+        rule: str = conn.scalar(
+            text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"),
+            {"name": migration_0023.JOB_CHECK_NAME},
+        )
+    return rule
+
+
+def test_user_joined_is_stored_without_a_job_and_refused_with_one(engine: Engine) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("user_joined",))
+        with (
+            pytest.raises(IntegrityError, match=migration_0023.JOB_CHECK_NAME),
+            engine.begin() as conn,
+        ):
+            # Any job id fails the rule before its link is checked.
+            conn.execute(text("UPDATE audit_events SET job_id = 1"))
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+
+def test_migration_0023_indexes_uploads_by_account_and_user(engine: Engine) -> None:
+    assert _uploads_indexes(engine)[migration_0023.OWNER_INDEX] == ["account_id", "user_id"]
+
+
+def test_downgrade_to_0022_removes_user_joined_and_the_owner_index(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("account_created", "email_verified"))
+        command.downgrade(alembic_config, "0022")
+
+        assert _audit_action_values(engine) == list(migration_0023.AUDIT_ACTION_BEFORE)
+        assert migration_0023.OWNER_INDEX not in _uploads_indexes(engine)
+        rule = _job_rule(engine)
+        assert "user_joined" not in rule
+        assert "email_verified" in rule
+        assert _type_names(engine, (migration_0023.OLD_TYPE_NAME,)) == set()
+        with engine.connect() as conn:
+            actions = sorted(conn.scalars(text("SELECT action::text FROM audit_events")))
+        assert actions == ["account_created", "email_verified"]
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+    assert _audit_action_values(engine) == [member.value for member in AuditAction]
+    assert migration_0023.OWNER_INDEX in _uploads_indexes(engine)
+    assert "user_joined" in _job_rule(engine)
+
+
+def test_downgrade_to_0022_refuses_while_a_user_joined_row_exists_and_changes_nothing(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        _store_audit_events_with_sql(engine, ("account_created", "user_joined"))
+
+        with pytest.raises(RuntimeError, match="1 audit row\\(s\\) record a user joining"):
+            command.downgrade(alembic_config, "0022")
+
+        assert _audit_action_values(engine) == [member.value for member in AuditAction]
+        assert migration_0023.OWNER_INDEX in _uploads_indexes(engine)
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT count(*) FROM audit_events")) == 2
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
 
 
 def test_upgrade_to_0022_counts_every_existing_user_as_verified_when_they_were_made(

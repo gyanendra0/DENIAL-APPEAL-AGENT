@@ -157,6 +157,7 @@ class AuditAction(StrEnum):
     PASSWORD_RESET = "password_reset"  # noqa: S105  (an audit action, not a password)
     GOOGLE_LINKED = "google_linked"
     EMAIL_VERIFIED = "email_verified"
+    USER_JOINED = "user_joined"
 
 
 class IdentityProvider(StrEnum):
@@ -947,12 +948,14 @@ class Upload(AccountScopedMixin, TimestampMixin, Base):
     Business table. `file_type` is decided from the file's first bytes, not from its name.
     `text_sha256` is the SHA-256 of `text` (UTF-8, lowercase hex). The link to the user
     carries `account_id`, so an upload never names another account's user, and it has no
-    cascade: a user who still has uploads cannot be deleted by accident.
+    cascade: a user who still has uploads cannot be deleted by accident. A non-admin reads only
+    the jobs of their own uploads, hence the index on `account_id` + `user_id`.
     """
 
     __tablename__ = "uploads"
     __table_args__ = (
         UniqueConstraint("account_id", "id", name="uq_uploads_account_id"),
+        Index("ix_uploads_account_id_user_id", "account_id", "user_id"),
         ForeignKeyConstraint(
             ["account_id", "user_id"], ["users.account_id", "users.id"], name="fk_uploads_user"
         ),
@@ -1231,7 +1234,7 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
     Business table, written in the same transaction as the change; the code only inserts.
     `detail` holds fixed keys only (a version number, a reject reason), never document text.
     `job_id` is empty exactly for `account_created`, `password_changed`, `password_reset`,
-    `google_linked` and `email_verified`.
+    `google_linked`, `email_verified` and `user_joined`.
     The links to the user and the job carry `account_id` and have no cascade, so an audited
     job cannot be deleted on its own; deleting the account removes everything.
     """
@@ -1246,7 +1249,7 @@ class AuditEvent(AccountScopedMixin, TimestampMixin, Base):
         ),
         CheckConstraint(
             "(action::text IN ('account_created', 'password_changed', 'password_reset',"
-            " 'google_linked', 'email_verified')) = (job_id IS NULL)",
+            " 'google_linked', 'email_verified', 'user_joined')) = (job_id IS NULL)",
             name="ck_audit_events_job_matches_action",
         ),
         CheckConstraint("jsonb_typeof(detail) = 'object'", name="ck_audit_events_detail_is_object"),

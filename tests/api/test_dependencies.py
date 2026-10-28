@@ -38,7 +38,10 @@ _opened: list[Session] = []
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.state.api_settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), _env_file=None
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(SECRET),
+        _env_file=None,
     )
 
     @app.get("/whoami")

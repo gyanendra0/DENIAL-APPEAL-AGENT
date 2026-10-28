@@ -35,6 +35,8 @@ _CODE_LINE = re.compile(r"^ {4}([0-9]{6})$", re.MULTILINE)
 def api_settings() -> ApiSettings:
     """Made-up settings for an app built by a test."""
     return ApiSettings(  # type: ignore[call-arg]
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
         auth_token_secret=SecretStr(API_SECRET),
         auth_token_ttl_minutes=API_TTL_MINUTES,
         app_public_url=PUBLIC_URL,

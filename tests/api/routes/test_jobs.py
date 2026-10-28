@@ -139,6 +139,8 @@ def test_an_upload_without_a_file_is_422(api_client: TestClient) -> None:
 
 def test_a_file_over_the_limit_is_413(api_connection: Connection) -> None:
     settings = ApiSettings(  # type: ignore[call-arg]
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
         auth_token_secret=SecretStr(API_SECRET),
         app_public_url=PUBLIC_URL,
         upload_max_bytes=10,
@@ -257,7 +259,11 @@ def running_client(api_connection: Connection) -> Iterator[TestClient]:
         )
 
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(API_SECRET), app_public_url=PUBLIC_URL, _env_file=None
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(API_SECRET),
+        app_public_url=PUBLIC_URL,
+        _env_file=None,
     )
     with TestClient(
         create_app(settings, factory, run, RecordingSender()), base_url=BASE_URL

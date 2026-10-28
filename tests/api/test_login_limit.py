@@ -34,6 +34,8 @@ WINDOW = 15
 
 def _settings(per_email: int = 5, per_ip: int = 20) -> ApiSettings:
     return ApiSettings(  # type: ignore[call-arg]
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
         auth_token_secret=SecretStr(SECRET),
         login_limit_window_minutes=WINDOW,
         login_limit_per_email=per_email,

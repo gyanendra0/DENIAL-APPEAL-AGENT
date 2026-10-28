@@ -65,6 +65,10 @@ def no_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
         "AUTH_TOKEN_TTL_MINUTES",
         "AUTH_COOKIE_SECURE",
         "APP_PUBLIC_URL",
+        "SHARED_ACCOUNT_NAME",
+        "ADMIN_EMAILS",
+        "SIGNUP_ALLOWED_EMAILS",
+        "SIGNUP_ALLOWED_DOMAINS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key in [name for name in os.environ if name.startswith(("LLM_", "MAIL_"))]:
@@ -89,6 +93,8 @@ def full_env(no_env_file: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("DATABASE_URL", URL)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", SECRET)
     monkeypatch.setenv("APP_PUBLIC_URL", PUBLIC_URL)
+    monkeypatch.setenv("SHARED_ACCOUNT_NAME", "Example Clinic")
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.test")
     for key, value in MAIL_ENV.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("MODEL_DIR", str(model_dir))
@@ -166,7 +172,11 @@ def test_short_secret_fails_at_startup_without_showing_it(
 
 def test_routes_are_registered() -> None:
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(SECRET),
+        app_public_url=PUBLIC_URL,
+        _env_file=None,
     )
     app = create_app(settings, sessionmaker(), _no_job, RecordingSender())
     # Included routers are nested in `app.routes`; the published schema lists every path.
@@ -200,7 +210,11 @@ def test_routes_are_registered() -> None:
 
 def test_google_is_off_without_its_keys_and_uses_the_public_callback_with_them() -> None:
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(SECRET),
+        app_public_url=PUBLIC_URL,
+        _env_file=None,
     )
     assert create_app(settings, sessionmaker(), _no_job, RecordingSender()).state.google is None
 
@@ -228,7 +242,11 @@ def test_startup_fails_the_jobs_a_stopped_process_left_unfinished(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
     settings = ApiSettings(  # type: ignore[call-arg]
-        auth_token_secret=SecretStr(SECRET), app_public_url=PUBLIC_URL, _env_file=None
+        shared_account_name="Example Clinic",
+        admin_emails="admin@example.test",
+        auth_token_secret=SecretStr(SECRET),
+        app_public_url=PUBLIC_URL,
+        _env_file=None,
     )
     with TestClient(create_app(settings, factory, _no_job, RecordingSender()), base_url=BASE_URL):
         pass

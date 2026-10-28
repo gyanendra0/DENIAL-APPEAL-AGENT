@@ -22,14 +22,12 @@ describe("auth calls", () => {
     const fetchStub = stubApi({ "POST /auth/signup": () => jsonResponse(201, ADMIN) });
 
     const user = await signup({
-      account_name: "Made-up Clinic",
       email: ADMIN.email,
       password: "a long made-up password",
     });
 
     expect(user).toEqual(ADMIN);
     expect(sentBody(fetchStub, "POST /auth/signup")).toEqual({
-      account_name: "Made-up Clinic",
       email: ADMIN.email,
       password: "a long made-up password",
     });
@@ -144,9 +142,10 @@ describe("Google sign-in calls", () => {
   });
 
   it("returns the email of the pending Google sign-up", async () => {
-    stubApi({ "GET /auth/google/signup": () => jsonResponse(200, { email: ADMIN.email }) });
+    const info = { email: ADMIN.email, account_name: ADMIN.account_name };
+    stubApi({ "GET /auth/google/signup": () => jsonResponse(200, info) });
 
-    await expect(fetchGoogleSignup()).resolves.toEqual({ email: ADMIN.email });
+    await expect(fetchGoogleSignup()).resolves.toEqual(info);
   });
 
   it("returns null when the Google sign-up has expired", async () => {
@@ -164,13 +163,11 @@ describe("Google sign-in calls", () => {
     await expect(fetchGoogleSignup()).rejects.toBeInstanceOf(ApiError);
   });
 
-  it("sends only the account name and returns the new user", async () => {
+  it("confirms the Google sign-up with an empty body and returns the new user", async () => {
     const fetchStub = stubApi({ "POST /auth/google/signup": () => jsonResponse(201, ADMIN) });
 
-    await expect(googleSignup({ account_name: "Made-up Clinic" })).resolves.toEqual(ADMIN);
-    expect(sentBody(fetchStub, "POST /auth/google/signup")).toEqual({
-      account_name: "Made-up Clinic",
-    });
+    await expect(googleSignup()).resolves.toEqual(ADMIN);
+    expect(sentBody(fetchStub, "POST /auth/google/signup")).toEqual({});
   });
 });
 

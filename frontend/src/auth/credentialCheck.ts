@@ -10,8 +10,7 @@ export const MAX_PASSWORD_CHARACTERS = 128;
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+$/;
 
 export type LoginField = "email" | "password";
-export type SignupField = "accountName" | "email" | "password";
-export type GoogleSignupField = "accountName";
+export type SignupField = "email" | "password";
 export type PasswordChangeField = "currentPassword" | "newPassword";
 export type ResetAskField = "email";
 export type ResetConfirmField = "code" | "newPassword";
@@ -20,10 +19,6 @@ export type CodeField = "code";
 // One fixed sentence per wrong field, in the order the fields are on the screen. A sentence never
 // repeats what was typed.
 export type FieldErrors<Field extends string> = Partial<Record<Field, string>>;
-
-function checkAccountName(accountName: string): string | undefined {
-  return accountName.trim() === "" ? "Enter the account name." : undefined;
-}
 
 function checkEmail(email: string): string | undefined {
   if (email.trim() === "") {
@@ -79,22 +74,11 @@ export function checkLogin(values: { email: string; password: string }): FieldEr
   });
 }
 
-export function checkSignup(values: {
-  accountName: string;
-  email: string;
-  password: string;
-}): FieldErrors<SignupField> {
+export function checkSignup(values: { email: string; password: string }): FieldErrors<SignupField> {
   return withoutEmpty<SignupField>({
-    accountName: checkAccountName(values.accountName),
     email: checkEmail(values.email),
     password: checkNewPassword(values.password),
   });
-}
-
-// A Google sign-up asks only for the account name: the email comes from Google, and there is no
-// password.
-export function checkGoogleSignup(values: { accountName: string }): FieldErrors<GoogleSignupField> {
-  return withoutEmpty<GoogleSignupField>({ accountName: checkAccountName(values.accountName) });
 }
 
 // The current password's length is not checked, as at login: the API answers a wrong length like

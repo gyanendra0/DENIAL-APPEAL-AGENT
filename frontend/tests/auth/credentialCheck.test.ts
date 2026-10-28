@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_PASSWORD_CHARACTERS,
   MIN_PASSWORD_CHARACTERS,
-  checkGoogleSignup,
   checkCode,
   checkLogin,
   checkPasswordChange,
@@ -46,17 +45,17 @@ describe("checkLogin", () => {
 });
 
 describe("checkSignup", () => {
-  const VALID = { accountName: "Made-up Clinic", email: "ada@example.test", password: PASSWORD };
+  const VALID = { email: "ada@example.test", password: PASSWORD };
 
   it("accepts a full sign-up", () => {
     expect(checkSignup(VALID)).toEqual({});
   });
 
   it("names every empty field in screen order", () => {
-    const errors = checkSignup({ accountName: "  ", email: "", password: "" });
+    const errors = checkSignup({ email: "", password: "" });
 
-    expect(Object.keys(errors)).toEqual(["accountName", "email", "password"]);
-    expect(errors.accountName).toBe("Enter the account name.");
+    expect(Object.keys(errors)).toEqual(["email", "password"]);
+    expect(errors.email).toBe("Enter your email.");
   });
 
   it("accepts the shortest and longest password and refuses one character outside", () => {
@@ -105,16 +104,6 @@ describe("checkPasswordChange", () => {
     expect(checkPasswordChange({ ...VALID, newPassword: "secret" }).newPassword).not.toContain(
       "secret",
     );
-  });
-});
-
-describe("checkGoogleSignup", () => {
-  it("accepts an account name", () => {
-    expect(checkGoogleSignup({ accountName: "Made-up Clinic" })).toEqual({});
-  });
-
-  it("names an empty or blank account name", () => {
-    expect(checkGoogleSignup({ accountName: "  " }).accountName).toBe("Enter the account name.");
   });
 });
 

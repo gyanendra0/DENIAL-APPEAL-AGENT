@@ -2,7 +2,6 @@ import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import {
-  BuildingIcon,
   ChartIcon,
   CloseIcon,
   EyeIcon,
@@ -23,7 +22,6 @@ describe("icons", () => {
     ["LogoIcon", LogoIcon],
     ["MailIcon", MailIcon],
     ["LockIcon", LockIcon],
-    ["BuildingIcon", BuildingIcon],
     ["EyeIcon", EyeIcon],
     ["EyeOffIcon", EyeOffIcon],
     ["MenuIcon", MenuIcon],

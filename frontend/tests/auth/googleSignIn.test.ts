@@ -16,6 +16,7 @@ describe("googleRefusalMessage", () => {
     ],
     ["linked_elsewhere", "This Google account is linked to another login."],
     ["expired", "Google sign-in took too long, or was started again in another tab. Try again."],
+    ["not_allowed", "Sign-up is not open for this email. Ask an admin to add it."],
   ])("gives a fixed sentence for the code %s", (code, sentence) => {
     expect(googleRefusalMessage(`?google=${code}`)).toBe(sentence);
   });

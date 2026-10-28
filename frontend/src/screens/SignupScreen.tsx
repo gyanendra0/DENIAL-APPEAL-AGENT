@@ -16,19 +16,19 @@ import { AuthField, PasswordField } from "./AuthField";
 import { AuthFrame } from "./AuthFrame";
 import { asSentence, describeError } from "./errorMessage";
 import { GoogleButton } from "./GoogleButton";
-import { BuildingIcon, MailIcon } from "./icons";
+import { MailIcon } from "./icons";
 
-// A 409 says which name is taken ("the email is taken"); that text comes from the API, not the user.
-// A 503 means the daily email cap is reached: nothing was created.
+// A 409 says what is taken ("the email is taken") and a 403 that sign-up is not open for this email;
+// that text comes from the API, not the user. A 503 means the daily email cap is reached: nothing
+// was created.
 function signupError(error: unknown): string {
-  if (error instanceof ApiError && error.kind === "conflict") {
+  if (error instanceof ApiError && (error.kind === "conflict" || error.kind === "forbidden")) {
     return asSentence(error.message);
   }
   return describeError(error, { 503: "We cannot send email right now. Try again later." });
 }
 
 export function SignupScreen() {
-  const [accountName, setAccountName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors<SignupField>>({});
@@ -37,14 +37,14 @@ export function SignupScreen() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const found = checkSignup({ accountName, email, password });
+    const found = checkSignup({ email, password });
     setErrors(found);
     if (focusFirstError(event.currentTarget, found)) {
       return;
     }
     signupMutation.mutate(
-      { account_name: accountName, email, password },
-      // The account exists but nobody is logged in until the emailed code is typed.
+      { email, password },
+      // The user exists but nobody is logged in until the emailed code is typed.
       { onSuccess: () => void navigate(VERIFY_EMAIL_PATH, { replace: true }) },
     );
   }
@@ -52,7 +52,7 @@ export function SignupScreen() {
   return (
     <AuthFrame
       title="Sign up"
-      intro="Creates a new account; you become its admin. We email you a code to confirm it."
+      intro="Joins your organisation's account. We email you a code to confirm it."
       footer={
         <>
           Have an account? <Link to="/app/login">Log in</Link>
@@ -61,18 +61,6 @@ export function SignupScreen() {
     >
       <GoogleButton />
       <form className="form auth-form" noValidate onSubmit={onSubmit}>
-        <AuthField
-          label="Account name"
-          icon={<BuildingIcon />}
-          name="accountName"
-          type="text"
-          autoComplete="organization"
-          required
-          maxLength={200}
-          value={accountName}
-          error={errors.accountName}
-          onChange={(event) => setAccountName(event.target.value)}
-        />
         <AuthField
           label="Email"
           icon={<MailIcon />}

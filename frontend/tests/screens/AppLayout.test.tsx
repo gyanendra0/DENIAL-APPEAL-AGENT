@@ -71,13 +71,13 @@ describe("AppLayout", () => {
     expect(screen.getByRole("link", { name: "Worklist" })).toBeInTheDocument();
   });
 
-  it("hides the upload link from a viewer", async () => {
+  it("links to the upload screen for a viewer too", async () => {
     stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, VIEWER) });
 
     renderAt("/app/worklist");
 
     expect(await screen.findByRole("link", { name: "Worklist" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Upload" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upload" })).toHaveAttribute("href", "/app/upload");
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/app/overview");
     expect(screen.getByRole("link", { name: "Account" })).toHaveAttribute("href", "/app/account");
   });

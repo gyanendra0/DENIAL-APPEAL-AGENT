@@ -4,7 +4,8 @@ import { describeError } from "./errorMessage";
 import { END_STATE_TEXT, REVIEW_STATUS_TEXT, STATUS_TEXT } from "./jobText";
 
 // Shows only what `GET /overview` returns. Costs are the API's decimal strings, never added up or
-// rounded here.
+// rounded here; the API sends them to admins only (null for everyone else), so the rows are left
+// out when they are null.
 export function OverviewScreen() {
   const overview = useOverview();
 
@@ -12,8 +13,9 @@ export function OverviewScreen() {
     <>
       <h1>Overview</h1>
       <p className="muted">
-        The account&apos;s jobs and drafts so far. Money at risk, win rate, payers and overdue
-        appeals are not shown yet.
+        The jobs and drafts you can see so far: an admin sees the whole account, everyone else the
+        letters they uploaded. Money at risk, win rate, payers and overdue appeals are not shown
+        yet.
       </p>
       {overview.isPending && <p>Loading…</p>}
       {overview.isError && (
@@ -27,6 +29,7 @@ export function OverviewScreen() {
 }
 
 function OverviewBody({ overview }: { overview: Overview }) {
+  const showsCost = overview.cost_usd_this_month !== null && overview.cost_usd_total !== null;
   return (
     <>
       <CountTable<JobStatus>
@@ -44,12 +47,16 @@ function OverviewBody({ overview }: { overview: Overview }) {
         counts={overview.drafts_by_review_status}
         labels={REVIEW_STATUS_TEXT}
       />
-      <h2>Cost and time</h2>
+      <h2>{showsCost ? "Cost and time" : "Time"}</h2>
       <dl className="facts">
-        <dt>Model cost this month</dt>
-        <dd>${overview.cost_usd_this_month}</dd>
-        <dt>Model cost in all</dt>
-        <dd>${overview.cost_usd_total}</dd>
+        {showsCost && (
+          <>
+            <dt>Model cost this month</dt>
+            <dd>${overview.cost_usd_this_month}</dd>
+            <dt>Model cost in all</dt>
+            <dd>${overview.cost_usd_total}</dd>
+          </>
+        )}
         <dt>Average time from upload to the end of the job</dt>
         <dd>
           {overview.average_seconds === null

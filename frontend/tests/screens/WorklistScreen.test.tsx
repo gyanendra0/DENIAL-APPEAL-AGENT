@@ -150,7 +150,7 @@ describe("WorklistScreen", () => {
     expect(screen.getByLabelText("Review status")).toHaveValue("approved");
   });
 
-  it("offers the upload on an empty list only to a role that can upload", async () => {
+  it("offers the upload on an empty list", async () => {
     stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, ADMIN), [FIRST_PAGE]: page([]) });
     renderAt("/app/worklist");
 
@@ -158,12 +158,12 @@ describe("WorklistScreen", () => {
     expect(screen.getByRole("link", { name: "Upload a denial letter" })).toBeInTheDocument();
   });
 
-  it("does not offer the upload to a viewer", async () => {
+  it("offers the upload to a viewer too", async () => {
     stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, VIEWER), [FIRST_PAGE]: page([]) });
     renderAt("/app/worklist");
 
     expect(await screen.findByText(/No jobs here yet/)).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Upload a denial letter" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upload a denial letter" })).toBeInTheDocument();
   });
 
   it("shows an error when the first page fails", async () => {

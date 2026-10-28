@@ -102,9 +102,11 @@ export interface AuthOptions {
   google: boolean;
 }
 
-// src/api/schemas.py GoogleSignupInfo: the verified Google email a pending sign-up will use.
+// src/api/schemas.py GoogleSignupInfo: the verified Google email a pending sign-up will use, and
+// the shared account it will join.
 export interface GoogleSignupInfo {
   email: string;
+  account_name: string;
 }
 
 // src/api/routes/jobs.py UploadAccepted
@@ -319,12 +321,13 @@ export interface LetterProblem {
   citation_index: number | null;
 }
 
-// src/review/overview.py Overview: every enum value is present (0 when none); costs are decimals
+// src/review/overview.py Overview: every enum value is present (0 when none); costs are decimals,
+// null for anyone but an admin (only admins see what the model costs)
 export interface Overview {
   jobs_by_status: Record<JobStatus, number>;
   jobs_by_end_state: Record<EndState, number>;
   drafts_by_review_status: Record<DraftReviewStatus, number>;
-  cost_usd_this_month: string;
-  cost_usd_total: string;
+  cost_usd_this_month: string | null;
+  cost_usd_total: string | null;
   average_seconds: number | null;
 }

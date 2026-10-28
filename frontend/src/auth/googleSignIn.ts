@@ -2,8 +2,10 @@
 // Google sign-in back to the login screen with (`/app/login?google=<code>`, see
 // src/api/google_identity.py GoogleRefusal). The screen never shows what Google sent.
 
-// Where the API sends a Google account that has no user yet. The API names the same path.
-export const GOOGLE_NAME_ACCOUNT_PATH = "/app/google/name-account";
+// Where the API sends a Google account that has no user yet, to confirm joining the shared
+// account. The API names the same path (`JOIN_ACCOUNT_SCREEN` in src/api/routes/google.py); the
+// old "name-account" in it is kept so the two stay in step.
+export const GOOGLE_JOIN_PATH = "/app/google/name-account";
 
 // The pending sign-up's cookie is gone or older than ten minutes.
 export const GOOGLE_SIGNUP_EXPIRED = "The Google sign-up has expired. Continue with Google again.";
@@ -22,6 +24,7 @@ const MESSAGE_BY_REFUSAL: ReadonlyMap<string, string> = new Map([
   ],
   ["linked_elsewhere", "This Google account is linked to another login."],
   ["expired", "Google sign-in took too long, or was started again in another tab. Try again."],
+  ["not_allowed", "Sign-up is not open for this email. Ask an admin to add it."],
 ]);
 
 // The sentence for the `google` code in the address's query, or null when there is none. An

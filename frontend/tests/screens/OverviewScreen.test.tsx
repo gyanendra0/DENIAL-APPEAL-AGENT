@@ -67,6 +67,19 @@ describe("OverviewScreen", () => {
     expect(screen.getByText("13.6 seconds")).toBeInTheDocument();
   });
 
+  it("leaves the cost rows out when the API sends no cost", async () => {
+    showOverview(() =>
+      jsonResponse(200, { ...OVERVIEW, cost_usd_this_month: null, cost_usd_total: null }),
+    );
+
+    renderAt("/app/overview");
+
+    expect(await screen.findByRole("heading", { name: "Time" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cost and time" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Model cost/)).not.toBeInTheDocument();
+    expect(screen.getByText("13.6 seconds")).toBeInTheDocument();
+  });
+
   it("says when no job has finished yet", async () => {
     showOverview(() => jsonResponse(200, { ...OVERVIEW, average_seconds: null }));
 

@@ -10,14 +10,13 @@ const PASSWORD = "a long made-up password";
 
 async function fillAndSubmit() {
   const user = userEvent.setup();
-  await user.type(await screen.findByLabelText("Account name"), "Made-up Clinic");
-  await user.type(screen.getByLabelText("Email"), ADMIN.email);
+  await user.type(await screen.findByLabelText("Email"), ADMIN.email);
   await user.type(screen.getByLabelText(/^Password/), PASSWORD);
   await user.click(screen.getByRole("button", { name: "Sign up" }));
 }
 
 describe("SignupScreen", () => {
-  it("creates the account and goes to the code screen without logging in", async () => {
+  it("creates the user and goes to the code screen without logging in", async () => {
     const fetchStub = stubApi({
       "GET /me": NO_SESSION,
       "POST /auth/signup": () => jsonResponse(201, ADMIN),
@@ -30,7 +29,6 @@ describe("SignupScreen", () => {
     expect(router.state.location.pathname).toBe("/app/verify-email");
     expect(queryClient.getQueryData(SESSION_KEY)).not.toEqual(ADMIN);
     expect(sentBody(fetchStub, "POST /auth/signup")).toEqual({
-      account_name: "Made-up Clinic",
       email: ADMIN.email,
       password: PASSWORD,
     });
@@ -72,6 +70,31 @@ describe("SignupScreen", () => {
     expect(password).toHaveAttribute("maxLength", "128");
   });
 
+  it("asks for no account name: everyone joins the one shared account", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": NO_SESSION });
+    renderAt("/app/signup");
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Account name")).not.toBeInTheDocument();
+  });
+
+  it("says sign-up is not open on a 403 and stays on the screen", async () => {
+    stubApi({
+      ...EMPTY_WORKLIST,
+      "GET /me": NO_SESSION,
+      "POST /auth/signup": () =>
+        jsonResponse(403, { detail: "sign-up is not open for this email" }),
+    });
+    const { router } = renderAt("/app/signup");
+
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign-up is not open for this email.",
+    );
+    expect(router.state.location.pathname).toBe("/app/signup");
+  });
+
   it("says which name is taken on a 409", async () => {
     stubApi({
       ...EMPTY_WORKLIST,
@@ -91,7 +114,7 @@ describe("SignupScreen", () => {
       "GET /me": NO_SESSION,
       "POST /auth/signup": () =>
         jsonResponse(422, {
-          detail: [{ loc: ["body", "account_name"], type: "value_error", input: "Made-up Clinic" }],
+          detail: [{ loc: ["body", "email"], type: "value_error", input: ADMIN.email }],
         }),
     });
     renderAt("/app/signup");
@@ -99,8 +122,8 @@ describe("SignupScreen", () => {
     await fillAndSubmit();
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Check these fields: account name.");
-    expect(alert).not.toHaveTextContent("Made-up Clinic");
+    expect(alert).toHaveTextContent("Check these fields: email.");
+    expect(alert).not.toHaveTextContent(ADMIN.email);
   });
 
   it("links to login", async () => {
@@ -118,10 +141,9 @@ describe("SignupScreen", () => {
 
     await userEvent.setup().click(await screen.findByRole("button", { name: "Sign up" }));
 
-    const accountName = screen.getByLabelText("Account name");
-    expect(accountName).toHaveAccessibleDescription("Enter the account name.");
-    expect(accountName).toHaveFocus();
-    expect(screen.getByLabelText("Email")).toHaveAccessibleDescription("Enter your email.");
+    const email = screen.getByLabelText("Email");
+    expect(email).toHaveAccessibleDescription("Enter your email.");
+    expect(email).toHaveFocus();
     expect(fetchStub.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
@@ -130,8 +152,7 @@ describe("SignupScreen", () => {
     renderAt("/app/signup");
     const user = userEvent.setup();
 
-    await user.type(await screen.findByLabelText("Account name"), "Made-up Clinic");
-    await user.type(screen.getByLabelText("Email"), ADMIN.email);
+    await user.type(await screen.findByLabelText("Email"), ADMIN.email);
     await user.type(screen.getByLabelText(/^Password/), "too short");
     await user.click(screen.getByRole("button", { name: "Sign up" }));
 

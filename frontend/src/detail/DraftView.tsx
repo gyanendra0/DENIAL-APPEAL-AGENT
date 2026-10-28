@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import type { AppealLetter, Citation, DraftDetail, EndState } from "../api/types";
-import { canReview } from "../auth/roles";
+import { canDecide, canEdit } from "../auth/roles";
 import { useSession } from "../auth/session";
 import { END_STATE_TEXT, REVIEW_STATUS_TEXT } from "../screens/jobText";
 import { DraftActions } from "./DraftActions";
@@ -21,8 +21,9 @@ const REVIEWED_AT = new Intl.DateTimeFormat(undefined, {
 });
 
 // The draft of the appeal letter: the latest version by default, the model's own draft on
-// request (it is kept unchanged), and where its review stands. A reviewer or admin may edit,
-// approve or reject a pending draft; a viewer sees no controls (the API decides too).
+// request (it is kept unchanged), and where its review stands. A reviewer or admin may edit a
+// pending draft, only an admin may approve or reject it; a viewer sees no controls (the API
+// decides too).
 export function DraftView({
   jobId,
   draft,
@@ -47,7 +48,9 @@ export function DraftView({
   }
 
   const edited = draft.latest_version > MODEL_DRAFT_VERSION;
-  const reviewable = draft.review_status === "pending" && canReview(session.data?.role);
+  const pending = draft.review_status === "pending";
+  const editable = pending && canEdit(session.data?.role);
+  const decidable = pending && canDecide(session.data?.role);
 
   // After a 409 stale: leave edit mode and read the latest version.
   function reload() {
@@ -55,7 +58,7 @@ export function DraftView({
     void refreshAfterReview(queryClient, jobId);
   }
 
-  if (editing && reviewable) {
+  if (editing && editable) {
     return (
       <section aria-label="Draft">
         <h2>Draft</h2>
@@ -66,7 +69,11 @@ export function DraftView({
           onClose={() => setEditing(false)}
           onReload={reload}
         />
-        <DraftActions jobId={jobId} draft={draft} editing onReload={reload} />
+        {decidable ? (
+          <DraftActions jobId={jobId} draft={draft} editing onReload={reload} />
+        ) : (
+          <DecidedByAdmin />
+        )}
       </section>
     );
   }
@@ -87,23 +94,27 @@ export function DraftView({
         </button>
       )}
       <LetterView letter={showOriginal ? draft.original : draft.latest} />
-      {reviewable && (
-        <>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setShowOriginal(false);
-              setEditing(true);
-            }}
-          >
-            Edit
-          </button>
-          <DraftActions jobId={jobId} draft={draft} editing={false} onReload={reload} />
-        </>
+      {editable && (
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            setShowOriginal(false);
+            setEditing(true);
+          }}
+        >
+          Edit
+        </button>
       )}
+      {decidable && <DraftActions jobId={jobId} draft={draft} editing={false} onReload={reload} />}
+      {editable && !decidable && <DecidedByAdmin />}
     </section>
   );
+}
+
+// A reviewer may edit a pending draft but not decide it.
+function DecidedByAdmin() {
+  return <p className="muted">An admin approves or rejects this draft.</p>;
 }
 
 function ReviewStatus({ draft }: { draft: DraftDetail }) {

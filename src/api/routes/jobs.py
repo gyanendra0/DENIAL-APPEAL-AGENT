@@ -1,7 +1,8 @@
 """Upload one denial letter, and read the status of the job that turns it into a draft.
 
 The `account_id` comes from the logged-in user, never from the path or the body: a job id of
-another account is answered with 404, the same as an id that does not exist. The file's name
+another account is answered with 404, the same as an id that does not exist; so is another
+user's job for anyone but an admin (`job_scope`). The file's name
 and text never reach a log line or an answer.
 """
 
@@ -19,6 +20,7 @@ from src.api.dependencies import (
     current_user,
     get_api_settings,
     get_job_runner,
+    job_scope,
     require_role,
 )
 from src.api.roles import UPLOAD_ROLES
@@ -114,8 +116,9 @@ def get_job(
     user: Annotated[CurrentUser, Depends(current_user)],
     session: DbSession,
 ) -> JobResponse:
-    """Return one job of the user's account, or answer 404."""
-    job = find_job(session, user.account_id, job_id)
+    """Return one job the user may see, or answer 404 (also for another user's job when the
+    user is not an admin)."""
+    job = find_job(session, job_scope(user), job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, JOB_NOT_FOUND)
     return JobResponse(

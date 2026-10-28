@@ -20,12 +20,14 @@ from src.api.dependencies import (
     current_user_short,
     get_db_session,
     get_session_factory,
+    job_scope,
     require_role,
 )
 from src.api.tokens import issue_token
 from src.config.settings import ApiSettings
 from src.db.models import Account, User, UserRole
 from src.db.session import create_session_factory
+from src.jobs.store import JobScope
 
 SECRET = "a-made-up-test-secret-of-forty-characters"  # noqa: S105  (made up, not a real secret)
 OTHER_SECRET = "another-made-up-secret-of-forty-characters"  # noqa: S105  (made up)
@@ -326,3 +328,14 @@ def test_session_dependency_uses_the_factory_on_app_state(engine: Engine) -> Non
 
     assert response.status_code == 200
     assert response.json() == 1
+
+
+def test_an_admins_job_scope_is_the_whole_account() -> None:
+    admin = CurrentUser(user_id=7, account_id=3, email="admin@x.org", role=UserRole.ADMIN)
+    assert job_scope(admin) == JobScope(account_id=3, owner_id=None)
+
+
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_a_non_admins_job_scope_is_their_own_uploads(role: UserRole) -> None:
+    user = CurrentUser(user_id=7, account_id=3, email="member@x.org", role=role)
+    assert job_scope(user) == JobScope(account_id=3, owner_id=7)

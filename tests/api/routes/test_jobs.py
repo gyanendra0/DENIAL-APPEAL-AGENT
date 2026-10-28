@@ -205,14 +205,22 @@ def test_reads_a_job_of_the_own_account(api_client: TestClient) -> None:
     assert body["created_at"]
 
 
-def test_a_viewer_reads_a_job_of_the_own_account(
-    api_client: TestClient, db_session: Session
+@pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
+def test_a_non_admin_reads_their_own_job_but_not_another_users(
+    api_client: TestClient, db_session: Session, role: UserRole
 ) -> None:
     admin = _signup(api_client, "A", "admin@a.org")
-    job_id = _upload(api_client)[1]["job_id"]
-    _add_user(db_session, admin["account_id"], "viewer@a.org", UserRole.VIEWER)
-    _login(api_client, "viewer@a.org")
-    assert api_client.get(f"/jobs/{job_id}").status_code == 200
+    admins_job = _upload(api_client)[1]["job_id"]
+    _add_user(db_session, admin["account_id"], "member@a.org", role)
+    _login(api_client, "member@a.org")
+    own = _upload(api_client)[1]["job_id"]
+
+    others = api_client.get(f"/jobs/{admins_job}")
+
+    assert api_client.get(f"/jobs/{own}").status_code == 200
+    assert (others.status_code, others.json()) == (404, {"detail": JOB_NOT_FOUND})
+    _login(api_client, "admin@a.org")
+    assert api_client.get(f"/jobs/{own}").status_code == 200
 
 
 def test_a_job_of_another_account_is_404_like_a_missing_one(api_client: TestClient) -> None:

@@ -22,6 +22,7 @@ from src.config.settings import ApiSettings
 from src.db.models import User, UserRole
 from src.db.query import for_account
 from src.db.session import session_scope
+from src.jobs.store import JobScope
 
 AUTH_COOKIE_NAME = "access_token"
 
@@ -44,6 +45,13 @@ class CurrentUser(BaseModel):
     account_id: int
     email: str
     role: UserRole
+
+
+def job_scope(user: CurrentUser) -> JobScope:
+    """The jobs `user` may read: the whole account for an admin, their own uploads otherwise.
+    Every route that reads jobs builds its scope here."""
+    owner_id = None if user.role is UserRole.ADMIN else user.user_id
+    return JobScope(account_id=user.account_id, owner_id=owner_id)
 
 
 def get_api_settings(request: Request) -> ApiSettings:

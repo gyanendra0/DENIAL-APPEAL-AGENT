@@ -2,7 +2,9 @@
 
 `uploads`, `jobs`, `upload_extractions`, `upload_agent_runs` and `upload_drafts` are business
 tables: every query here filters on `account_id`, and the caller takes the account from the
-logged-in user. A job id of another account is answered as not found.
+logged-in user. A job id of another account is answered as not found. A user's reads of jobs
+go through a `JobScope`: the account, and the owner whose uploads alone may be read (an admin
+reads the whole account). The job runner is the system, not a user, and reads by account only.
 
 A job moves `queued` -> `running` -> `done` or `failed`, and each move only happens from the
 status before it, so a job is never run twice. The times come from the database clock. No
@@ -12,8 +14,8 @@ function here commits: the caller owns the transaction.
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy.orm import Session, aliased
 
 from src.agent.trace import AgentTrace
 from src.db.models import (
@@ -39,6 +41,35 @@ class JobNotFoundError(Exception):
 
 class JobStateError(Exception):
     """The job is not in the status the move needs. Its text names the job id only."""
+
+
+class JobScope(BaseModel):
+    """The jobs a user may read: those of `account_id`, and only the ones uploaded by
+    `owner_id` when it is set (None means the whole account). Built from the logged-in user."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account_id: int
+    owner_id: int | None
+
+
+def scope_filter(scope: JobScope) -> tuple[ColumnElement[bool], ...]:
+    """The conditions on `Job` that keep the jobs of `scope`.
+
+    The owner is matched through an aliased `uploads`, so a query that already joins `Upload`
+    keeps its own join as it is.
+    """
+    if scope.owner_id is None:
+        return (Job.account_id == scope.account_id,)
+    owned = aliased(Upload)
+    return (
+        Job.account_id == scope.account_id,
+        Job.upload_id.in_(
+            select(owned.id).where(
+                owned.account_id == scope.account_id, owned.user_id == scope.owner_id
+            )
+        ),
+    )
 
 
 class NewUpload(BaseModel):
@@ -76,11 +107,10 @@ def create_upload_job(session: Session, account_id: int, upload: NewUpload) -> i
     return job.id
 
 
-def find_job(session: Session, account_id: int, job_id: int) -> Job | None:
-    """Return the job `job_id` of `account_id`, or None (also for another account's job)."""
-    return session.scalars(
-        select(Job).where(Job.account_id == account_id, Job.id == job_id)
-    ).one_or_none()
+def find_job(session: Session, scope: JobScope, job_id: int) -> Job | None:
+    """Return the job `job_id` in `scope`, or None (also for a job of another account, or
+    another user's job when the scope has an owner)."""
+    return session.scalars(select(Job).where(*scope_filter(scope), Job.id == job_id)).one_or_none()
 
 
 def start_job(session: Session, account_id: int, job_id: int) -> bool:

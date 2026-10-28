@@ -1,7 +1,8 @@
-"""The worklist: the account's jobs, newest first, one line each, without any document text.
+"""The worklist: the jobs in a `JobScope`, newest first, one line each, without any document text.
 
 Every table read here is a business table: each one is filtered on `account_id` and each
-join carries it, so a line never mixes rows of two accounts. The denial reason and the win
+join carries it, so a line never mixes rows of two accounts. A scope with an owner keeps that
+user's uploads only. The denial reason and the win
 probability are read out of the stored extraction and trace inside the database, so neither
 the letter fields nor the trace leave it. No function here commits or calls a model.
 """
@@ -25,6 +26,7 @@ from src.db.models import (
     UploadExtraction,
     User,
 )
+from src.jobs.store import JobScope, scope_filter
 from src.review.paging import DEFAULT_PAGE_SIZE, check_page_size, next_before
 
 
@@ -56,14 +58,14 @@ class WorklistPage(BaseModel):
 
 def list_worklist(
     session: Session,
-    account_id: int,
+    scope: JobScope,
     *,
     before: int | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
     status: JobStatus | None = None,
     review_status: DraftReviewStatus | None = None,
 ) -> WorklistPage:
-    """Return one page of the jobs of `account_id`, newest first.
+    """Return one page of the jobs in `scope`, newest first.
 
     `status` keeps the jobs in that status; `review_status` keeps the jobs whose draft has
     it (a job without a draft is then left out). Raises ValueError on a `limit` out of range.
@@ -98,7 +100,7 @@ def list_worklist(
             UploadDraft,
             and_(UploadDraft.account_id == Job.account_id, UploadDraft.job_id == Job.id),
         )
-        .where(Job.account_id == account_id)
+        .where(*scope_filter(scope))
         .order_by(Job.id.desc())
         .limit(limit)
     )

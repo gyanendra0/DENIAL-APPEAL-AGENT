@@ -3,7 +3,8 @@
 `ADMIN_EMAILS` is the only source of `admin`. The role is worked out on every request, so a
 change to the setting takes effect at the next restart, with no database edit: a listed email is
 `admin`, and a stored `admin` that is no longer listed acts as `reviewer`. The API decides; a
-screen only hides what a role cannot do.
+screen only hides what a role cannot do. An admin reads every job of the account; any other
+role reads only the jobs of their own uploads (`job_scope` in `src/api/dependencies.py`).
 """
 
 from src.config.settings import ApiSettings

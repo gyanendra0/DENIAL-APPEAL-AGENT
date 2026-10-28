@@ -1,6 +1,6 @@
 """Core tables, uploads, jobs, draft review, audit, password reset, emailed codes and outside
-logins (business), reference tables, and the operational tables `llm_calls`, `login_failures`
-and `mail_sends`."""
+logins (business), reference tables, and the operational tables `llm_calls`, `login_failures`,
+`mail_sends` and `individual_upload_days`."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -29,6 +29,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import AccountScopedMixin, Base, TimestampMixin
+
+
+class AccountKind(StrEnum):
+    """The team's one shared account, or an individual's own account."""
+
+    SHARED = "shared"
+    PERSONAL = "personal"
 
 
 class UserRole(StrEnum):
@@ -191,6 +198,12 @@ class Account(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    kind: Mapped[AccountKind] = mapped_column(
+        Enum(AccountKind, name="account_kind", values_callable=_values),
+        nullable=False,
+        default=AccountKind.SHARED,
+        server_default=AccountKind.SHARED.value,
+    )
 
 
 class User(AccountScopedMixin, TimestampMixin, Base):
@@ -665,6 +678,23 @@ class MailSend(TimestampMixin, Base):
         Enum(EmailCodePurpose, name="email_code_purpose", values_callable=_values),
         nullable=False,
     )
+
+
+class IndividualUploadDay(TimestampMixin, Base):
+    """How many letters all personal accounts together uploaded on one UTC day.
+
+    Operational table, no `account_id`: the daily cap counts every personal account's uploads
+    together, and the row holds only the day and the number; never an account, a user or a
+    letter. An upload locks its day's row while it counts, so two uploads cannot both pass the cap.
+    """
+
+    __tablename__ = "individual_upload_days"
+    __table_args__ = (
+        CheckConstraint("count >= 0", name="ck_individual_upload_days_count_not_negative"),
+    )
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class DocumentExtraction(TimestampMixin, Base):

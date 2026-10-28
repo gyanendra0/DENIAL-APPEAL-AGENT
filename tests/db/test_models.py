@@ -15,6 +15,7 @@ from src.db.models import (
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
     Account,
+    AccountKind,
     AgentRun,
     AuditAction,
     AuditEvent,
@@ -41,6 +42,7 @@ from src.db.models import (
     ExchangeType,
     GeneratedDocument,
     IdentityProvider,
+    IndividualUploadDay,
     IssuerDenialStats,
     Job,
     JobFailure,
@@ -2734,6 +2736,31 @@ def test_stores_a_mail_send_with_its_purpose_and_timestamps_only(session: Sessio
     stored = session.get(MailSend, send.id)
     assert stored is not None
     assert stored.purpose is EmailCodePurpose.PASSWORD_RESET
+    assert stored.created_at is not None
+    assert stored.updated_at is not None
+
+
+def test_a_new_account_is_shared_unless_made_personal(session: Session) -> None:
+    team = _account(session, "team")
+    personal = Account(name="personal-a", kind=AccountKind.PERSONAL)
+    session.add(personal)
+    session.flush()
+    session.expire_all()
+
+    assert session.get(Account, team.id).kind is AccountKind.SHARED  # type: ignore[union-attr]
+    assert session.get(Account, personal.id).kind is AccountKind.PERSONAL  # type: ignore[union-attr]
+
+
+def test_stores_an_individual_upload_day_with_its_count_and_timestamps_only(
+    session: Session,
+) -> None:
+    session.add(IndividualUploadDay(day=date(2026, 10, 28)))
+    session.flush()
+    session.expire_all()
+
+    stored = session.get(IndividualUploadDay, date(2026, 10, 28))
+    assert stored is not None
+    assert stored.count == 0
     assert stored.created_at is not None
     assert stored.updated_at is not None
 

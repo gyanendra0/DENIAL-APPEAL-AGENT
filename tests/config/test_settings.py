@@ -452,6 +452,11 @@ SHARED_ACCOUNT_KEYS = (
     "SIGNUP_ALLOWED_EMAILS",
     "SIGNUP_ALLOWED_DOMAINS",
 )
+INDIVIDUAL_KEYS = (
+    "INDIVIDUAL_SIGNUP_ENABLED",
+    "INDIVIDUAL_MONTHLY_UPLOADS",
+    "INDIVIDUAL_DAILY_UPLOADS",
+)
 EMAIL_CODE_KEYS = (
     "EMAIL_CODE_TTL_MINUTES",
     "EMAIL_CODE_MAX_WRONG_TRIES",
@@ -483,7 +488,7 @@ SMTP_ENV = {
 @pytest.fixture
 def api_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Set the token secret, the shared account and one admin; clear the optional API keys."""
-    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS, *SHARED_ACCOUNT_KEYS):
+    for key in (*API_KEYS, *MAIL_KEYS, *GOOGLE_KEYS, *SHARED_ACCOUNT_KEYS, *INDIVIDUAL_KEYS):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("AUTH_TOKEN_SECRET", TOKEN_SECRET)
     monkeypatch.setenv("SHARED_ACCOUNT_NAME", "Example Clinic")
@@ -610,7 +615,14 @@ def test_app_and_gateway_settings_need_no_api_key(gateway_env: pytest.MonkeyPatc
 
 
 def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    keys = (*API_KEYS, *MAIL_KEYS, *EMAIL_CODE_KEYS, *GOOGLE_KEYS, *SHARED_ACCOUNT_KEYS)
+    keys = (
+        *API_KEYS,
+        *MAIL_KEYS,
+        *EMAIL_CODE_KEYS,
+        *GOOGLE_KEYS,
+        *SHARED_ACCOUNT_KEYS,
+        *INDIVIDUAL_KEYS,
+    )
     for key in keys:
         monkeypatch.delenv(key, raising=False)
     example = Path(__file__).parents[2] / ".env.example"
@@ -625,6 +637,8 @@ def test_env_example_lists_every_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     # The Google keys are listed empty: no client secret, real or made up, and the button is off.
     assert not settings.google_enabled
     assert settings.google_client_secret is None
+    # Individuals stay out until the switch is turned on by hand.
+    assert settings.individual_signup_enabled is False
     # Worked out before the asserts, so a failure never prints the value of a real secret.
     # Placeholders only: a real admin email or work domain is personal data.
     assert all(email.endswith(".test") for email in settings.admin_email_set)
@@ -736,6 +750,47 @@ def test_rejects_an_email_code_limit_of_zero_naming_the_key(
     api_env: pytest.MonkeyPatch, key: str
 ) -> None:
     api_env.setenv(key, "0")
+    with pytest.raises(ValidationError, match=key.lower()):
+        load_api_settings(env_file=None)
+
+
+def test_individual_sign_up_is_off_with_5_uploads_a_month_and_10_a_day_by_default(
+    api_env: pytest.MonkeyPatch,
+) -> None:
+    settings = load_api_settings(env_file=None)
+
+    assert settings.individual_signup_enabled is False
+    assert settings.individual_monthly_uploads == 5
+    assert settings.individual_daily_uploads == 10
+
+
+def test_individual_settings_are_read_from_the_environment(api_env: pytest.MonkeyPatch) -> None:
+    for key, value in zip(INDIVIDUAL_KEYS, ("true", "2", "7"), strict=True):
+        api_env.setenv(key, value)
+
+    settings = load_api_settings(env_file=None)
+
+    assert (
+        settings.individual_signup_enabled,
+        settings.individual_monthly_uploads,
+        settings.individual_daily_uploads,
+    ) == (True, 2, 7)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("INDIVIDUAL_SIGNUP_ENABLED", "maybe"),
+        ("INDIVIDUAL_MONTHLY_UPLOADS", "0"),
+        ("INDIVIDUAL_MONTHLY_UPLOADS", "five"),
+        ("INDIVIDUAL_DAILY_UPLOADS", "0"),
+        ("INDIVIDUAL_DAILY_UPLOADS", "1.5"),
+    ],
+)
+def test_rejects_a_bad_individual_setting_naming_the_key(
+    api_env: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    api_env.setenv(key, value)
     with pytest.raises(ValidationError, match=key.lower()):
         load_api_settings(env_file=None)
 

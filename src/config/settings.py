@@ -190,6 +190,10 @@ class ApiSettings(BaseSettings):
     `admin_emails` are admins; nobody else is. Sign-up is open only to those emails and to the
     ones in `signup_allowed_emails` or under a domain in `signup_allowed_domains`. The three lists
     are comma-separated; their emails are personal data, so a rejected value is never shown.
+
+    With `individual_signup_enabled`, any other email may sign up too and gets a personal account
+    of its own. Each personal account may upload `individual_monthly_uploads` letters a UTC
+    month, and all personal accounts together `individual_daily_uploads` a UTC day.
     """
 
     # `hide_input_in_errors` keeps a rejected secret out of the validation error's text.
@@ -206,6 +210,9 @@ class ApiSettings(BaseSettings):
     admin_emails: str
     signup_allowed_emails: str = ""
     signup_allowed_domains: str = ""
+    individual_signup_enabled: bool = False
+    individual_monthly_uploads: int = Field(default=5, ge=1)
+    individual_daily_uploads: int = Field(default=10, ge=1)
     auth_token_ttl_minutes: int = Field(default=60, ge=1)
     auth_cookie_secure: bool = True
     upload_max_bytes: int = Field(default=1_000_000, ge=1)

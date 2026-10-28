@@ -36,6 +36,12 @@ def test_the_api_starts_with_exactly_one_worker() -> None:
     assert '"--workers", "1"' in command
 
 
+def test_the_api_writes_no_access_log() -> None:
+    # The access log would record the Google callback's `?code=...&state=...`.
+    (command,) = _instructions("CMD")
+    assert '"--no-access-log"' in command
+
+
 def test_the_image_has_a_health_check_on_the_health_route() -> None:
     (check,) = _instructions("HEALTHCHECK")
     assert "/health" in check

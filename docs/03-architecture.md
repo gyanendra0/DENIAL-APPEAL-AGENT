@@ -4454,10 +4454,10 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
   match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
   the app has a public address (Stage 6).
-- **uvicorn's access log would record `?code=...&state=...`** of the callback, since it logs
-  each path with its query. The code works once and needs the secret and the flow cookie, but
-  it should not sit in logs; the API container turns the access log off or drops the query
-  (Stage 6, `feat/containers`).
+- **The API image writes no uvicorn access log.** That log writes each path with its query, so
+  it would record the callback's `?code=...&state=...`. The code works once and needs the secret
+  and the flow cookie, but it should not sit in logs, so `deploy/api/Dockerfile` starts uvicorn
+  with `--no-access-log`. A uvicorn started by hand for local work still logs it.
 - **The return from Google is checked in a real browser, not by tests.** The tests stand in for
   Google with made-up keys (`httpx.MockTransport`) and cannot show how a browser treats the
   `Lax` cookie on the way back.

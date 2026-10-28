@@ -47,13 +47,11 @@ from src.api.schemas import (
     SignupRequest,
     UserResponse,
 )
-from src.api.signup import AccountNameTakenError, EmailTakenError, create_account_with_admin
+from src.api.signup import EmailTakenError, create_member, may_sign_up
 from src.api.user_lookup import find_user_response
 from src.api.verify_cookie import set_verify_cookie
 from src.config.settings import ApiSettings
-from src.db.models import AuditAction
 from src.db.session import session_scope
-from src.review.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +59,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # One message for an unknown email and a wrong password, so the answer does not say which.
 LOGIN_FAILED = "email or password is wrong"
-ACCOUNT_NAME_TAKEN = "the account name is taken"
 EMAIL_TAKEN = "the email is taken"
+# The same answer whichever list would have matched; nothing is created.
+SIGNUP_NOT_OPEN = "sign-up is not open for this email"
 # A login with the right password whose email is not confirmed: a code is (normally) on its way.
 EMAIL_NOT_VERIFIED_CODE = "EMAIL_NOT_VERIFIED"
 EMAIL_NOT_VERIFIED = "confirm your email first; we sent you a code"
@@ -96,34 +95,35 @@ def signup(
     now: Now,
     sender: Sender,
 ) -> UserResponse:
-    """Create a new account and its first user (an admin, email not confirmed yet), audit it,
-    and email the user a code. Does not log in; sets the `email_verify` cookie for the code
-    screen.
+    """Add a user to the shared account (email not confirmed yet) and email the user a code.
+    Does not log in; sets the `email_verify` cookie for the code screen. Nothing is audited
+    until the code is typed.
 
-    An unverified holder of the email is replaced. Counts one try against the client IP's limit
-    (429 over it). Over the daily email cap nothing is created (503). The email is sent after
-    the answer. Takes tens of milliseconds on purpose (the password hash).
+    An email the settings do not allow is refused (403) and nothing is created. An unverified
+    holder of the email is replaced. Counts one try against the client IP's limit (429 over
+    it). Over the daily email cap nothing is created (503). The email is sent after the answer.
+    Takes tens of milliseconds on purpose (the password hash).
     """
     ip_hash = ip_key(_client_host(request), settings.auth_token_secret.get_secret_value())
     row_id = count_ip_try(factory, ip_hash, now=now, settings=settings)
-    # A 409 or 503 is raised inside the transaction, so it rolls everything back; the IP row was
-    # committed before and stays.
+    # A 403, 409 or 503 is raised inside the transaction, so it rolls everything back; the IP row
+    # was committed before and stays.
     with session_scope(factory) as session:
         retry_after = refuse_over_ip_limit(session, ip_hash, row_id, now=now, settings=settings)
         if retry_after is None:
+            if not may_sign_up(settings, body.email):
+                logger.info("sign-up refused: email not allowed")
+                raise HTTPException(status.HTTP_403_FORBIDDEN, SIGNUP_NOT_OPEN)
             try:
-                user = create_account_with_admin(
+                user = create_member(
                     session,
-                    account_name=body.account_name,
+                    settings=settings,
                     email=body.email,
                     password=body.password,
                     verified_at=None,
                 )
-            except AccountNameTakenError:
-                raise HTTPException(status.HTTP_409_CONFLICT, ACCOUNT_NAME_TAKEN) from None
             except EmailTakenError:
                 raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from None
-            record_audit_event(session, user.account_id, user.id, AuditAction.ACCOUNT_CREATED, None)
             try:
                 message = prepare_verify_email(
                     session,

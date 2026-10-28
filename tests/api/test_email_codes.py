@@ -16,8 +16,8 @@ from src.api.email_codes import (
     new_code,
     resend_wait_seconds,
 )
-from src.api.signup import create_account_with_admin
 from src.db.models import EmailCode, EmailCodePurpose, User
+from tests.api.conftest import add_member
 
 SECRET = "a-made-up-code-test-secret-of-forty-chars"  # noqa: S105  (made up)
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
@@ -27,9 +27,7 @@ RESET = EmailCodePurpose.PASSWORD_RESET
 
 
 def _user(session: Session, email: str = "ann@x.org", name: str = "One") -> User:
-    return create_account_with_admin(
-        session, account_name=name, email=email, password=PASSWORD, verified_at=None
-    )
+    return add_member(session, account_name=name, email=email, password=PASSWORD, verified_at=None)
 
 
 def _add(

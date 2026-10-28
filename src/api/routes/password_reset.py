@@ -35,6 +35,7 @@ from src.api.mail import MailMessage, MailSender, code_email, send_quietly
 from src.api.mail_cap import reserve_mail_send
 from src.api.passwords import hash_password
 from src.api.schemas import PasswordResetAnswer, PasswordResetConfirm, PasswordResetRequest
+from src.api.signup import record_joined
 from src.config.settings import ApiSettings
 from src.db.models import AuditAction, EmailCodePurpose, User
 from src.db.query import for_account
@@ -153,11 +154,11 @@ def confirm_password_reset(
     """Set the new password if `code` is the newest unexpired reset code of `email`'s user.
 
     Ends every session of the user, deletes all of the user's codes, marks the email verified
-    (the code proved the mailbox), clears the email's failed logins and audits it. Does not log
-    in. A wrong code or an unknown email is the same 400; a wrong code counts one wrong try
-    against the code (it dies after `EMAIL_CODE_MAX_WRONG_TRIES`), and every failure one against
-    the client IP's limit; over that limit, 429 without checking. Takes tens of milliseconds on
-    purpose (the password hash).
+    (the code proved the mailbox; the first time, `record_joined` audits the user joining),
+    clears the email's failed logins and audits it. Does not log in. A wrong code or an unknown
+    email is the same 400; a wrong code counts one wrong try against the code (it dies after
+    `EMAIL_CODE_MAX_WRONG_TRIES`), and every failure one against the client IP's limit; over
+    that limit, 429 without checking. Takes tens of milliseconds on purpose (the password hash).
     """
     client_host = _client_host(request)
     secret = settings.auth_token_secret.get_secret_value()
@@ -185,6 +186,7 @@ def confirm_password_reset(
             user.token_version += 1
             if user.email_verified_at is None:
                 user.email_verified_at = now
+                record_joined(session, user)
             for purpose in EmailCodePurpose:
                 delete_codes(session, account_id=user.account_id, user_id=user.id, purpose=purpose)
             email_hash = login_keys(user.email, client_host, secret).email_hash

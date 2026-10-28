@@ -1,4 +1,4 @@
-""" "Continue with Google": `/auth/options`, the start, Google's return and the "name your account"
+""" "Continue with Google": `/auth/options`, the start, Google's return and the "join the account"
 step, against a made-up Google (no network)."""
 
 import logging
@@ -15,12 +15,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.api.app import create_app
 from src.api.dependencies import AUTH_COOKIE_NAME, get_now
 from src.api.google_cookies import FLOW_COOKIE_NAME, SIGNUP_COOKIE_NAME
-from src.api.routes.auth import ACCOUNT_NAME_TAKEN, EMAIL_TAKEN
+from src.api.routes.auth import EMAIL_TAKEN, SIGNUP_NOT_OPEN
 from src.api.routes.google import (
     CALLBACK_PATH,
     GOOGLE_LINKED_ELSEWHERE,
     HOME_SCREEN,
-    NAME_ACCOUNT_SCREEN,
+    JOIN_ACCOUNT_SCREEN,
     SIGNUP_EXPIRED,
 )
 from src.db.models import Account, AuditAction, AuditEvent, LoginFailure, User, UserIdentity
@@ -44,6 +44,9 @@ PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 NEW_PASSWORD = "a-new-made-up-password"  # noqa: S105  (made up)
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 SUB = "100000000000000000001"
+# The test settings allow these to sign up besides the admin (`admin@example.test`).
+ALLOWED_EMAILS = "ann@gmail.com,ann.new@gmail.com"
+ALLOWED_DOMAINS = "clinic.example"
 
 
 class _Clock:
@@ -76,8 +79,11 @@ def client(
     factory = sessionmaker(
         bind=api_connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
+    settings = google_settings().model_copy(
+        update={"signup_allowed_emails": ALLOWED_EMAILS, "signup_allowed_domains": ALLOWED_DOMAINS}
+    )
     app = create_app(
-        api_settings=google_settings(),
+        api_settings=settings,
         session_factory=factory,
         job_runner=lambda _account_id, _job_id: None,
         mail_sender=sender,
@@ -139,7 +145,7 @@ def test_options_say_google_is_off_and_every_google_route_is_404_without_its_key
     assert api_client.get("/auth/google/start", follow_redirects=False).status_code == 404
     assert api_client.get(CALLBACK_PATH, follow_redirects=False).status_code == 404
     assert api_client.get("/auth/google/signup").status_code == 404
-    assert api_client.post("/auth/google/signup", json={"account_name": "X"}).status_code == 404
+    assert api_client.post("/auth/google/signup", json={}).status_code == 404
 
 
 def test_options_say_google_is_on_with_its_keys(client: TestClient) -> None:
@@ -303,11 +309,11 @@ def test_a_new_email_on_a_domain_google_does_not_manage_must_sign_up_with_a_pass
     )
 
 
-def test_a_new_workspace_email_is_sent_to_name_its_account(
+def test_a_new_workspace_email_is_sent_to_join_the_account(
     client: TestClient, fake_google: FakeGoogle
 ) -> None:
     location = _sign_in(client, fake_google, email="ann@clinic.example", hd="clinic.example")[1]
-    assert location == NAME_ACCOUNT_SCREEN
+    assert location == JOIN_ACCOUNT_SCREEN
 
 
 # --- the callback: logging in and linking ---
@@ -395,17 +401,31 @@ def test_a_google_sign_in_does_not_clear_the_emails_password_failures(
     assert _count(db_session, LoginFailure) == before
 
 
-# --- a Google account with no user: name the account ---
+def test_a_new_email_not_allowed_to_sign_up_is_refused_and_writes_nothing(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
+    status, location = _sign_in(client, fake_google, email="eve@gmail.com")
+    assert (status, location) == (303, "/app/login?google=not_allowed")
+    assert SIGNUP_COOKIE_NAME not in client.cookies
+    assert AUTH_COOKIE_NAME not in client.cookies
+    assert (_count(db_session, Account), _count(db_session, User), _actions(db_session)) == (
+        0,
+        0,
+        [],
+    )
 
 
-def test_a_new_google_account_is_sent_to_name_its_account(
+# --- a Google account with no user: join the account ---
+
+
+def test_a_new_google_account_is_sent_to_join_the_account(
     client: TestClient, fake_google: FakeGoogle, db_session: Session
 ) -> None:
     query = _start(client)
     fake_google.id_token = sign(id_claims(nonce=query["nonce"], now=NOW))
     response = client.get(CALLBACK_PATH, params={"code": "made-up-code", "state": query["state"]})
 
-    assert (response.status_code, response.headers["location"]) == (303, NAME_ACCOUNT_SCREEN)
+    assert (response.status_code, response.headers["location"]) == (303, JOIN_ACCOUNT_SCREEN)
     [signup_cookie] = [
         value
         for value in response.headers.get_list("set-cookie")
@@ -415,22 +435,25 @@ def test_a_new_google_account_is_sent_to_name_its_account(
         assert part in signup_cookie
     assert AUTH_COOKIE_NAME not in client.cookies
     assert (_count(db_session, User), _count(db_session, UserIdentity)) == (0, 0)
-    assert client.get("/auth/google/signup").json() == {"email": "ann@gmail.com"}
+    assert client.get("/auth/google/signup").json() == {
+        "email": "ann@gmail.com",
+        "account_name": "Example Clinic",
+    }
 
 
-def test_naming_the_account_creates_an_admin_with_no_password_and_logs_in(
+def test_confirming_joins_the_shared_account_as_a_reviewer_with_no_password_and_logs_in(
     client: TestClient, fake_google: FakeGoogle, db_session: Session
 ) -> None:
     _sign_in(client, fake_google)
 
-    response = client.post("/auth/google/signup", json={"account_name": "  Clinic One "})
+    response = client.post("/auth/google/signup", json={})
 
     assert response.status_code == 201, response.text
     body = response.json()
     assert (body["email"], body["role"], body["account_name"]) == (
         "ann@gmail.com",
-        "admin",
-        "Clinic One",
+        "reviewer",
+        "Example Clinic",
     )
     assert _me(client) == 200
     user = db_session.get(User, body["user_id"])
@@ -453,7 +476,7 @@ def test_a_user_with_no_password_sets_one_with_forgot_password(
     client: TestClient, fake_google: FakeGoogle, sender: RecordingSender
 ) -> None:
     _sign_in(client, fake_google)
-    assert client.post("/auth/google/signup", json={"account_name": "Clinic"}).status_code == 201
+    assert client.post("/auth/google/signup", json={}).status_code == 201
     client.cookies.clear()
 
     asked = client.post("/auth/password-reset", json={"email": "ann@gmail.com"})
@@ -470,17 +493,41 @@ def test_a_user_with_no_password_sets_one_with_forgot_password(
     assert change.status_code == 204, change.text
 
 
-def test_a_taken_name_can_be_changed_while_the_cookie_lasts(
-    client: TestClient, fake_google: FakeGoogle
+def test_a_google_user_after_the_first_joins_the_same_account_audited_as_joined(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
 ) -> None:
-    _signup_with_password(client, "bob@x.org", "Clinic")
+    bob_id = _signup_with_password(client, "bob@x.org", "Example Clinic")
     _sign_in(client, fake_google)
 
-    taken = client.post("/auth/google/signup", json={"account_name": "Clinic"})
-    assert (taken.status_code, taken.json()["detail"]) == (409, ACCOUNT_NAME_TAKEN)
-    assert (
-        client.post("/auth/google/signup", json={"account_name": "Clinic Two"}).status_code == 201
+    response = client.post("/auth/google/signup", json={})
+
+    assert response.status_code == 201, response.text
+    bob = db_session.get(User, bob_id)
+    assert bob is not None and response.json()["account_id"] == bob.account_id
+    assert _count(db_session, Account) == 1
+    assert _actions(db_session) == [
+        AuditAction.ACCOUNT_CREATED,
+        AuditAction.EMAIL_VERIFIED,
+        AuditAction.USER_JOINED,
+    ]
+
+
+def test_an_email_no_longer_allowed_when_confirming_is_403_and_writes_nothing(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
+    _sign_in(client, fake_google)
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"signup_allowed_emails": ""})
+
+    refused = client.post("/auth/google/signup", json={})
+
+    assert (refused.status_code, refused.json()["detail"]) == (403, SIGNUP_NOT_OPEN)
+    assert (_count(db_session, Account), _count(db_session, User), _actions(db_session)) == (
+        0,
+        0,
+        [],
     )
+    assert AUTH_COOKIE_NAME not in client.cookies
 
 
 def test_an_email_taken_meanwhile_is_409(client: TestClient, fake_google: FakeGoogle) -> None:
@@ -490,47 +537,43 @@ def test_an_email_taken_meanwhile_is_409(client: TestClient, fake_google: FakeGo
     assert pending is not None
     client.cookies.set(SIGNUP_COOKIE_NAME, pending, path="/auth/google/signup")
 
-    taken = client.post("/auth/google/signup", json={"account_name": "Second"})
+    taken = client.post("/auth/google/signup", json={})
     assert (taken.status_code, taken.json()["detail"]) == (409, EMAIL_TAKEN)
 
 
-def test_a_google_account_linked_to_another_user_creates_nothing(
+def test_a_google_account_linked_to_another_user_adds_nothing(
     client: TestClient, fake_google: FakeGoogle, db_session: Session
 ) -> None:
     _sign_in(client, fake_google)
-    client.post("/auth/google/signup", json={"account_name": "First"})
+    client.post("/auth/google/signup", json={})
     client.cookies.clear()
     # The same Google account now has another email, which no user has.
     _sign_in(client, fake_google, email="ann.new@gmail.com")
-    before = _count(db_session, Account)
+    before = (_count(db_session, Account), _count(db_session, User))
 
-    refused = client.post("/auth/google/signup", json={"account_name": "Second"})
+    refused = client.post("/auth/google/signup", json={})
 
     assert (refused.status_code, refused.json()["detail"]) == (409, GOOGLE_LINKED_ELSEWHERE)
-    assert _count(db_session, Account) == before
+    assert (_count(db_session, Account), _count(db_session, User)) == before
 
 
-def test_naming_without_a_pending_sign_up_or_after_ten_minutes_is_401(
+def test_confirming_without_a_pending_sign_up_or_after_ten_minutes_is_401(
     client: TestClient, fake_google: FakeGoogle, clock: _Clock
 ) -> None:
-    missing = client.post("/auth/google/signup", json={"account_name": "Clinic"})
+    missing = client.post("/auth/google/signup", json={})
     assert (missing.status_code, missing.json()["detail"]) == (401, SIGNUP_EXPIRED)
 
     _sign_in(client, fake_google)
     clock.now = NOW + timedelta(minutes=10)
     assert client.get("/auth/google/signup").status_code == 401
-    assert client.post("/auth/google/signup", json={"account_name": "Clinic"}).status_code == 401
+    assert client.post("/auth/google/signup", json={}).status_code == 401
 
 
-def test_a_bad_account_name_or_an_extra_field_is_422(
+def test_an_account_name_or_any_other_field_is_422(
     client: TestClient, fake_google: FakeGoogle
 ) -> None:
     _sign_in(client, fake_google)
-    for body in (
-        {"account_name": "   "},
-        {"account_name": "x" * 201},
-        {"account_name": "Clinic", "email": "eve@x.org"},
-    ):
+    for body in ({"account_name": "Clinic"}, {"email": "eve@x.org"}):
         assert client.post("/auth/google/signup", json=body).status_code == 422
 
 
@@ -547,7 +590,7 @@ def test_nothing_secret_is_logged_or_put_in_an_address(
         response = client.get(
             CALLBACK_PATH, params={"code": "made-up-code", "state": query["state"]}
         )
-        client.post("/auth/google/signup", json={"account_name": "Clinic"})
+        client.post("/auth/google/signup", json={})
     # The test client logs every address it asks for (`httpx2`); in production uvicorn's access
     # log does the same, which the deployment turns off. The app's own logs and its calls to
     # Google (`httpx`) are checked here.

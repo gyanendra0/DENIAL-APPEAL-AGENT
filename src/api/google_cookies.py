@@ -2,7 +2,7 @@
 
 `google_flow` ties Google's answer to the browser that started the sign-in: it holds the state,
 the nonce and the PKCE verifier. `google_signup` carries a checked Google identity that has no
-user yet to the "name your account" step. Both are HS256 JWTs signed with a key derived from the
+user yet to the "join the account" step. Both are HS256 JWTs signed with a key derived from the
 token secret plus a label, so neither can pass as a login or reset token, and each names its kind
 (`typ`), so one cannot pass as the other.
 """

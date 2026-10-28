@@ -10,7 +10,6 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from src.api.passwords import MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS
 from src.db.models import UserRole
 
-MAX_ACCOUNT_NAME_CHARACTERS = 200  # the length of `accounts.name`
 MAX_EMAIL_CHARACTERS = 320  # the length of `users.email`
 # Far above any sign-up password, so it only stops a huge body from being hashed at login.
 MAX_LOGIN_PASSWORD_CHARACTERS = 1024
@@ -31,17 +30,6 @@ def normalize_email(value: str) -> str:
     return email
 
 
-def normalize_account_name(value: str) -> str:
-    """Return `value` trimmed, or raise ValueError if nothing is left."""
-    name = value.strip()
-    if not name:
-        raise ValueError("the account name is empty")
-    return name
-
-
-AccountName = Annotated[
-    str, Field(max_length=MAX_ACCOUNT_NAME_CHARACTERS), AfterValidator(normalize_account_name)
-]
 Email = Annotated[str, AfterValidator(normalize_email)]
 # The password is not trimmed: every character the user typed counts.
 Password = Annotated[
@@ -50,11 +38,10 @@ Password = Annotated[
 
 
 class SignupRequest(BaseModel):
-    """A new account and its first user."""
+    """A new user of the shared account. The account comes from the settings, never the body."""
 
     model_config = ConfigDict(extra="forbid")
 
-    account_name: AccountName
     email: Email
     password: Password
 
@@ -146,20 +133,21 @@ class AuthOptions(BaseModel):
 
 
 class GoogleSignupInfo(BaseModel):
-    """The verified Google email a pending Google sign-up will create its user with."""
+    """The verified Google email a pending Google sign-up will create its user with, and the
+    shared account the user will join."""
 
     model_config = ConfigDict(frozen=True)
 
     email: str
+    account_name: str
 
 
 class GoogleSignupRequest(BaseModel):
-    """The name of the new account. The email and the Google account come from the signed
-    `google_signup` cookie, never from the body."""
+    """The deliberate second click that confirms a Google sign-up. Empty: the email and the
+    Google account come from the signed `google_signup` cookie, the account from the
+    settings."""
 
     model_config = ConfigDict(extra="forbid")
-
-    account_name: AccountName
 
 
 class UserResponse(BaseModel):

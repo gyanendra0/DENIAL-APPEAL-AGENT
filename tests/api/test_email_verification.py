@@ -15,17 +15,16 @@ from src.api.email_verification import (
     prepare_verify_email,
 )
 from src.api.mail import CODE_SUBJECTS, MailMessage
-from src.api.signup import create_account_with_admin
 from src.config.settings import ApiSettings
 from src.db.models import EmailCode, EmailCodePurpose, MailSend, User
-from tests.api.conftest import API_SECRET, api_settings
+from tests.api.conftest import API_SECRET, add_member, api_settings
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 
 
 def _user(session: Session) -> User:
-    return create_account_with_admin(
+    return add_member(
         session, account_name="One", email="ann@x.org", password=PASSWORD, verified_at=None
     )
 

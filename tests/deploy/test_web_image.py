@@ -89,3 +89,19 @@ def test_screens_fall_back_to_index_and_the_root_goes_to_the_app() -> None:
     assert "@screens path /app /app/*" in lines
     assert "rewrite * /index.html" in lines
     assert "redir * /app/" in lines
+
+
+def test_the_server_name_is_not_sent() -> None:
+    assert "-Server" in _caddy_lines()
+
+
+def test_hashed_assets_may_be_kept_by_the_browser() -> None:
+    lines = _caddy_lines()
+    assert "handle /assets/* {" in lines
+    assert 'header Cache-Control "public, max-age=31536000, immutable"' in lines
+
+
+def test_any_other_path_is_not_found() -> None:
+    lines = _caddy_lines()
+    # The bare `handle` comes last in the site block, so it only gets what no route above took.
+    assert lines[-4:] == ["handle {", 'respond "Not found" 404', "}", "}"]

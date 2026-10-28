@@ -3872,7 +3872,7 @@ place money is spent is the background job an upload queues, after its answer is
 | `GET /auth/google/signup` | a browser with the `google_signup` cookie | `200` with the verified Google email the new account will use; `401` "the Google sign-up has expired" without a usable cookie |
 | `POST /auth/google/signup` | a browser with the `google_signup` cookie | `201` with the new user and the login cookie; `409` when the account name or the email is taken or the Google account is linked to another login; `401` as above; `422` for a body that does not fit |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
-| `GET /health` | anyone | `200` with `{"status": "ok"}` when the database answers `SELECT 1` within 2 s; else `503` with `{"status": "unavailable"}`, without the error's text (3.23) |
+| `GET /health` | anyone | `200` with `{"status": "ok"}` when a connection opens within 5 s (`DB_CONNECT_TIMEOUT_SECONDS`, every route) and the database answers `SELECT 1` within 2 s; else `503` with `{"status": "unavailable"}`, without the error's text (3.23) |
 
 `GET /users/{user_id}` exists mainly to prove the isolation: its tests sign up two accounts
 and show that the admin of one gets `404` for the user of the other.
@@ -5380,7 +5380,9 @@ replaced the development database container and used its volume (see Gotchas).
 - **Health check.** Docker calls `GET /health` every 30 s with Python's `urllib` (the slim image
   has no `curl`). `/health` runs `SELECT 1` with a 2 s `statement_timeout` and answers `200`
   `{"status": "ok"}`, or `503` `{"status": "unavailable"}` without the error's text (only its
-  class is logged).
+  class is logged). Opening the connection is limited too: `create_db_engine` passes
+  `connect_timeout` 5 s (`DB_CONNECT_TIMEOUT_SECONDS`), so a database that accepts the
+  connection but never answers gives `503` instead of a request that hangs.
 
 ### The web image
 
@@ -5477,3 +5479,12 @@ made-up user went through it in a real browser.
 - **Letter text is not encrypted at rest** by the app; the plan is the host's disk encryption.
 - **The images are rebuilt by hand.** No registry and no automatic build; the machine builds
   them from a checkout.
+- **Clients that come in through Docker's port forwarding share one address.** The network is
+  IPv4 only, so on a Linux host an IPv6 visitor (and, under Docker Desktop on the Mac, every
+  visitor) reaches Caddy through Docker's own proxy and is seen as the network's gateway
+  (`172.30.0.1`). They then share one login count per address: 20 failures by any of them
+  answer `429` to all of them. The measurement above used a test network, not published ports.
+  `feat/deploy-machine` fixes it (IPv6 on the network, or an IPv4-only machine).
+- **HSTS on `localhost`.** With `SITE_ADDRESS=localhost` the browser keeps using HTTPS for every
+  `localhost` port for a year, so the development server must be opened as
+  `http://127.0.0.1:5173` (as the README says), not `localhost:5173`.

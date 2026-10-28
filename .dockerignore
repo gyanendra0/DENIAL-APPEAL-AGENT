@@ -11,4 +11,7 @@
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+# Settings files stay out even inside a let-in folder (Vite would build a VITE_* value into
+# the screens).
+**/.env*
 **/__pycache__/

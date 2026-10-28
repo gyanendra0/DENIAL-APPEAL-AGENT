@@ -98,3 +98,10 @@ def test_the_build_context_keeps_the_frontends_installed_and_built_files_out() -
     let_in = lines.index("!frontend/")
     for folder in ("frontend/node_modules/", "frontend/dist/", "frontend/coverage/"):
         assert lines.index(folder) > let_in
+
+
+def test_the_build_context_keeps_env_files_out_of_every_let_in_folder() -> None:
+    lines = DOCKERIGNORE.read_text().splitlines()
+    # A later line wins, so it must come after every `!` line.
+    let_in = max(i for i, line in enumerate(lines) if line.startswith("!"))
+    assert lines.index("**/.env*") > let_in

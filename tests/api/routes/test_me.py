@@ -41,7 +41,15 @@ def test_me_returns_the_user_and_the_account(api_client: TestClient) -> None:
     response = api_client.get("/me")
     assert response.status_code == 200
     assert response.json() == signed_up
-    assert set(signed_up) == {"user_id", "email", "role", "account_id", "account_name"}
+    assert set(signed_up) == {
+        "user_id",
+        "email",
+        "role",
+        "account_id",
+        "account_name",
+        "account_kind",
+    }
+    assert signed_up["account_kind"] == "shared"
 
 
 def test_user_of_account_a_sees_only_account_a(api_client: TestClient) -> None:

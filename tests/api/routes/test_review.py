@@ -24,7 +24,7 @@ from src.api.routes.review import (
 from src.db.models import AuditAction, AuditEvent, DraftReviewStatus, UploadDraft, User, UserRole
 from src.drafting.schemas import AppealLetter
 from src.jobs.store import create_upload_job
-from tests.api.conftest import VERIFIED_AT, signup_and_verify
+from tests.api.conftest import VERIFIED_AT, RecordingSender, code_in, signup_and_verify
 from tests.drafting.letter_helpers import (
     CHUNK_TEXT,
     CLOSING_TEXT,
@@ -201,6 +201,60 @@ def test_an_admin_reads_every_users_jobs(
 
     assert [item["job_id"] for item in worklist.json()["items"]] == [reviewers, job_id]
     assert api_client.get(f"/jobs/{reviewers}/detail").status_code == 200
+
+
+def _individual(client: TestClient, sender: RecordingSender, email: str) -> Member:
+    """Open sign-up to individuals, sign `email` up into a personal account and log in."""
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": True})
+    client.cookies.clear()
+    signed_up = client.post("/auth/signup", json={"email": email, "password": PASSWORD})
+    assert signed_up.status_code == 201, signed_up.text
+    verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    assert (body["account_kind"], body["role"]) == ("personal", UserRole.ADMIN)
+    return Member(account_id=body["account_id"], user_id=body["user_id"])
+
+
+def test_an_individual_and_the_shared_admin_never_see_each_others_jobs(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    admin: Member,
+    job_id: int,
+) -> None:
+    individual = _individual(api_client, sent_mail, "ann@elsewhere.test")
+    own = _drafted_job(db_session, individual)
+
+    worklist = api_client.get("/worklist")
+    shared_job = api_client.get(f"/jobs/{job_id}/detail")
+    assert [item["job_id"] for item in worklist.json()["items"]] == [own]
+    assert (shared_job.status_code, shared_job.json()) == (404, {"detail": JOB_NOT_FOUND})
+    assert _approve(api_client, job_id).status_code == 404
+    assert _draft(db_session, job_id).review_status is DraftReviewStatus.PENDING
+
+    _login(api_client, "admin@a.org")
+    worklist = api_client.get("/worklist")
+    personal_job = api_client.get(f"/jobs/{own}/detail")
+    assert [item["job_id"] for item in worklist.json()["items"]] == [job_id]
+    assert (personal_job.status_code, personal_job.json()) == (404, {"detail": JOB_NOT_FOUND})
+    assert _approve(api_client, own).status_code == 404
+    assert _draft(db_session, own).review_status is DraftReviewStatus.PENDING
+
+
+def test_an_individual_approves_their_own_draft(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, chunks: None
+) -> None:
+    own = _drafted_job(db_session, _individual(api_client, sent_mail, "ann@elsewhere.test"))
+    response = _approve(api_client, own)
+    assert (response.status_code, response.json()) == (
+        200,
+        {"job_id": own, "review_status": "approved"},
+    )
+    assert api_client.get(f"/jobs/{own}/detail").json()["draft"]["reviewed_by"] == (
+        "ann@elsewhere.test"
+    )
 
 
 @pytest.mark.parametrize("path", ["/worklist", "/jobs/1/detail", "/overview", "/audit"])

@@ -124,6 +124,44 @@ def test_signup_for_an_email_not_allowed_is_403_and_writes_and_sends_nothing(
     assert sent_mail.sent == []
 
 
+def _open_to_individuals(client: TestClient) -> None:
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": True})
+
+
+def test_with_individual_sign_up_on_another_email_gets_a_personal_account_as_admin(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender
+) -> None:
+    _open_to_individuals(api_client)
+    assert _post_signup(api_client, "Ann@Y.org") == 201
+    ann = _verify(api_client, sent_mail)
+    assert _post_signup(api_client, "bob@y.org") == 201
+    bob = _verify(api_client, sent_mail)
+
+    for body in (ann, bob):
+        assert (body["role"], body["account_kind"]) == (UserRole.ADMIN, "personal")
+        assert body["account_name"] != "Example Clinic"
+    assert ann["account_id"] != bob["account_id"]
+    assert _counts(db_session) == (2, 2)
+    # Each individual created their own account.
+    assert _actions(db_session) == [
+        ("ann@y.org", AuditAction.ACCOUNT_CREATED),
+        ("ann@y.org", AuditAction.EMAIL_VERIFIED),
+        ("bob@y.org", AuditAction.ACCOUNT_CREATED),
+        ("bob@y.org", AuditAction.EMAIL_VERIFIED),
+    ]
+
+
+def test_with_individual_sign_up_on_an_allowed_email_still_joins_the_shared_account(
+    api_client: TestClient, sent_mail: RecordingSender
+) -> None:
+    _open_to_individuals(api_client)
+    assert _post_signup(api_client, "bob@x.org") == 201
+    bob = _verify(api_client, sent_mail)
+    assert (bob["role"], bob["account_kind"]) == (UserRole.REVIEWER, "shared")
+    assert bob["account_name"] == "Example Clinic"
+
+
 def test_signup_with_an_account_name_is_422_and_creates_nothing(
     api_client: TestClient, db_session: Session
 ) -> None:

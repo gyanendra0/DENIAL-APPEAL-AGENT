@@ -19,7 +19,7 @@ from src.api.mail import MailSender
 from src.api.roles import effective_role
 from src.api.tokens import InvalidTokenError, read_token
 from src.config.settings import ApiSettings
-from src.db.models import User, UserRole
+from src.db.models import Account, User, UserRole
 from src.db.query import for_account
 from src.db.session import session_scope
 from src.jobs.store import JobScope
@@ -110,7 +110,8 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
     The user is looked up inside the token's account, so a token whose user and account do not
     belong together is refused like a missing one. A token issued before the user's last
     password change carries an older version and is refused the same way. The role is worked
-    out again here, so a change to `ADMIN_EMAILS` applies from the next request.
+    out again here, so a change to `ADMIN_EMAILS` applies from the next request; an individual
+    acts as admin of their own personal account.
     """
     token = request.cookies.get(AUTH_COOKIE_NAME)
     if not token:
@@ -119,16 +120,20 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
         claims = read_token(token, secret=settings.auth_token_secret.get_secret_value())
     except InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN) from None
-    user = session.scalars(
-        for_account(User, claims.account_id).where(User.id == claims.user_id)
+    row = session.execute(
+        for_account(User, claims.account_id)
+        .where(User.id == claims.user_id)
+        .join(Account, Account.id == User.account_id)
+        .add_columns(Account.kind)
     ).one_or_none()
-    if user is None or user.token_version != claims.token_version:
+    if row is None or row[0].token_version != claims.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN)
+    user, account_kind = row
     return CurrentUser(
         user_id=user.id,
         account_id=user.account_id,
         email=user.email,
-        role=effective_role(settings, user.email, user.role),
+        role=effective_role(settings, user.email, user.role, account_kind),
     )
 
 

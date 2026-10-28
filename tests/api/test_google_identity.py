@@ -18,6 +18,7 @@ from src.api.google_oidc import GoogleIdentity
 from src.api.signup import EmailTakenError
 from src.db.models import (
     Account,
+    AccountKind,
     AuditAction,
     AuditEvent,
     IdentityProvider,
@@ -165,7 +166,12 @@ def test_a_google_account_never_links_to_a_second_user(session: Session) -> None
 
 def _google_member(session: Session, email: str = "ann@gmail.com", subject: str = SUB) -> User:
     return create_google_member(
-        session, settings=api_settings(), subject=subject, email=email, now=VERIFIED_AT
+        session,
+        settings=api_settings(),
+        kind=AccountKind.SHARED,
+        subject=subject,
+        email=email,
+        now=VERIFIED_AT,
     )
 
 
@@ -180,6 +186,26 @@ def test_a_google_member_joins_the_shared_account_with_no_password_and_its_link(
     [link] = session.scalars(select(UserIdentity)).all()
     assert (link.user_id, link.subject) == (user.id, SUB)
     assert _actions(session) == []
+
+
+def test_a_personal_google_member_gets_a_new_personal_account_with_its_link(
+    session: Session,
+) -> None:
+    user = create_google_member(
+        session,
+        settings=api_settings(),
+        kind=AccountKind.PERSONAL,
+        subject=SUB,
+        email="ann@gmail.com",
+        now=VERIFIED_AT,
+    )
+
+    account = session.get(Account, user.account_id)
+    assert account is not None and account.kind is AccountKind.PERSONAL
+    assert account.name != api_settings().shared_account_name
+    assert (user.password_hash, user.email_verified_at) == (None, VERIFIED_AT)
+    [link] = session.scalars(select(UserIdentity)).all()
+    assert (link.user_id, link.subject) == (user.id, SUB)
 
 
 def test_a_google_member_with_an_admin_email_is_stored_as_a_reviewer_too(

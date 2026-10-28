@@ -8,7 +8,7 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from src.api.passwords import MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS
-from src.db.models import UserRole
+from src.db.models import AccountKind, UserRole
 
 MAX_EMAIL_CHARACTERS = 320  # the length of `users.email`
 # Far above any sign-up password, so it only stops a huge body from being hashed at login.
@@ -134,12 +134,14 @@ class AuthOptions(BaseModel):
 
 class GoogleSignupInfo(BaseModel):
     """The verified Google email a pending Google sign-up will create its user with, and the
-    shared account the user will join."""
+    kind of account the user will join: the shared account (with its name) or a new personal
+    account (no name: its made-up name is never shown)."""
 
     model_config = ConfigDict(frozen=True)
 
     email: str
-    account_name: str
+    account_kind: AccountKind
+    account_name: str | None
 
 
 class GoogleSignupRequest(BaseModel):
@@ -151,7 +153,8 @@ class GoogleSignupRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """A user and the account they belong to."""
+    """A user and the account they belong to. A personal account's name is made up; a screen
+    shows its kind instead."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -160,3 +163,4 @@ class UserResponse(BaseModel):
     role: UserRole
     account_id: int
     account_name: str
+    account_kind: AccountKind

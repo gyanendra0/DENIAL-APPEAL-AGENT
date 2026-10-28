@@ -25,7 +25,7 @@ from src.api.dependencies import (
 )
 from src.api.tokens import issue_token
 from src.config.settings import ApiSettings
-from src.db.models import Account, User, UserRole
+from src.db.models import Account, AccountKind, User, UserRole
 from src.db.session import create_session_factory
 from src.jobs.store import JobScope
 
@@ -95,8 +95,14 @@ def client(session: Session) -> Iterator[TestClient]:
         yield test_client
 
 
-def _user(session: Session, account_name: str, email: str, role: UserRole) -> User:
-    account = Account(name=account_name)
+def _user(
+    session: Session,
+    account_name: str,
+    email: str,
+    role: UserRole,
+    kind: AccountKind = AccountKind.SHARED,
+) -> User:
+    account = Account(name=account_name, kind=kind)
     session.add(account)
     session.flush()
     user = User(account_id=account.id, email=email, password_hash=FAKE_HASH, role=role)
@@ -253,6 +259,15 @@ def test_a_stored_admin_not_in_admin_emails_acts_as_reviewer(
     assert client.get("/whoami").json()["role"] == UserRole.REVIEWER
     assert client.get("/admin-only").status_code == 403
     assert client.get("/reviewers").status_code == 200
+
+
+def test_an_individual_acts_as_admin_of_their_personal_account(
+    client: TestClient, session: Session
+) -> None:
+    user = _user(session, "personal-a", "a@example.com", UserRole.REVIEWER, AccountKind.PERSONAL)
+    _login(client, user_id=user.id, account_id=user.account_id)
+    assert client.get("/whoami").json()["role"] == UserRole.ADMIN
+    assert client.get("/admin-only").status_code == 200
 
 
 def test_removing_an_email_from_admin_emails_demotes_on_the_next_request(

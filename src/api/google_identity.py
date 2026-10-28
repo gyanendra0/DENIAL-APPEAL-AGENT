@@ -18,7 +18,7 @@ from src.api.google_oidc import GoogleIdentity
 from src.api.login import find_user_by_email
 from src.api.signup import create_member
 from src.config.settings import ApiSettings
-from src.db.models import AuditAction, IdentityProvider, User, UserIdentity
+from src.db.models import AccountKind, AuditAction, IdentityProvider, User, UserIdentity
 from src.db.query import for_account
 from src.review.audit import record_audit_event
 
@@ -128,11 +128,18 @@ def sign_in_with_google(session: Session, identity: GoogleIdentity) -> User | No
 
 
 def create_google_member(
-    session: Session, *, settings: ApiSettings, subject: str, email: str, now: datetime
+    session: Session,
+    *,
+    settings: ApiSettings,
+    kind: AccountKind,
+    subject: str,
+    email: str,
+    now: datetime,
 ) -> User:
-    """Add a user of the shared account (no password, email verified at `now`: Google vouches
-    for it) and the user's Google identity, and return the user. Does not commit; does not write
-    the audit events. The caller checks `may_sign_up` first.
+    """Add a user of the shared account or of a new personal account, as `kind` says (no
+    password, email verified at `now`: Google vouches for it) and the user's Google identity, and
+    return the user. Does not commit; does not write the audit events. The caller works out
+    `kind` with `signup_kind` first.
 
     Both rows are written inside one savepoint, so a refusal leaves neither. Raises
     `EmailTakenError` like sign-up, and `GoogleRefusedError(LINKED_ELSEWHERE)` if the Google
@@ -141,7 +148,7 @@ def create_google_member(
     identity = GoogleIdentity(subject=subject, email=email, email_verified=True, hosted_domain=None)
     with session.begin_nested():
         user = create_member(
-            session, settings=settings, email=email, password=None, verified_at=now
+            session, settings=settings, kind=kind, email=email, password=None, verified_at=now
         )
         _add_identity(session, user, identity)
     return user

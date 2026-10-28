@@ -32,7 +32,8 @@ FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63a
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    FORWARDED_ALLOW_IPS=127.0.0.1
 
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app
 
@@ -54,4 +55,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # One worker only: upload jobs run inside this process, and a second process would mark the
 # first one's running jobs as interrupted at its start. No access log: it writes each path with
 # its query string, so the Google callback's `?code=...&state=...` would sit in the logs.
-CMD ["uvicorn", "src.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]
+# Proxy headers: every request arrives from the web container, so the client address (counted
+# by the login limit) is read from its X-Forwarded-For, but only when the sender's address is in
+# FORWARDED_ALLOW_IPS. The image trusts no one (127.0.0.1); the compose file sets the web
+# container's fixed address. Never `*`: one published API port would then let anyone pick
+# their address.
+CMD ["uvicorn", "src.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log", "--proxy-headers"]

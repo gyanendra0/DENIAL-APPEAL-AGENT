@@ -42,6 +42,19 @@ def test_the_api_writes_no_access_log() -> None:
     assert '"--no-access-log"' in command
 
 
+def test_the_api_reads_the_client_ip_from_the_proxy_header() -> None:
+    # The address to trust comes from FORWARDED_ALLOW_IPS; a flag here would override it.
+    (command,) = _instructions("CMD")
+    assert '"--proxy-headers"' in command
+    assert "--forwarded-allow-ips" not in command
+
+
+def test_the_image_trusts_no_proxy_by_default() -> None:
+    envs = " ".join(_instructions("ENV"))
+    (trusted,) = re.findall(r"\bFORWARDED_ALLOW_IPS=(\S+)", envs)
+    assert trusted == "127.0.0.1"
+
+
 def test_the_image_has_a_health_check_on_the_health_route() -> None:
     (check,) = _instructions("HEALTHCHECK")
     assert "/health" in check

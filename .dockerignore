@@ -1,0 +1,17 @@
+# Images get only what they need: everything is left out, then the needed paths are let back
+# in. So `.env*`, `data/`, `models/`, `.venv/`, `tests/` and `docs/` never reach an image.
+*
+!alembic.ini
+!config/prompts/
+!deploy/api/requirements.lock
+!deploy/web/Caddyfile
+!frontend/
+!src/
+# The web image installs and builds the frontend itself.
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+# Settings files stay out even inside a let-in folder (Vite would build a VITE_* value into
+# the screens).
+**/.env*
+**/__pycache__/

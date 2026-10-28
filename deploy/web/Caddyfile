@@ -1,0 +1,56 @@
+# The web container: the one front door. It serves the built screens and passes the API paths to
+# the API container, so the browser sees one site and the HttpOnly login cookie is sent.
+#
+# SITE_ADDRESS is the public name (Caddy then gets and renews its TLS certificate by itself);
+# `localhost` uses Caddy's own local certificate, `:8080` serves plain HTTP on that port.
+
+{
+	# The admin API stays inside the container; the health check reads it.
+	admin localhost:2019
+}
+
+{$SITE_ADDRESS:localhost} {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'"
+		-Server
+	}
+
+	encode zstd gzip
+
+	# Every top-level API path, the same list as API_PATHS in frontend/vite.config.ts (a test
+	# checks both). Caddy replaces any X-Forwarded-For the client sent with the client's real
+	# address, which the login limit counts.
+	@api path /auth /auth/* /me /me/* /uploads /uploads/* /jobs /jobs/* /worklist /worklist/* /overview /overview/* /audit /audit/* /users /users/* /health /health/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	# File names under /assets/ carry a hash of their content, so a browser may keep them.
+	handle /assets/* {
+		root * /srv
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# Every screen is the one index.html; the app's router reads the path. It is never cached,
+	# so a new build is seen at the next load.
+	@screens path /app /app/*
+	handle @screens {
+		root * /srv
+		rewrite * /index.html
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	handle / {
+		redir * /app/
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

@@ -3872,7 +3872,7 @@ place money is spent is the background job an upload queues, after its answer is
 | `GET /auth/google/signup` | a browser with the `google_signup` cookie | `200` with the verified Google email the new account will use; `401` "the Google sign-up has expired" without a usable cookie |
 | `POST /auth/google/signup` | a browser with the `google_signup` cookie | `201` with the new user and the login cookie; `409` when the account name or the email is taken or the Google account is linked to another login; `401` as above; `422` for a body that does not fit |
 | `GET /users/{user_id}` | an `admin` | `200` with that user of the admin's own account; `401` when not logged in; `403` for another role; `404` for a user of another account or no user at all |
-| `GET /health` | anyone | `200` with `{"status": "ok"}`; it touches no database |
+| `GET /health` | anyone | `200` with `{"status": "ok"}` when a connection opens within 5 s (`DB_CONNECT_TIMEOUT_SECONDS`, every route) and the database answers `SELECT 1` within 2 s; else `503` with `{"status": "unavailable"}`, without the error's text (3.23) |
 
 `GET /users/{user_id}` exists mainly to prove the isolation: its tests sign up two accounts
 and show that the admin of one gets `404` for the user of the other.
@@ -4434,7 +4434,8 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   `limit`. It errs on the side of refusing.
 - **Behind a proxy the IP is the proxy's.** The limit sees the real client only if uvicorn
   trusts the proxy (`--forwarded-allow-ips`); otherwise 20 failures from anyone would block
-  every login. This is set and checked with the containers (Stage 6).
+  every login. The API image and the compose file set it to the web container's address only
+  (3.23).
 - **A new `AUTH_TOKEN_SECRET` resets every count**, because the hash key comes from it.
 - **One email, one account.** A person who works for two accounts needs two emails.
 - **No invite and no role change yet.** Every signed-up user is the `admin` of a new
@@ -4454,10 +4455,10 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
   match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
   the app has a public address (Stage 6).
-- **uvicorn's access log would record `?code=...&state=...`** of the callback, since it logs
-  each path with its query. The code works once and needs the secret and the flow cookie, but
-  it should not sit in logs; the API container turns the access log off or drops the query
-  (Stage 6, `feat/containers`).
+- **The API image writes no uvicorn access log.** That log writes each path with its query, so
+  it would record the callback's `?code=...&state=...`. The code works once and needs the secret
+  and the flow cookie, but it should not sit in logs, so `deploy/api/Dockerfile` starts uvicorn
+  with `--no-access-log`. A uvicorn started by hand for local work still logs it.
 - **The return from Google is checked in a real browser, not by tests.** The tests stand in for
   Google with made-up keys (`httpx.MockTransport`) and cannot show how a browser treats the
   `Lax` cookie on the way back.
@@ -4939,7 +4940,8 @@ the browser sends it only to the site that set it. So the screens and the API mu
 site. In development the Vite dev server is that site: it serves the screens and forwards the
 paths in `API_PATHS` (`/auth`, `/me`, `/uploads`, `/jobs`, `/worklist`, `/overview`,
 `/audit`, `/users`, `/health`) to `uvicorn`. Every request is sent with
-`credentials: "same-origin"`, and no code handles the token.
+`credentials: "same-origin"`, and no code handles the token. In the containers the Caddy web
+server plays the dev server's part, with the same path list (3.23).
 
 The screens live under `/app/...` so that a screen path can never be the same as an API
 path. **A new top-level API path must be added to `API_PATHS`**, or the dev server answers it
@@ -5157,8 +5159,8 @@ it in the worklist, tried the filters and logged out.
 
 ### Known limits
 
-- **It runs only on the dev server.** `npm run build` makes the files, but nothing serves
-  them beside the API yet; that is part of the deployment (Stage 6).
+- **Served beside the API since 3.23.** The web image builds the files and Caddy serves them
+  with the API on one site; this measurement ran on the dev server.
 - **Login and `GET /me` were not exercised live in this measurement.** After logout the guard
   sent the user to login from the session already in the cache, with no request. Both are
   covered by tests with a stubbed `fetch`, and both ran live in the measurement of 3.22.
@@ -5316,3 +5318,173 @@ numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API nu
 - **The API types are written by hand** (3.21), now including the detail, the draft and the
   overview.
 - **One measurement**, on one text letter.
+
+## 3.23 Running in containers
+
+The whole app runs from one compose file, `deploy/prod/compose.yml`: the database, a one-off
+migration step, the API and a web container that is the only door from outside. The same file
+runs locally and, in the next branch, on the production machine. Built in `feat/containers`
+(Stage 6, branch 1). No migration, no model call in the code.
+
+### The code
+
+| File | What it does |
+|---|---|
+| `deploy/api/Dockerfile` | The API image: two stages on `python:3.11-slim` by digest; a virtual environment from the lock file, then the code; runs as uid 10001 |
+| `deploy/api/requirements.lock` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
+| `deploy/web/Dockerfile` | The web image: `node:26-slim` builds the screens (`npm ci`, `npm run build`), `caddy:2-alpine` serves them; both by multi-arch digest (amd64 + arm64); runs as uid 10001 |
+| `deploy/web/Caddyfile` | What the web container answers: API paths to the API, screens, assets, headers |
+| `deploy/prod/compose.yml` | The four services, one network, three volumes |
+| `.dockerignore` | An allow-list: everything is left out, then `alembic.ini`, `config/prompts/`, the lock file, the Caddyfile, `frontend/` and `src/` are let back in. So `.env*`, `data/`, `models/`, `tests/` and `docs/` never reach an image |
+| `tests/deploy/test_api_image.py` | Reads the API Dockerfile, the lock and `.dockerignore`: digest-pinned base, non-root user, one worker, no access log, proxy headers with a trusting-no-one default, a health check on `/health`, a hash for every locked package, the allow-list |
+| `tests/deploy/test_web_image.py` | Reads the web Dockerfile and the Caddyfile: digest-pinned bases, non-root user, `npm ci`, a health check, API paths to `api:8000`, the security headers, the screen fallback and `/` to `/app/`, and **the Caddy API path list equals `API_PATHS` in `frontend/vite.config.ts`** |
+| `tests/deploy/test_prod_compose.py` | Reads the compose file: the four services, ports on `web` only (80 and 443), `FORWARDED_ALLOW_IPS` equals the web container's fixed address, `api` only after `migrate` succeeds, one image for both, the database by digest on a named volume, the model files read-only, no password written in the file, a project name unlike the development one |
+
+The tests read the files; they build nothing and start no container. The real run below is
+what shows the images work.
+
+### The four services
+
+| Service | Image | Port from outside | Starts after | Volumes |
+|---|---|---|---|---|
+| `db` | `pgvector/pgvector:pg16` by digest | none | – | `pgdata` (the data) |
+| `migrate` | the API image, `alembic upgrade head`, then ends | none | `db` healthy | – |
+| `api` | the API image | none | `db` healthy and `migrate` finished without error | `MODEL_HOST_DIR` (default `models/`) read-only at `/app/models` |
+| `web` | the web image | 80, 443, 443/udp | `api` | `caddy_data`, `caddy_config` (certificates) |
+
+All four share the network `app` (`172.30.0.0/24`). The web container has the fixed address
+`172.30.0.10`. `db`, `api` and `web` restart unless stopped. A failed migration stops the
+start: `api` never runs, the data stays as it was, and `docker compose logs migrate` shows the
+error.
+
+The project is named `denial-appeal-agent-prod`, not after the folder. The development
+compose file at the root is named after the folder, and with the same name this file's `db`
+replaced the development database container and used its volume (see Gotchas).
+
+### The API image
+
+- **Exact packages.** `pip install --require-hashes --no-deps -r requirements.lock`: a package
+  whose file changed on the index fails the build. After a change to `pyproject.toml`, the lock
+  is made again with the command at the top of the Dockerfile.
+- **The project is not installed.** uvicorn and Alembic import `src` from `/app`
+  (`PYTHONPATH=/app`). The image holds `alembic.ini`, `config/prompts/` and `src/`, nothing more.
+- **One worker.** Upload jobs run inside the API process (3.19); a second process would mark
+  the first one's running jobs as interrupted when it starts.
+- **No access log** (`--no-access-log`). The access log writes each path with its query, so it
+  would record the Google callback's `?code=...&state=...` (3.18).
+- **The real client address** (`--proxy-headers`). Every request comes from the web container,
+  so the address the login limit counts (3.18) is read from its `X-Forwarded-For`, but only when
+  the sender is in `FORWARDED_ALLOW_IPS`. The image sets `127.0.0.1` (trusts no one); the compose
+  file sets `172.30.0.10`. Never `*`: with a published API port anyone could then name their own
+  address.
+- **Health check.** Docker calls `GET /health` every 30 s with Python's `urllib` (the slim image
+  has no `curl`). `/health` runs `SELECT 1` with a 2 s `statement_timeout` and answers `200`
+  `{"status": "ok"}`, or `503` `{"status": "unavailable"}` without the error's text (only its
+  class is logged). Opening the connection is limited too: `create_db_engine` passes
+  `connect_timeout` 5 s (`DB_CONNECT_TIMEOUT_SECONDS`), so a database that accepts the
+  connection but never answers gives `503` instead of a request that hangs.
+
+### The web image
+
+Caddy is to the containers what the Vite dev server is in development (3.21): it makes the
+screens and the API one site, so the SameSite=Strict login cookie is sent.
+
+| Path | Answer |
+|---|---|
+| `/auth`, `/me`, `/uploads`, `/jobs`, `/worklist`, `/overview`, `/audit`, `/users`, `/health` (and below each) | passed to `api:8000` |
+| `/assets/*` | the built file, `Cache-Control: public, max-age=31536000, immutable` (the names carry a content hash) |
+| `/app`, `/app/*` | `index.html`, `Cache-Control: no-cache`, so a new build is seen at the next load |
+| `/` | `302` to `/app/` |
+| anything else | `404` |
+
+- **A new top-level API path goes in three places now:** the router, `API_PATHS` in
+  `frontend/vite.config.ts`, and the `@api` line of the Caddyfile. A test fails while the two
+  lists differ.
+- **Headers on every answer:** `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a `Content-Security-Policy` of
+  `default-src 'self'`, and no `Server` header. Answers are compressed (zstd, gzip).
+- **`SITE_ADDRESS`** names the site. A public name makes Caddy get and renew its TLS
+  certificate by itself; `localhost` uses Caddy's own local certificate (the browser warns);
+  `:8080` serves plain HTTP on that port.
+- **Caddy writes no access log** (the Caddyfile has no `log` directive).
+- **Health check:** Caddy's admin API, which listens on `localhost:2019` inside the container
+  only.
+- **Non-root:** the `caddy` binary carries the capability to bind ports 80 and 443, so it runs as
+  uid 10001, which owns only `/data` and `/config`.
+
+### Settings and secrets
+
+Compose reads `deploy/prod/.env`, next to the compose file (never in git; on the machine
+`chmod 600`), twice: for the `${...}` values in the file, and as the API's environment. Its keys
+are in `.env.example`. Three are new for the containers:
+
+| Key | Used for |
+|---|---|
+| `POSTGRES_PASSWORD` | The database password; it goes inside `DATABASE_URL`, so it must be URL-safe (`openssl rand -hex 24`). Required: compose refuses to start without it |
+| `SITE_ADDRESS` | The site's name for Caddy (above). Required |
+| `MODEL_HOST_DIR` | Where the trained model files are on the host; default `../../models` (the repository's `models/`) |
+
+The compose file itself sets `APP_ENV=production`, `DATABASE_URL` (built from
+`POSTGRES_PASSWORD`, host `db`) and `FORWARDED_ALLOW_IPS`. Everything else (`AUTH_TOKEN_SECRET`,
+`APP_PUBLIC_URL`, the mail and Google keys, the model budget) is in the `.env` as for local
+work. Served over HTTPS, `AUTH_COOKIE_SECURE` keeps its default `true`, so the outbox mail
+backend is refused at start (3.18) and the mail keys for Brevo are needed.
+
+The database starts empty. Uploads need the evidence tables (`evidence_documents`,
+`evidence_chunks`, `evidence_chunk_embeddings`: public CMS text, no `account_id`), copied once
+after `migrate` from the development database with `pg_dump --data-only` (the README has the
+command). No accounts, uploads or `llm_calls` are copied.
+
+### Measured (2026-10-28, local)
+
+The whole file started on the Mac with `SITE_ADDRESS=localhost` and Brevo mail, and a new
+made-up user went through it in a real browser.
+
+| | |
+|---|---|
+| Containers | `db`, `api`, `web` healthy; `migrate` exited 0 |
+| Images | API 581 MB; web 64.5 MB (the same asset hashes as a local `npm run build`) |
+| Routing | `/` `302`; screens `200`; `/health` `200` over HTTPS. In the earlier runs of each image alone: `502` from Caddy with the API stopped, `503` from `/health` with the database stopped |
+| Evidence tables copied | 952 / 2,873 / 2,873 rows |
+| Sign-up | 6-digit code by Brevo, confirmed, logged in |
+| Upload to draft ready | 17.0 s (target under 120 s); then approved |
+| Model calls | 4, $0.0017 |
+| Client address | two clients on a test network: after client A's 20 failures (`429`), client B still got `401`; A with a made-up `X-Forwarded-For` still `429`. Without `FORWARDED_ALLOW_IPS`, B got `429` too (everyone shared Caddy's address) |
+| Logs | no line with the Google callback's code or state; no request lines at all |
+
+### Gotchas
+
+- **Same project name, same database.** With `name: denial-appeal-agent` (the folder's name),
+  the production `db` replaced the development container and mounted its volume. The data was
+  safe (Postgres skipped its first-start setup, which is also why the old password stayed and
+  `migrate` failed with "password authentication failed"). Fixed with
+  `denial-appeal-agent-prod` and a test.
+- **`redir /app/` inside `handle` fails.** Caddy reads a first argument starting with `/` as a
+  path matcher, so the redirect has no target. The container exits 1 and `docker logs` shows
+  nothing; `caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` prints the error.
+  Written as `redir * /app/`.
+- **Brevo refuses unknown addresses** (`525 5.7.1 Unauthorized IP address`). Turning the IP
+  blocking off did not take effect until both the IPv4 and the IPv6 address were authorised.
+  The production machine's addresses need the same.
+
+### Known limits
+
+- **Not yet on a public machine.** It ran on the Mac; the machine, its name and its firewall come
+  in `feat/deploy-machine`.
+- **No backup and no alerts yet.** The data is one Docker volume; `feat/backup-and-alerts`
+  adds both.
+- **Still one API process.** Jobs run in it, so a restart drops a running job (3.19).
+- **The evidence tables and model files are copied by hand.** Nothing checks they are there
+  before the first upload.
+- **Letter text is not encrypted at rest** by the app; the plan is the host's disk encryption.
+- **The images are rebuilt by hand.** No registry and no automatic build; the machine builds
+  them from a checkout.
+- **Clients that come in through Docker's port forwarding share one address.** The network is
+  IPv4 only, so on a Linux host an IPv6 visitor (and, under Docker Desktop on the Mac, every
+  visitor) reaches Caddy through Docker's own proxy and is seen as the network's gateway
+  (`172.30.0.1`). They then share one login count per address: 20 failures by any of them
+  answer `429` to all of them. The measurement above used a test network, not published ports.
+  `feat/deploy-machine` fixes it (IPv6 on the network, or an IPv4-only machine).
+- **HSTS on `localhost`.** With `SITE_ADDRESS=localhost` the browser keeps using HTTPS for every
+  `localhost` port for a year, so the development server must be opened as
+  `http://127.0.0.1:5173` (as the README says), not `localhost:5173`.

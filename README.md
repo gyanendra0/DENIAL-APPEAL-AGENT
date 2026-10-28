@@ -64,11 +64,12 @@ Denial document
 
 ## Status
 
-**Stages 0 to 4 are released (`v0.5.0`); Stage 5, the product, is in progress.** The API
+**Stages 0 to 5 are released (`v0.6.0`); Stage 6, deployment, is in progress.** The API
 signs users up, takes an uploaded denial letter through extraction, rules, scoring, evidence
 and drafting, and lets a reviewer edit, approve or reject the draft. The web dashboard covers
 all of it in the browser: sign-up, login, the upload, the worklist, the denial beside its
-draft, the review, and an overview. See the
+draft, the review, and an overview. A user can also change or reset a password, confirm their
+email with a 6-digit code, and sign in with Google. See the
 [build plan](docs/05-build-plan.md).
 
 ## Running it locally
@@ -129,6 +130,57 @@ Checks: `ruff check . && black --check . && mypy && pytest` for the backend (dat
 need `TEST_DATABASE_URL`), and `npm run check` in `frontend/` for the dashboard. How the
 dashboard is built: architecture [3.21](docs/03-architecture.md#321-web-dashboard-part-1) and
 [3.22](docs/03-architecture.md#322-web-dashboard-part-2).
+
+## Running it in containers
+
+The whole app (database, migrations, API, and a Caddy web server in front that serves the
+screens) also runs from one compose file, the same one the production machine uses. You need
+Docker and the trained model files in `models/`.
+
+1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
+   usual keys, set `POSTGRES_PASSWORD` (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost`
+   and `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
+   `AUTH_COOKIE_SECURE=true` and set `MAIL_BACKEND=smtp` with the `MAIL_SMTP_*` and `MAIL_FROM`
+   keys (the outbox is refused with secure cookies).
+2. Build the images and start everything:
+   ```
+   docker compose -f deploy/prod/compose.yml up -d --build
+   ```
+3. Check that `db`, `api` and `web` are healthy and `migrate` exited with 0:
+   ```
+   docker compose -f deploy/prod/compose.yml ps -a
+   curl -k https://localhost/health
+   ```
+   The second line answers `{"status":"ok"}` (`-k` because `localhost` uses Caddy's own
+   certificate).
+4. Copy the evidence tables from the development database (started with `docker compose up -d`),
+   once:
+   ```
+   docker compose exec -T db pg_dump -U app -d app --data-only \
+     -t evidence_documents -t evidence_chunks -t evidence_chunk_embeddings \
+     | docker compose -f deploy/prod/compose.yml exec -T db psql -U app -d app
+   ```
+5. Open `https://localhost/app/`, accept the certificate warning, sign up and type the code from
+   the email.
+
+Stop it with `docker compose -f deploy/prod/compose.yml down`; the data stays in its volume
+(`down -v` deletes it). How it is built: architecture
+[3.23](docs/03-architecture.md#323-running-in-containers).
+
+The API image installs exactly the packages in `deploy/api/requirements.lock` (each with its
+version and hash). After any change to the dependencies in `pyproject.toml`, refresh the lock from
+the repository root, inside the image's own base so the Linux / Python 3.11 packages are chosen,
+then rebuild with step 2:
+```
+docker run --rm -v "$PWD/pyproject.toml:/w/pyproject.toml:ro" \
+  -v "$PWD/README.md:/w/README.md:ro" -v "$PWD/deploy/api:/w/out" -w /w \
+  python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937 \
+  sh -c "pip install -q --root-user-action=ignore pip-tools==7.6.2 && pip-compile -q \
+    --upgrade --generate-hashes --strip-extras --allow-unsafe \
+    --output-file out/requirements.lock pyproject.toml"
+```
+The same command is at the top of `deploy/api/Dockerfile`; if the base image's digest changes
+there, change it here too.
 
 ## How work is split across machines
 

@@ -32,7 +32,7 @@ def record_audit_event(
     """Add one event of `account_id`. Does not commit: the caller owns the transaction.
 
     `job_id` is `None` exactly for `account_created`, `user_joined`, `password_changed`,
-    `password_reset` and `google_linked`; the table refuses anything else.
+    `password_reset`, `google_linked` and `email_verified`; the table refuses anything else.
     """
     session.add(
         AuditEvent(

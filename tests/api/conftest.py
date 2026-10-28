@@ -21,7 +21,8 @@ from src.api.app import create_app
 from src.api.mail import MailMessage
 from src.api.signup import create_member
 from src.config.settings import ApiSettings
-from src.db.models import User
+from src.db.models import Account, AuditAction, User, UserRole
+from src.review.audit import record_audit_event
 
 API_SECRET = "a-made-up-api-test-secret-of-forty-chars"  # noqa: S105  (made up, not a real secret)
 API_TTL_MINUTES = 60
@@ -84,6 +85,20 @@ def add_member(
     return create_member(
         session, settings=settings, email=email, password=password, verified_at=verified_at
     )
+
+
+def add_old_unverified_admin(session: Session, *, account_name: str, email: str) -> User:
+    """Add an account made before the shared account: its one `admin`, who never confirmed
+    `email`, and the `account_created` row that sign-up then wrote at once."""
+    account = Account(name=account_name)
+    session.add(account)
+    session.flush()
+    user = User(account_id=account.id, email=email, role=UserRole.ADMIN, email_verified_at=None)
+    session.add(user)
+    session.flush()
+    record_audit_event(session, account.id, user.id, AuditAction.ACCOUNT_CREATED, None)
+    session.flush()
+    return user
 
 
 def signup_and_verify(client: TestClient, *, name: str, email: str, password: str) -> Any:

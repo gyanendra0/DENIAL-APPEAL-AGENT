@@ -25,7 +25,7 @@ from src.db.models import (
     UserIdentity,
     UserRole,
 )
-from tests.api.conftest import add_member, api_settings
+from tests.api.conftest import add_member, add_old_unverified_admin, api_settings
 
 # The users made here count as having confirmed their email.
 VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -205,6 +205,18 @@ def test_a_taken_email_is_refused_like_sign_up(session: Session) -> None:
     with pytest.raises(EmailTakenError):
         _google_member(session)
     assert _count(session, UserIdentity) == 0
+
+
+def test_a_google_member_replaces_an_unverified_admin_of_an_older_account(
+    session: Session,
+) -> None:
+    old = add_old_unverified_admin(session, account_name="Old Clinic", email="ann@gmail.com")
+    old_account_id = old.account_id
+    user = _google_member(session)
+    session.expire_all()
+    assert session.get(Account, old_account_id) is None
+    assert (_count(session, Account), _count(session, User), _actions(session)) == (1, 1, [])
+    assert user.email_verified_at == VERIFIED_AT
 
 
 def test_an_unverified_user_with_the_email_is_not_linked(session: Session) -> None:

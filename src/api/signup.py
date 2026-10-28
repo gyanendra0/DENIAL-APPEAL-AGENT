@@ -2,9 +2,9 @@
 
 Only an email the settings allow may sign up (`may_sign_up`). The first sign-up creates the
 shared account; later ones join it. An email held by a user who never confirmed it does not
-block a sign-up: that user never logged in, so has no uploads, reviews or audit events, and is
-deleted so the new sign-up can take the email. Nothing is audited until the email is confirmed
-(`record_joined`).
+block a sign-up: that user never logged in, so has no uploads or reviews, and is deleted so
+the new sign-up can take the email (an older one alone in its own account goes with that
+account). Nothing is audited until the email is confirmed (`record_joined`).
 """
 
 import logging
@@ -60,13 +60,16 @@ def shared_account_id(session: Session, name: str) -> int:
     return session.scalars(select(Account.id).where(Account.name == name)).one()
 
 
-def remove_unverified_holder(session: Session, email: str) -> None:
+def remove_unverified_holder(session: Session, email: str, shared_name: str) -> None:
     """Delete the user holding `email` if that user never confirmed it.
 
-    `email` must already be trimmed and lowercased. Only the user goes (with the user's codes
-    and Google link, which cascade); the account and its other users stay. A verified holder is
-    left alone; the unique key then refuses the sign-up. The holder's row is locked and read
-    again before the delete, so a code confirmed at the same moment keeps its user.
+    `email` must already be trimmed and lowercased. Usually only the user goes (with the user's
+    codes and Google link, which cascade); the account and its other users stay. A holder alone
+    in an account other than the shared one (`shared_name`) was made before the shared account,
+    when sign-up gave each user an account and wrote its `account_created` row at once; that
+    account goes instead, and the row with it (every link cascades). A verified holder is left
+    alone; the unique key then refuses the sign-up. The holder's row is locked and read again
+    before the delete, so a code confirmed at the same moment keeps its user.
     """
     holder = find_user_by_email(session, email)
     if holder is None or holder.email_verified_at is not None:
@@ -81,8 +84,20 @@ def remove_unverified_holder(session: Session, email: str) -> None:
     if locked is None or locked.email_verified_at is not None:
         return
     session.expunge(locked)
+    if _alone_in_older_account(session, account_id, user_id, shared_name):
+        session.execute(delete(Account).where(Account.id == account_id))
+        logger.info("sign-up: replaced unverified account %d", account_id)
+        return
     session.execute(delete(User).where(User.account_id == account_id, User.id == user_id))
     logger.info("sign-up: replaced unverified user %d of account %d", user_id, account_id)
+
+
+def _alone_in_older_account(
+    session: Session, account_id: int, user_id: int, shared_name: str
+) -> bool:
+    name = session.scalars(select(Account.name).where(Account.id == account_id)).one()
+    other = session.scalars(for_account(User, account_id).where(User.id != user_id).limit(1))
+    return name != shared_name and other.first() is None
 
 
 def create_member(
@@ -107,7 +122,7 @@ def create_member(
     password_hash = hash_password(password) if password is not None else None
     try:
         with session.begin_nested():
-            remove_unverified_holder(session, email)
+            remove_unverified_holder(session, email, settings.shared_account_name)
             account_id = shared_account_id(session, settings.shared_account_name)
             user = User(
                 account_id=account_id,

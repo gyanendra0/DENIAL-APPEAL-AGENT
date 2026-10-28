@@ -31,7 +31,7 @@ from src.db.models import (
     User,
     UserRole,
 )
-from tests.api.conftest import api_settings
+from tests.api.conftest import add_old_unverified_admin, api_settings
 
 # The users made here count as having confirmed their email.
 VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -173,6 +173,28 @@ def test_an_unverified_holder_is_replaced_and_the_shared_account_stays_intact(
     # The other member and the account's audit row stay; the squatter's code went with it.
     assert _actions(session) == [(other.id, AuditAction.ACCOUNT_CREATED)]
     assert session.scalars(select(EmailCode)).all() == []
+
+
+def test_an_unverified_holder_alone_in_the_shared_account_leaves_the_account(
+    session: Session,
+) -> None:
+    account_id = _unverified(session).account_id
+    user = _member(session, "a@x.org", verified_at=None)
+    assert (user.account_id, _counts(session)) == (account_id, (1, 1))
+
+
+def test_an_unverified_holder_of_an_older_account_is_replaced_with_its_account(
+    session: Session,
+) -> None:
+    """Before the shared account, sign-up gave each user an account and wrote its
+    `account_created` row at once; that row would block deleting the user alone."""
+    old = add_old_unverified_admin(session, account_name="Old Clinic", email="a@x.org")
+    old_account_id = old.account_id
+    user = _member(session, "a@x.org", verified_at=None)
+    session.expire_all()
+    assert session.get(Account, old_account_id) is None
+    assert session.get(Account, user.account_id).name == SHARED  # type: ignore[union-attr]
+    assert (_counts(session), _actions(session)) == ((1, 1), [])
 
 
 def test_a_verified_holder_of_the_email_is_not_replaced(session: Session) -> None:

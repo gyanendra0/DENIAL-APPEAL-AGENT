@@ -108,7 +108,8 @@ Rules:
   confirm, and by Google sign-in: before login the account is not known. It is safe only
   because an email is unique across all accounts (`uq_users_email`), login returns nothing
   unless the password matches, sign-up only deletes a user who never confirmed the email
-  (one that was never logged in, so holds nothing; the account stays) and returns nothing
+  (one that was never logged in, so holds no uploads or reviews; the shared account stays,
+  and an older one alone in its own account goes with that account) and returns nothing
   about it, the reset request returns the same answer whether the email exists or not, the
   reset confirm changes nothing unless the emailed code matches and gives the same answer
   for an unknown email, and Google sign-in uses only an email Google has verified and then

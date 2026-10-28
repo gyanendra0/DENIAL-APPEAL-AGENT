@@ -3837,7 +3837,7 @@ place money is spent is the background job an upload queues, after its answer is
 | `src/api/tokens.py` | `issue_token`, `read_token`, `TokenClaims` and `InvalidTokenError` |
 | `src/api/schemas.py` | The bodies: `SignupRequest`, `LoginRequest`, `PasswordChangeRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetAnswer`, `VerifyEmailRequest`, `EmailNotVerifiedAnswer`, `CodeSentAnswer`, `UserResponse`; `normalize_email`; `MAX_LOGIN_PASSWORD_CHARACTERS` (1,024) |
 | `src/api/login_cookie.py` | `set_login_cookie`: a new token in the login cookie, used by login, the sign-up code check, the password change and Google sign-in |
-| `src/api/signup.py` | `may_sign_up` (the allow-list), `shared_account_id` (the shared account, added by the first sign-up), `create_member`, `remove_unverified_holder` (an unconfirmed holder of the email is replaced; only that user is deleted), `record_joined` (`account_created` or `user_joined` once the email is confirmed), `EmailTakenError` |
+| `src/api/signup.py` | `may_sign_up` (the allow-list), `shared_account_id` (the shared account, added by the first sign-up), `create_member`, `remove_unverified_holder` (an unconfirmed holder of the email is replaced: only that user is deleted, or an older one alone in its own account with that account), `record_joined` (`account_created` or `user_joined` once the email is confirmed), `EmailTakenError` |
 | `src/api/roles.py` | `effective_role` (the role a user acts with, from `ADMIN_EMAILS` and the stored role) and the role sets `UPLOAD_ROLES`, `EDIT_ROLES`, `DECIDE_ROLES` |
 | `src/api/login.py` | `authenticate`; `find_user_by_email`, the lookup by email shared by login, sign-up, the two reset routes and Google sign-in |
 | `src/api/login_limit.py` | The login limit: `login_keys`, `reserve_failure`, `over_limit`, `release_failure`, `retry_after_seconds`, `clear_email_failures`, the message `TOO_MANY_LOGINS`, `too_many_tries` (the `429`); the IP-only helpers sign-up, the code routes and the reset routes use: `ip_key`, `reserve_ip_failure`, `ip_over_limit`, `release_ip_failure`, `ip_retry_after_seconds`, `count_ip_try` (write and commit the try's IP row), `refuse_over_ip_limit` |
@@ -3935,8 +3935,11 @@ it does not see (3.20).
    - If a user who never confirmed it holds the email, that **user** is deleted first
      (`remove_unverified_holder`, which finds them with `find_user_by_email`, 6.4, then locks
      and reads the row again, so a code confirmed at the same moment keeps its user). Such a
-     user was never logged in, so has no uploads, reviews or audit events; the shared account
-     and its other users stay. Without this, anyone could block an address by signing up with
+     user was never logged in, so has no uploads or reviews; the shared account and its other
+     users stay. A holder alone in an older account (made before the shared account, when
+     sign-up gave each user an account and wrote `account_created` at once) is deleted with
+     that account, so its audit row goes too; deleting the user alone would be refused by
+     `fk_audit_events_user`. Without this, anyone could block an address by signing up with
      it. A confirmed holder is left alone.
    - The shared account is read, or added if there is none yet (`shared_account_id`:
      `INSERT ... ON CONFLICT (name) DO NOTHING`, then a read by name), so two first sign-ups
@@ -4477,8 +4480,9 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
 - **The daily cap is shared by every account.** Past `MAIL_DAILY_LIMIT` emails in a UTC day,
   sign-ups are refused (`503`) and reset codes are not sent until midnight UTC. Two requests
   at the same moment may both pass at the cap, so one or two more may go out.
-- **An unconfirmed user is replaced by the next sign-up for its email.** It holds nothing
-  yet (it was never logged in), so nothing is lost.
+- **An unconfirmed user is replaced by the next sign-up for its email.** It holds no uploads
+  or reviews yet (it was never logged in), so nothing is lost; one alone in an older account
+  goes with that account and its `account_created` row.
 - **Unconfirmed users and their code rows can stay.** A user nobody signs up over again keeps
   its row and its last codes (at most `EMAIL_CODE_PER_USER_PER_HOUR` an hour, while it keeps
   asking) until its next code or the user is deleted; there is no cleanup job. Such a user

@@ -131,6 +131,42 @@ need `TEST_DATABASE_URL`), and `npm run check` in `frontend/` for the dashboard.
 dashboard is built: architecture [3.21](docs/03-architecture.md#321-web-dashboard-part-1) and
 [3.22](docs/03-architecture.md#322-web-dashboard-part-2).
 
+## Running it in containers
+
+The whole app (database, migrations, API, and a Caddy web server in front that serves the
+screens) also runs from one compose file, the same one the production machine uses. You need
+Docker and the trained model files in `models/`.
+
+1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
+   usual keys, set `POSTGRES_PASSWORD` (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost`
+   and `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
+   `AUTH_COOKIE_SECURE=true` and set `MAIL_BACKEND=smtp` with the `MAIL_SMTP_*` and `MAIL_FROM`
+   keys (the outbox is refused with secure cookies).
+2. Build the images and start everything:
+   ```
+   docker compose -f deploy/prod/compose.yml up -d --build
+   ```
+3. Check that `db`, `api` and `web` are healthy and `migrate` exited with 0:
+   ```
+   docker compose -f deploy/prod/compose.yml ps -a
+   curl -k https://localhost/health
+   ```
+   The second line answers `{"status":"ok"}` (`-k` because `localhost` uses Caddy's own
+   certificate).
+4. Copy the evidence tables from the development database (started with `docker compose up -d`),
+   once:
+   ```
+   docker compose exec -T db pg_dump -U app -d app --data-only \
+     -t evidence_documents -t evidence_chunks -t evidence_chunk_embeddings \
+     | docker compose -f deploy/prod/compose.yml exec -T db psql -U app -d app
+   ```
+5. Open `https://localhost/app/`, accept the certificate warning, sign up and type the code from
+   the email.
+
+Stop it with `docker compose -f deploy/prod/compose.yml down`; the data stays in its volume
+(`down -v` deletes it). How it is built: architecture
+[3.23](docs/03-architecture.md#323-running-in-containers).
+
 ## How work is split across machines
 
 | Authoring machine | Run machine |

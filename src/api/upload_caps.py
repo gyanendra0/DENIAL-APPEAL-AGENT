@@ -25,6 +25,10 @@ MONTHLY_CAP_REACHED = "this account has used its uploads for this month; try aga
 DAILY_CAP_REACHED = "today's uploads for personal accounts are used up; try again tomorrow"
 
 
+class AccountGoneError(Exception):
+    """The account was deleted while this upload waited on its row lock."""
+
+
 class CapRefusal(StrEnum):
     """Which cap refused an upload."""
 
@@ -68,9 +72,14 @@ def reserve_individual_upload(
     return the cap that refuses it (the daily one is then not counted). Does not commit.
 
     Locks the account row until the transaction ends; the caller writes the upload in the same
-    transaction, so the next upload of this account counts it.
+    transaction, so the next upload of this account counts it. Raises `AccountGoneError` when
+    the account is gone once the lock is free ("Delete my account" holds the same lock).
     """
-    session.scalars(select(Account.id).where(Account.id == account_id).with_for_update()).one()
+    locked = session.scalars(
+        select(Account.id).where(Account.id == account_id).with_for_update()
+    ).one_or_none()
+    if locked is None:
+        raise AccountGoneError
     this_month = session.scalar(
         select(func.count())
         .select_from(Upload)

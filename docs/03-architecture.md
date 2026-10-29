@@ -4684,7 +4684,7 @@ capped (step 5, 3.18 "Individuals and personal accounts").
 
 | Method and path | Who may call it | Answers |
 |---|---|---|
-| `POST /uploads` | a logged-in user of any role | `202` with the job id and status `queued`; `401` when not logged in; `411` without a `Content-Length` header or with a `Transfer-Encoding` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (steps 1 and 2); `422` "confirm the letter holds no real names, member ids, claim numbers or dates of birth" when `no_personal_data` is `false` (missing, it is FastAPI's own `422` naming the field); `422` for a file that cannot be read as a letter (one fixed message per case, below); for a personal account only, `429` with `Retry-After` "this account has used its uploads for this month; try again next month" or "today's uploads for personal accounts are used up; try again tomorrow" (step 5) |
+| `POST /uploads` | a logged-in user of any role | `202` with the job id and status `queued`; `401` when not logged in, or when the account was deleted while the upload waited (step 5); `411` without a `Content-Length` header or with a `Transfer-Encoding` header; `400` when that header is not a whole number; `413` for a body or a file over the limit (steps 1 and 2); `422` "confirm the letter holds no real names, member ids, claim numbers or dates of birth" when `no_personal_data` is `false` (missing, it is FastAPI's own `422` naming the field); `422` for a file that cannot be read as a letter (one fixed message per case, below); for a personal account only, `429` with `Retry-After` "this account has used its uploads for this month; try again next month" or "today's uploads for personal accounts are used up; try again tomorrow" (step 5) |
 | `GET /jobs/{job_id}` | a logged-in user of any role | `200` with the status, the failure code (only when `failed`), the end state (only when `done`) and the three times; `401` when not logged in; `404` for a job of another account, another user's job for anyone but an admin, or no job at all |
 
 The upload is a form field `file` and a form field `no_personal_data` (`multipart/form-data`,
@@ -4727,6 +4727,9 @@ read by `python-multipart`).
    - The `Retry-After` header counts the seconds to the next UTC month or day. A refused or
      failed upload is rolled back, so it counts toward neither cap. The shared account skips
      this step.
+   - "Delete my account" takes the same account-row lock. An upload that waited on it while the
+     account was deleted finds no row and is `401` "not logged in" (tested with two
+     connections); nothing is stored.
 6. One `uploads` row (the name, the type, the size, the text and its SHA-256) and one `jobs`
    row with status `queued` are written. The file itself is not kept: only its text.
 7. The job is handed to FastAPI's `BackgroundTasks`. It runs after the answer is sent, by

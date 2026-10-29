@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Up
 from pydantic import BaseModel, ConfigDict
 
 from src.api.dependencies import (
+    NOT_LOGGED_IN,
     CurrentUser,
     DbSession,
     JobRunner,
@@ -29,6 +30,7 @@ from src.api.roles import UPLOAD_ROLES
 from src.api.upload_caps import (
     DAILY_CAP_REACHED,
     MONTHLY_CAP_REACHED,
+    AccountGoneError,
     CapRefusal,
     reserve_individual_upload,
     retry_after_seconds,
@@ -92,7 +94,8 @@ def upload_letter(
     The form must confirm the letter holds no personal data (`no_personal_data=true`), else 422:
     real patient data is never allowed. A personal account's upload counts toward the
     individuals' caps (`src/api/upload_caps.py`); over either cap the answer is 429 with
-    `Retry-After`, and nothing is stored. The job runs after the answer is sent; read its status
+    `Retry-After`, and nothing is stored; an account deleted while the upload waited on its lock
+    is 401. The job runs after the answer is sent; read its status
     with `GET /jobs/{job_id}`.
     """
     if not no_personal_data:
@@ -108,13 +111,16 @@ def upload_letter(
     except UploadFileError as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from None
     if user.account_kind is AccountKind.PERSONAL:
-        refusal = reserve_individual_upload(
-            session,
-            user.account_id,
-            now=now,
-            monthly_limit=settings.individual_monthly_uploads,
-            daily_limit=settings.individual_daily_uploads,
-        )
+        try:
+            refusal = reserve_individual_upload(
+                session,
+                user.account_id,
+                now=now,
+                monthly_limit=settings.individual_monthly_uploads,
+                daily_limit=settings.individual_daily_uploads,
+            )
+        except AccountGoneError:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_LOGGED_IN) from None
         if refusal is not None:
             raise too_many_tries(retry_after_seconds(refusal, now), CAP_REACHED[refusal])
     job_id = create_upload_job(

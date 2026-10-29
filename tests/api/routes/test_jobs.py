@@ -13,9 +13,10 @@ from sqlalchemy import Connection, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.app import create_app
+from src.api.dependencies import NOT_LOGGED_IN
 from src.api.passwords import hash_password
 from src.api.routes.jobs import BAD_FILE_NAME, JOB_NOT_FOUND, PERSONAL_DATA_NOT_CONFIRMED
-from src.api.upload_caps import DAILY_CAP_REACHED, MONTHLY_CAP_REACHED
+from src.api.upload_caps import DAILY_CAP_REACHED, MONTHLY_CAP_REACHED, AccountGoneError
 from src.api.upload_file import NOT_UTF8, PDF_UNREADABLE
 from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
@@ -376,6 +377,27 @@ def test_the_daily_cap_counts_every_individual_together(
 
     assert (status_code, body) == (429, {"detail": DAILY_CAP_REACHED})
     assert _rows(db_session) == (1, 1, 1)
+
+
+def test_an_upload_whose_account_was_deleted_meanwhile_is_401_and_nothing_is_stored(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    job_calls: list[tuple[int, int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signup_individual(api_client, sent_mail, "ann@elsewhere.test")
+
+    def account_gone(*_args: object, **_kwargs: object) -> None:
+        raise AccountGoneError
+
+    monkeypatch.setattr("src.api.routes.jobs.reserve_individual_upload", account_gone)
+
+    status_code, body = _upload(api_client)
+
+    assert (status_code, body) == (401, {"detail": NOT_LOGGED_IN})
+    assert _rows(db_session) == (0, 0, 0)
+    assert job_calls == []
 
 
 def test_the_shared_account_has_no_count_cap(api_client: TestClient, db_session: Session) -> None:

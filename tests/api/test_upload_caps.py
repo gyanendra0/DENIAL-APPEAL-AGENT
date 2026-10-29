@@ -10,7 +10,12 @@ import pytest
 from sqlalchemy import Engine, delete, select, text, update
 from sqlalchemy.orm import Session
 
-from src.api.upload_caps import CapRefusal, reserve_individual_upload, retry_after_seconds
+from src.api.upload_caps import (
+    AccountGoneError,
+    CapRefusal,
+    reserve_individual_upload,
+    retry_after_seconds,
+)
 from src.db.models import Account, AccountKind, IndividualUploadDay, Job, Upload, User
 from src.jobs.store import create_upload_job
 from tests.api.conftest import waits_on_a_lock
@@ -167,5 +172,41 @@ def test_two_individuals_at_the_same_moment_cannot_both_take_the_last_place_of_t
         assert _race(engine, "ann", "bob", monthly=5, daily=1) == [CapRefusal.DAILY]
         with Session(engine) as check:
             assert _day_count(check) == 1
+    finally:
+        _cleanup(engine)
+
+
+def test_an_upload_that_waited_while_its_account_was_deleted_finds_the_account_gone(
+    engine: Engine,
+) -> None:
+    """ "Delete my account" holds the account row; the waiting upload then finds no row."""
+    found: list[object] = []
+    try:
+        with Session(engine) as setup:
+            ann = _individual(setup, "ann")
+            setup.commit()
+        with Session(engine) as deleting, Session(engine) as uploading:
+            deleting.scalars(
+                select(Account.id).where(Account.id == ann.account_id).with_for_update()
+            ).one()
+            deleting.execute(delete(Account).where(Account.id == ann.account_id))
+            uploading_pid = uploading.scalar(text("SELECT pg_backend_pid()"))
+            assert uploading_pid is not None
+
+            def reserve() -> None:
+                try:
+                    _reserve(uploading, ann)
+                except AccountGoneError as error:
+                    found.append(error)
+
+            worker = threading.Thread(target=reserve)
+            worker.start()
+            assert waits_on_a_lock(engine, uploading_pid)
+            deleting.commit()
+            worker.join(timeout=5)
+            uploading.rollback()
+        assert len(found) == 1
+        with Session(engine) as check:
+            assert _day_count(check) is None
     finally:
         _cleanup(engine)

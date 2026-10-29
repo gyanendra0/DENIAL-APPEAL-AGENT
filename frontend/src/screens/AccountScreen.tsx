@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { useSearchParams } from "react-router";
 
 import { ApiError } from "../api/client";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../auth/credentialCheck";
 import type { FieldErrors, PasswordChangeField } from "../auth/credentialCheck";
 import { useChangePassword, useDeleteAccount, useSession } from "../auth/session";
+import { ACCOUNT_OPEN_PARAM, readAccountForm } from "./accountPaths";
 import { PasswordField } from "./AuthField";
 import { asSentence, describeError } from "./errorMessage";
 
@@ -32,25 +34,44 @@ function deleteError(error: unknown): string {
   return describeError(error);
 }
 
-// Every role can change their own password. The API keeps this browser logged in with a new
-// cookie and ends every other session.
+// The account menu links here with `?open=password` or `?open=delete`, which opens that form
+// straight away and leaves the other out; the key starts the form afresh when the menu asks for
+// another one.
 export function AccountScreen() {
   const session = useSession();
+  const [searchParams] = useSearchParams();
+  const form = readAccountForm(searchParams.get(ACCOUNT_OPEN_PARAM));
+  // The form the menu asked for is shown alone; with none asked for, both are. A shared account
+  // has no delete, so it always keeps the password part (never an empty card).
+  const showsDelete = session.data?.account_kind === "personal" && form !== "password";
+  const showsPassword = !(showsDelete && form === "delete");
 
   return (
     <>
       <h1>Account</h1>
-      <PasswordChange />
-      {session.data?.account_kind === "personal" && <DeleteAccount />}
+      {showsPassword && <PasswordChange key={`password-${form}`} startOpen={form === "password"} />}
+      {showsDelete && <DeleteAccount key={`delete-${form}`} startOpen={form === "delete"} />}
     </>
   );
 }
 
-function PasswordChange() {
+// Every role can change their own password. The form stays closed until the user asks for it;
+// Cancel closes it again and forgets what was typed. The API keeps this browser logged in with a
+// new cookie and ends every other session.
+function PasswordChange({ startOpen }: { startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors<PasswordChangeField>>({});
   const changeMutation = useChangePassword();
+
+  function onCancel() {
+    setOpen(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setErrors({});
+    changeMutation.reset();
+  }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -65,6 +86,7 @@ function PasswordChange() {
         onSuccess: () => {
           setCurrentPassword("");
           setNewPassword("");
+          setOpen(false);
         },
       },
     );
@@ -73,41 +95,62 @@ function PasswordChange() {
   return (
     <>
       <h2>Change password</h2>
-      <form className="form account-form" noValidate onSubmit={onSubmit}>
-        <PasswordField
-          label="Current password"
-          name="currentPassword"
-          autoComplete="current-password"
-          required
-          value={currentPassword}
-          error={errors.currentPassword}
-          onChange={(event) => setCurrentPassword(event.target.value)}
-        />
-        <PasswordField
-          label="New password"
-          name="newPassword"
-          autoComplete="new-password"
-          required
-          minLength={MIN_PASSWORD_CHARACTERS}
-          maxLength={MAX_PASSWORD_CHARACTERS}
-          hint={`${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`}
-          value={newPassword}
-          error={errors.newPassword}
-          onChange={(event) => setNewPassword(event.target.value)}
-        />
-        {changeMutation.isError && (
-          <p className="error" role="alert">
-            {passwordChangeError(changeMutation.error)}
-          </p>
-        )}
-        {changeMutation.isSuccess && (
-          <p role="status">Your password is changed. Other sessions are logged out.</p>
-        )}
-        <button type="submit" className="auth-submit" disabled={changeMutation.isPending}>
-          {changeMutation.isPending && <span className="spinner" aria-hidden="true" />}
-          {changeMutation.isPending ? "Changing…" : "Change password"}
+      {changeMutation.isSuccess && (
+        <p role="status">Your password is changed. Other sessions are logged out.</p>
+      )}
+      {!open ? (
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            changeMutation.reset();
+            setOpen(true);
+          }}
+        >
+          Change password
         </button>
-      </form>
+      ) : (
+        <form className="form account-form" noValidate onSubmit={onSubmit}>
+          <PasswordField
+            label="Current password"
+            name="currentPassword"
+            autoComplete="current-password"
+            required
+            value={currentPassword}
+            error={errors.currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+          />
+          <PasswordField
+            label="New password"
+            name="newPassword"
+            autoComplete="new-password"
+            required
+            minLength={MIN_PASSWORD_CHARACTERS}
+            maxLength={MAX_PASSWORD_CHARACTERS}
+            hint={`${MIN_PASSWORD_CHARACTERS} to ${MAX_PASSWORD_CHARACTERS} characters.`}
+            value={newPassword}
+            error={errors.newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+          />
+          {changeMutation.isError && (
+            <p className="error" role="alert">
+              {passwordChangeError(changeMutation.error)}
+            </p>
+          )}
+          <button type="submit" className="auth-submit" disabled={changeMutation.isPending}>
+            {changeMutation.isPending && <span className="spinner" aria-hidden="true" />}
+            {changeMutation.isPending ? "Changing…" : "Change password"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={changeMutation.isPending}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
     </>
   );
 }
@@ -116,8 +159,8 @@ function PasswordChange() {
 // A user who logs in only with Google has no password and leaves the field empty; the API then
 // wants a login within the last 10 minutes. When the account is gone the session is null and the
 // guard sends the user to the login screen.
-function DeleteAccount() {
-  const [confirming, setConfirming] = useState(false);
+function DeleteAccount({ startOpen }: { startOpen: boolean }) {
+  const [confirming, setConfirming] = useState(startOpen);
   const [password, setPassword] = useState("");
   const deleteMutation = useDeleteAccount();
 

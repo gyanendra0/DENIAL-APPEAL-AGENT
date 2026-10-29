@@ -26,8 +26,15 @@ function stubChange(answer: Answer) {
   });
 }
 
-async function fillAndSubmit(current = CURRENT, next = NEW) {
+// The form is closed at first; the first "Change password" button opens it.
+async function openPasswordForm() {
   const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Change password" }));
+  return user;
+}
+
+async function fillAndSubmit(current = CURRENT, next = NEW) {
+  const user = await openPasswordForm();
   if (current !== "") {
     await user.type(await screen.findByLabelText(/^Current password/), current);
   }
@@ -51,8 +58,55 @@ describe("AccountScreen", () => {
       current_password: CURRENT,
       new_password: NEW,
     });
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+
+    await openPasswordForm();
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByLabelText(/^Current password/)).toHaveValue("");
     expect(screen.getByLabelText(/^New password/)).toHaveValue("");
+  });
+
+  it("opens the password form straight away when the address asks for it", async () => {
+    stubChange(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=password");
+
+    expect(await screen.findByLabelText(/^Current password/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^New password/)).toBeInTheDocument();
+  });
+
+  it("opens nothing for an unknown form in the address", async () => {
+    stubChange(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=everything");
+
+    expect(await screen.findByRole("button", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+  });
+
+  it("shows no password fields until Change password is clicked", async () => {
+    stubChange(() => new Response(null, { status: 204 }));
+    renderAt("/app/account");
+
+    expect(await screen.findByRole("button", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^New password/)).not.toBeInTheDocument();
+  });
+
+  it("closes the form on Cancel, forgets what was typed and sends nothing", async () => {
+    const fetchStub = stubChange(() => new Response(null, { status: 204 }));
+    renderAt("/app/account");
+    const user = await openPasswordForm();
+    await user.type(screen.getByLabelText(/^Current password/), CURRENT);
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    expect(screen.getByText("Use 12 to 128 characters.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+    await openPasswordForm();
+    expect(screen.getByLabelText(/^Current password/)).toHaveValue("");
+    expect(screen.queryByText("Use 12 to 128 characters.")).not.toBeInTheDocument();
+    expect(fetchStub.mock.calls.some(([input]) => String(input) === "/me/password")).toBe(false);
   });
 
   it("names both empty fields, focuses the first and sends nothing", async () => {
@@ -137,10 +191,9 @@ describe("AccountScreen", () => {
   it("gives each password field its own show button", async () => {
     stubChange(() => new Response(null, { status: 204 }));
     renderAt("/app/account");
+    await openPasswordForm();
 
-    expect(
-      await screen.findByRole("button", { name: "Show current password" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show current password" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show new password" })).toBeInTheDocument();
   });
 });
@@ -173,6 +226,48 @@ describe("AccountScreen: delete my account", () => {
 
     expect(await screen.findByRole("heading", { name: "Change password" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete my account" })).not.toBeInTheDocument();
+  });
+
+  it("opens the delete step straight away when the address asks for it", async () => {
+    stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=delete");
+
+    expect(await screen.findByRole("button", { name: "Delete for good" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+  });
+
+  it("shows only the delete step when the menu asks for it, not the password part", async () => {
+    stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=delete");
+
+    expect(await screen.findByRole("button", { name: "Delete for good" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Change password" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change password" })).not.toBeInTheDocument();
+  });
+
+  it("shows only the password form to an individual when the menu asks for it", async () => {
+    stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=password");
+
+    expect(await screen.findByLabelText(/^Current password/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Delete my account" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete my account" })).not.toBeInTheDocument();
+  });
+
+  it("shows both parts to an individual when the address asks for neither", async () => {
+    stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account");
+
+    expect(await screen.findByRole("button", { name: "Delete my account" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change password" })).toBeInTheDocument();
+  });
+
+  it("opens no delete step for a team member even when the address asks for it", async () => {
+    stubDelete(() => new Response(null, { status: 204 }), ADMIN);
+    renderAt("/app/account?open=delete");
+
+    expect(await screen.findByRole("button", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete for good" })).not.toBeInTheDocument();
   });
 
   it("asks to confirm first and says what is deleted, and Cancel sends nothing", async () => {

@@ -5133,8 +5133,11 @@ screen:
 | `frontend/src/jobs/uploadCheck.ts` | `checkUploadFile`: the type, empty and size checks before a file is sent; `UPLOAD_MAX_BYTES` |
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
-| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleJoinScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change), `AppLayout` (a sidebar on the left: Upload, Worklist, Overview, Account, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), the account, email, role and Log out; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
-| `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion |
+| `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleJoinScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change and, for a personal account, the delete, in one centered card), `AppLayout` (a sidebar on the left: Upload, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), and `AccountMenu` at the bottom; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
+| `frontend/src/screens/AccountMenu.tsx`, `firstName.ts`, `accountPaths.ts` | The user at the bottom of the sidebar: a round initial and a first name made from the email (`firstNameFromEmail`, "ada.lovelace@x.org" gives "Ada"; the API keeps no name). A click opens a menu above it with the email, the account ("Personal" for a personal account) and the role, and the items Change password, Delete account (personal accounts only) and Log out; Escape, a click outside or an item closes it, the arrow keys move between the items, and Escape closes only the menu, not the drawer around it. `accountFormPath` gives `/app/account?open=password` or `?open=delete`; `readAccountForm` ignores any other value |
+| `frontend/src/screens/FileDropZone.tsx`, `fileSize.ts` | The upload's drop area (see "An upload, step by step"); `formatFileSize` ("812 B", "4 KB", "1.2 MB", 1 KB = 1,000 bytes, as `UPLOAD_MAX_BYTES` is "1 MB") |
+| `frontend/src/notify/notify.ts`, `NotificationsProvider.tsx` | `useNotify` and the notification cards (see "Notifications"); `NOTIFICATION_MS` (5,000), `MAX_NOTIFICATIONS` (3) |
+| `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion. Since #88 also the centered cards (`.centered-screen`, `.screen-card`, 420 pixels wide, `wide` 960), the drop area, the pills, tags and bars of the worklist and the overview (colour tones `good`, `waiting`, `bad`, `neutral`, each at least 3:1 on its card and its track), the account menu and the notification cards |
 | `frontend/tests/` | The tests, mirroring `frontend/src/` |
 
 ### The screens
@@ -5152,9 +5155,11 @@ screen:
 | any other path | | sends to `/app/worklist` |
 
 Every screen under `/app/` other than login, sign-up, the code screen, the reset screen and the
-Google join screen asks for the session first (`GET /me`) and shows the account (the shared
-account's name, or "Personal" for a personal account, never its made-up name), the user's
-email and role and a Log out button (`POST /auth/logout`).
+Google join screen asks for the session first (`GET /me`). The account menu at the bottom of
+the sidebar shows the account (the shared account's name, or "Personal" for a personal
+account, never its made-up name), the user's email and role, and Log out
+(`POST /auth/logout`). A logout shows the notification "You're logged out"; a logout that
+fails shows an error notification with the general sentence (`describeError`).
 
 ### How the browser reaches the API
 
@@ -5229,9 +5234,12 @@ The code's lifetime is not shown on the screen: it is a setting, and the email s
 
 ### Changing the password
 
-`/app/account` has one form: the current password and a new one, each a `PasswordField`.
-There is no "repeat the new password" field; the show button lets the user see what they
-typed.
+`/app/account` is one centered card: the title, the user's email, and a "Password" part with
+a "Change password" button. The button opens the form: the current password and a new one,
+each a `PasswordField`, with Change password and Cancel; Cancel closes it and forgets what
+was typed. There is no "repeat the new password" field; the show button lets the user see
+what they typed. "Change password" in the account menu opens `/app/account?open=password`:
+the form is open at once and the delete part is left out.
 
 1. The browser checks first (`checkPasswordChange`): an empty current password gets "Enter
    your current password."; a new password outside 12 to 128 characters gets "Use 12 to 128
@@ -5239,9 +5247,10 @@ typed.
 2. `POST /me/password` is sent. A `400` shows the screen's own sentence, "The current password
    is wrong."; a `429` and every other error use the general sentences (`describeError`), so
    nothing typed is ever shown.
-3. On `204` both fields are cleared and the screen says the password is changed and other
-   sessions are logged out. The API's answer carries a new login cookie, so this browser stays
-   logged in; the user does not change, so the cache is left as it is.
+3. On `204` both fields are cleared, the form closes and a notification says "Password
+   changed" and that other sessions are logged out. The API's answer carries a new login
+   cookie, so this browser stays logged in; the user does not change, so the cache is left as
+   it is.
 
 ### Forgot password
 
@@ -5297,37 +5306,47 @@ starts again.
 Only for a personal account (`account_kind: "personal"`); a user of the shared account does not
 see it, and the API refuses them anyway.
 
-1. The Account screen has a "Delete my account" button under the password change. It opens a
-   confirm form: a notice that the account, every letter and every draft go and that it cannot
-   be undone, a password field ("Leave empty if you sign in only with Google.") and
-   "Delete for good" beside Cancel.
+1. The Account screen has a "Delete account" part with a "Delete my account" button under the
+   password part. "Delete account" in the account menu opens `/app/account?open=delete`,
+   which shows only this part with the confirm form open. The button opens a confirm form: a
+   notice that the account, every letter and every draft go and that it cannot be undone, a
+   password field ("Leave empty if you sign in only with Google.") and "Delete for good"
+   beside Cancel.
 2. "Delete for good" sends `POST /me/delete-account` with the password, or `password: null`
    when the field is empty.
 3. On `204` the session is set to none and the cache is emptied (`useDeleteAccount`), so the
-   guard sends the browser to login.
+   guard sends the browser to login, and a notification says "Account deleted".
 4. A `400` (wrong password), `403` (log in again) or `409` (a letter still running) shows the
    API's own sentence; a `429` (the login limit) shows the usual line for it (`describeError`).
 
 ### An upload, step by step
 
-1. The user picks one file. The browser refuses it at once, without sending it, when its name
-   does not end in `.txt` or `.pdf` (any case), when it is empty, or when it is over
-   `UPLOAD_MAX_BYTES` (1,000,000 bytes, the default of the API's setting), in
-   `frontend/src/jobs/uploadCheck.ts`; the sentence never names the file. The API checks again and
-   decides: it reads the type from the content, not the name, and a server with a lower limit
-   still answers `413`.
-2. Under the file the screen shows a notice: "This letter contains no real names, member ids,
-   claim numbers or dates of birth. Use a made-up letter or black out every personal detail."
-   The upload button stays off until the box "I confirm this letter holds no real personal
-   details" is ticked, for every account.
+1. The screen is a centered card, 960 pixels wide. The user drops one file on its dashed area
+   or picks one: the area is the label of a real file input, hidden from sight but not from
+   the keyboard or a screen reader, so a click, Tab and then Enter or Space, or a drop all
+   work, and a dropped file gets the same checks as a picked one. The browser refuses a file
+   at once, without sending it, when its name does not end in `.txt` or `.pdf` (any case),
+   when it is empty, or when it is over `UPLOAD_MAX_BYTES` (1,000,000 bytes, the default of
+   the API's setting), in `frontend/src/jobs/uploadCheck.ts`; the sentence never names the
+   file, and a refused file is not kept. A kept file shows its name and size
+   (`formatFileSize`) in the area, with a Remove button. The API checks again and decides: it
+   reads the type from the content, not the name, and a server with a lower limit still
+   answers `413`.
+2. The upload button stays off until the box "I confirm this letter holds no real names,
+   member ids, claim numbers or dates of birth" is ticked, for every account. The notice is
+   the box's own label, so it is read with it.
 3. A file that passes is sent as the form field `file` with `no_personal_data=true`
    (`POST /uploads`). The browser sets the request's headers itself.
 4. On `202` the job id goes into the address (`/app/upload?job=12`), so a reload keeps
-   showing the same job.
+   showing the same job, and a notification says "Letter uploaded" with the job number.
 5. `GET /jobs/{id}` is asked every 2 seconds until the job is `done` or `failed`. Polling
    stops at an error too; a `404` is shown, not asked again.
 6. The status is shown as a sentence per status, end state and failure (`jobText.ts`), for
    example that a draft is ready for review or that the drafting failed.
+7. A job that ends while the screen watches it sends a notification with an Open link to its
+   split view: "Draft ready for review", "Job 12 finished" with its sentence, or, for a
+   failed job, an error "The letter could not be processed". A job that had already ended
+   when the screen opened (a reload) sends none.
 
 A file over the limit (`413`), a file the API refuses (`422`, one of the upload route's fixed
 sentences) and a `viewer` (`403`) each get their own message. An upload over a cap of a
@@ -5336,15 +5355,56 @@ day's uploads are used up.
 
 ### The worklist
 
-`/app/worklist` shows the account's jobs, newest first, in a table: job, file, uploaded,
-by, where the job is, review status, denial reason and win chance. It reads 50 jobs at a time
+`/app/worklist` shows the account's jobs, newest first, in a table inside a card (at most 70%
+of the window high, so its header stays in view while the rows scroll). An "Upload a denial
+letter" button sits beside the title for a role that can upload. The columns: the file (an
+icon, the file name and `#` with the job id), uploaded (date and time, and the uploader
+under it), where the job is and the review status (each a pill: the sentence with a coloured
+dot, the end state's or the review's tone), the denial reason (a tag), the win chance (a
+small bar and the percent: 60% and over `good`, 30% and over `waiting`, else `bad`) and an
+Edit button that opens the split view. The colour is never the only sign; the words are
+always there. It reads 50 jobs at a time
 with the API's keyset paging (3.20); "Load more" asks for the next page with `before`. If a
 later page fails, the rows already shown stay and the error is shown under them.
 
-The `status` and `review_status` filters are kept in the address (`?status=done`), so a
-reload or a shared link shows the same list; an unknown value is ignored. A review-status
-filter leaves out jobs that have no draft, and the screen says so. An empty list links to
-the upload only for a role that can upload.
+The `status` and `review_status` filters sit in a toolbar above the table, beside the job
+count ("12 jobs"; "50 jobs so far" while more pages are left; "3 jobs shown" with a filter)
+and a "Clear filters" link while one is set. They are kept in the address
+(`?status=done`), so a reload or a shared link shows the same list; an unknown value is
+ignored. A review-status filter leaves out jobs that have no draft, and the screen says so.
+An empty list says "No jobs match these filters." with a Clear filters button, or, with no
+filter, "No jobs here yet." with an "Upload your first letter" button for a role that can
+upload.
+
+### Notifications
+
+A short card in the top right says that something just happened. `NotificationsProvider`
+sits in `App.tsx` above the router, so a card stays when the screen changes, and its Open link
+moves with the router (no new page load). A screen sends one with `useNotify`; a screen tested
+on its own, outside the provider, sends it nowhere.
+
+- **Tones.** `success` and `info` close by themselves after 5 seconds (`NOTIFICATION_MS`);
+  the time stops while the pointer is on the card and starts again in full when it leaves.
+  An `error` stays until it is closed. Every card has a close button.
+- **At most 3** (`MAX_NOTIFICATIONS`); a new one pushes the oldest out.
+- **Read out.** Errors are in an `aria-live="assertive"` region, the rest in a
+  `polite` one. Neither has a `role`, so a screen keeps its own single `status` and `alert`.
+- **Fixed words.** A card's title and detail are fixed sentences or a job number; a
+  notification never shows a file name, what the user typed or what a letter says.
+
+| Sent when | Tone and title |
+|---|---|
+| An upload is accepted | success, "Letter uploaded" ("Job 12 is being read.") |
+| A watched job ends | success "Draft ready for review", info "Job 12 finished", or error "The letter could not be processed"; each with Open |
+| A draft edit is saved (3.22) | success, "Draft saved" |
+| A draft is approved (3.22) | success, "Draft approved" ("Nothing is sent by this system.") |
+| A draft is rejected (3.22) | info, "Draft rejected" |
+| The password is changed | success, "Password changed" |
+| The account is deleted | info, "Account deleted" |
+| Logout ends, or fails | info "You're logged out", or error "Logging out failed" |
+
+Errors that belong to a form (a wrong password, a refused file, a refused edit) stay in the
+form, beside what they are about; they are not notifications.
 
 ### Errors
 
@@ -5377,7 +5437,8 @@ Library; `fetch` is stubbed, so no test reaches a server, and a request with no 
 fails the test that made it (`tests/helpers.tsx`, checked after each test). Coverage on `frontend/src/` must be
 at least 70% (lines, functions, branches, statements), the same as `src/`. CI runs all of it
 as a second job, `frontend`, beside the Python job. At the end of this branch: 134 tests,
-99.60% of lines and 96.72% of branches.
+99.60% of lines and 96.72% of branches. After the dashboard polish (#88): 475 tests, 99.69%
+of lines.
 
 ### Starting it
 
@@ -5449,6 +5510,7 @@ The four rules of 3.21 hold here too. Two more:
 | `frontend/src/detail/useDraftActions.ts` | `useSaveDraft`, `useApproveDraft`, `useRejectDraft`; `refreshAfterReview`; `STALE_VERSION` |
 | `frontend/src/detail/detailText.ts` | Labels and sentences; `MODEL_DRAFT_VERSION` (0), `LOW_CONFIDENCE` (0.80) |
 | `frontend/src/overview/useOverview.ts`, `screens/OverviewScreen.tsx` | The overview, cache key `["overview"]` |
+| `frontend/src/screens/OverviewCharts.tsx`, `overviewData.ts` | The admin's charts (since #88); the tone of every status, end state and review value (`STATUS_TONE`, `END_STATE_TONE`, `REVIEW_TONE`, also used by the worklist's pills), `total` and `percent` (a whole percent, 0 of nothing) |
 
 ### The screens
 
@@ -5457,8 +5519,8 @@ The four rules of 3.21 hold here too. Two more:
 | `/app/jobs/:id` | a logged-in user of any role, for the jobs the API lets them read; edit for a `reviewer` or an `admin`, approve and reject for an `admin` | `GET /jobs/{id}` while the job runs, then `GET /jobs/{id}/detail`; `PUT /jobs/{id}/draft`, `POST /jobs/{id}/draft/approve`, `POST /jobs/{id}/draft/reject` |
 | `/app/overview` | a logged-in user of any role | `GET /overview` |
 
-The job id in the worklist links to `/app/jobs/:id`, and a finished upload shows "Open the
-denial". The menu has an Overview link for every role. For a personal account the job screen
+The Edit button of a worklist row links to `/app/jobs/:id`, and a finished upload shows "Open
+the denial". The menu has an Overview link for every role. For a personal account the job screen
 starts with one line: "This is an estimate, not legal or medical advice. Nothing is sent to
 your insurer; you decide what to do with the letter."
 
@@ -5507,7 +5569,8 @@ place.
    version still gives this `409` instead of being overwritten or approved unseen.
 6. **After a success**, the detail, the worklist and the overview are read again
    (`refreshAfterReview`) before the buttons come back, so no button shows a state that has
-   passed.
+   passed. A save, an approval and a rejection each send a notification (3.21
+   "Notifications").
 
 A `viewer` sees the draft and its review status, with no Edit, Approve or Reject. A
 `reviewer` sees Edit and the line "An admin approves or rejects this draft." instead of
@@ -5515,13 +5578,27 @@ Approve and Reject. The API answers `403` to either anyway.
 
 ### The overview
 
-`/app/overview` shows only what `GET /overview` returns: the jobs by status, the finished jobs
-by end state and the drafts by review status (every value, zeros included, in the worklist's
-sentences), the model cost this month and in all (the API's decimal strings, never added up in
-the browser; for anyone but an admin the API sends `null`, the cost rows are left out and the
-heading "Cost and time" becomes "Time"; a sentence above says an admin sees the whole account
-and everyone else their own letters), and the average time from upload to the end of a job
-in seconds ("No finished job yet." when there is none).
+`/app/overview` shows only what `GET /overview` returns; a sentence above says an admin sees
+the whole account and everyone else their own letters. Since #88 it has three parts:
+
+1. **Stat tiles:** letters uploaded, drafts waiting for review, approved (with its percent of
+   the decided drafts, approved or rejected, or "None decided yet"), and the average time
+   from upload to the end of a job in seconds ("No finished job yet." when there is none).
+   For an admin also the model cost this month and in all, the API's decimal strings as sent,
+   never added up or rounded in the browser; for anyone else the API sends `null` and those
+   tiles are left out.
+2. **Charts, for an admin only** (`OverviewCharts`; a choice of layout, as everyone sees the
+   same numbers in the cards): one stacked bar each for the jobs by status, the finished jobs
+   by end state and the drafts by review, and an approval meter (`role="meter"`, the approved
+   share of the decided drafts). Each segment takes the focus and names itself, for example
+   "Finished: 3 of 6 (50%)", which is also its tooltip; a segment under 8% has no count
+   inside. The legend lists every value, zeros included.
+3. **Count cards:** the same three counts as tables, every value with its zeros, each with a
+   thin bar of its share in the value's tone. The bar is decoration; the count is the cell a
+   screen reader reads.
+
+With no letter at all the screen says "Nothing uploaded yet." and, for a role that can
+upload, shows an "Upload a denial letter" button instead.
 
 ### The session
 

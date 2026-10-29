@@ -20,7 +20,9 @@ def _signup(client: TestClient, name: str, email: str) -> dict[str, int]:
 
 def _upload(client: TestClient) -> int:
     response = client.post(
-        "/uploads", files={"file": ("letter.txt", LETTER_TEXT, "application/octet-stream")}
+        "/uploads",
+        files={"file": ("letter.txt", LETTER_TEXT, "application/octet-stream")},
+        data={"no_personal_data": "true"},
     )
     assert response.status_code == 202
     job_id: int = response.json()["job_id"]

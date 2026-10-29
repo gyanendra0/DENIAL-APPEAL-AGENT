@@ -13,12 +13,23 @@ from sqlalchemy import Connection, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.app import create_app
+from src.api.dependencies import NOT_LOGGED_IN
 from src.api.passwords import hash_password
-from src.api.routes.jobs import BAD_FILE_NAME, JOB_NOT_FOUND
+from src.api.routes.jobs import BAD_FILE_NAME, JOB_NOT_FOUND, PERSONAL_DATA_NOT_CONFIRMED
+from src.api.upload_caps import DAILY_CAP_REACHED, MONTHLY_CAP_REACHED, AccountGoneError
 from src.api.upload_file import NOT_UTF8, PDF_UNREADABLE
 from src.api.upload_limit import FILE_TOO_LARGE
 from src.config.settings import ApiSettings
-from src.db.models import Job, JobStatus, Upload, UploadFileType, User, UserRole
+from src.db.models import (
+    AuditEvent,
+    IndividualUploadDay,
+    Job,
+    JobStatus,
+    Upload,
+    UploadFileType,
+    User,
+    UserRole,
+)
 from src.extraction.prompts import ExtractionPrompt
 from src.jobs.run import JobContext, run_upload_job
 from src.llm.gateway import LlmRequest
@@ -30,6 +41,7 @@ from tests.api.conftest import (
     VERIFIED_AT,
     RecordingSender,
     signup_and_verify,
+    signup_individual,
 )
 from tests.drafting.helpers import PROMPT, drafting_gateway
 from tests.extraction.helpers import LETTER, PROMPT_VERSION, StubProvider, fields_json, system_text
@@ -71,7 +83,11 @@ def _login(client: TestClient, email: str) -> None:
 def _upload(
     client: TestClient, data: bytes = LETTER_TEXT, name: str = "letter.txt"
 ) -> tuple[int, dict[str, object]]:
-    response = client.post("/uploads", files={"file": (name, data, "application/octet-stream")})
+    response = client.post(
+        "/uploads",
+        files={"file": (name, data, "application/octet-stream")},
+        data={"no_personal_data": "true"},
+    )
     body: dict[str, object] = response.json()
     return response.status_code, body
 
@@ -133,7 +149,7 @@ def test_an_upload_needs_a_login(api_client: TestClient) -> None:
 
 def test_an_upload_without_a_file_is_422(api_client: TestClient) -> None:
     _signup(api_client, "A", "admin@a.org")
-    response = api_client.post("/uploads", data={"other": "x"})
+    response = api_client.post("/uploads", data={"other": "x", "no_personal_data": "true"})
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "file"]
 
@@ -288,3 +304,104 @@ def test_an_uploaded_letter_runs_to_done_in_the_background(running_client: TestC
     job = running_client.get(f"/jobs/{body['job_id']}").json()
     assert (job["status"], job["end_state"], job["failure"]) == ("done", "stopped_by_rules", None)
     assert job["started_at"] and job["finished_at"]
+
+
+# --- the personal-data confirmation and the individuals' caps ---
+
+
+def _rows(session: Session) -> tuple[int, int, int]:
+    session.expire_all()
+    return (
+        len(session.scalars(select(Upload.id)).all()),
+        len(session.scalars(select(Job.id)).all()),
+        len(session.scalars(select(AuditEvent.id).where(AuditEvent.job_id.is_not(None))).all()),
+    )
+
+
+@pytest.mark.parametrize("data", [{}, {"no_personal_data": "false"}])
+def test_an_upload_without_the_personal_data_confirmation_is_422_and_stores_nothing(
+    api_client: TestClient, db_session: Session, data: dict[str, str]
+) -> None:
+    _signup(api_client, "A", "admin@a.org")
+    response = api_client.post(
+        "/uploads", files={"file": ("letter.txt", LETTER_TEXT, "text/plain")}, data=data
+    )
+    assert response.status_code == 422
+    if data:
+        assert response.json() == {"detail": PERSONAL_DATA_NOT_CONFIRMED}
+    else:
+        assert response.json()["detail"][0]["loc"] == ["body", "no_personal_data"]
+    assert _rows(db_session) == (0, 0, 0)
+
+
+def _caps(client: TestClient, *, monthly: int, daily: int) -> None:
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(
+        update={"individual_monthly_uploads": monthly, "individual_daily_uploads": daily}
+    )
+
+
+def test_an_individual_over_the_monthly_cap_is_429_and_nothing_is_stored(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    job_calls: list[tuple[int, int]],
+) -> None:
+    signup_individual(api_client, sent_mail, "ann@elsewhere.test")
+    _caps(api_client, monthly=1, daily=10)
+    assert _upload(api_client)[0] == 202
+
+    response = api_client.post(
+        "/uploads",
+        files={"file": ("letter.txt", LETTER_TEXT, "text/plain")},
+        data={"no_personal_data": "true"},
+    )
+
+    assert (response.status_code, response.json()) == (429, {"detail": MONTHLY_CAP_REACHED})
+    assert int(response.headers["retry-after"]) > 0
+    assert _rows(db_session) == (1, 1, 1)
+    assert len(job_calls) == 1
+    # The refused upload did not count toward the day either.
+    assert db_session.scalars(select(IndividualUploadDay.count)).one() == 1
+
+
+def test_the_daily_cap_counts_every_individual_together(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender
+) -> None:
+    signup_individual(api_client, sent_mail, "ann@elsewhere.test")
+    _caps(api_client, monthly=5, daily=1)
+    assert _upload(api_client)[0] == 202
+    signup_individual(api_client, sent_mail, "bob@elsewhere.test")
+
+    status_code, body = _upload(api_client)
+
+    assert (status_code, body) == (429, {"detail": DAILY_CAP_REACHED})
+    assert _rows(db_session) == (1, 1, 1)
+
+
+def test_an_upload_whose_account_was_deleted_meanwhile_is_401_and_nothing_is_stored(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    job_calls: list[tuple[int, int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signup_individual(api_client, sent_mail, "ann@elsewhere.test")
+
+    def account_gone(*_args: object, **_kwargs: object) -> None:
+        raise AccountGoneError
+
+    monkeypatch.setattr("src.api.routes.jobs.reserve_individual_upload", account_gone)
+
+    status_code, body = _upload(api_client)
+
+    assert (status_code, body) == (401, {"detail": NOT_LOGGED_IN})
+    assert _rows(db_session) == (0, 0, 0)
+    assert job_calls == []
+
+
+def test_the_shared_account_has_no_count_cap(api_client: TestClient, db_session: Session) -> None:
+    _signup(api_client, "A", "admin@a.org")
+    _caps(api_client, monthly=1, daily=1)
+    assert [_upload(api_client)[0] for _ in range(3)] == [202, 202, 202]
+    assert db_session.scalars(select(IndividualUploadDay)).all() == []

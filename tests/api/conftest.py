@@ -7,6 +7,7 @@ messages it is given (`sent_mail`), so no email leaves.
 """
 
 import re
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -14,14 +15,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Connection, Engine
+from sqlalchemy import Connection, Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.app import create_app
 from src.api.mail import MailMessage
 from src.api.signup import create_member
 from src.config.settings import ApiSettings
-from src.db.models import Account, AuditAction, User, UserRole
+from src.db.models import Account, AccountKind, AuditAction, User, UserRole
 from src.review.audit import record_audit_event
 
 API_SECRET = "a-made-up-api-test-secret-of-forty-chars"  # noqa: S105  (made up, not a real secret)
@@ -83,7 +84,12 @@ def add_member(
     put users in separate accounts. Stored as `reviewer`, like every sign-up."""
     settings = api_settings().model_copy(update={"shared_account_name": account_name})
     return create_member(
-        session, settings=settings, email=email, password=password, verified_at=verified_at
+        session,
+        settings=settings,
+        kind=AccountKind.SHARED,
+        email=email,
+        password=password,
+        verified_at=verified_at,
     )
 
 
@@ -122,6 +128,40 @@ def signup_and_verify(client: TestClient, *, name: str, email: str, password: st
     assert verified.status_code == 200, verified.text
     sender.sent.pop()
     return verified.json()
+
+
+def waits_on_a_lock(engine: Engine, pid: int, timeout: float = 5.0) -> bool:
+    """True once database backend `pid` waits on a lock; False after `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    with engine.connect() as watcher:
+        while time.monotonic() < deadline:
+            waiting = watcher.scalar(
+                text("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = :pid"),
+                {"pid": pid},
+            )
+            if waiting:
+                return True
+            time.sleep(0.02)
+    return False
+
+
+# Made up; the password every `signup_individual` user logs in with.
+INDIVIDUAL_PASSWORD = "a-made-up-individual-password"  # noqa: S105  (made up)
+
+
+def signup_individual(client: TestClient, sender: RecordingSender, email: str) -> Any:
+    """Open sign-up to individuals, sign `email` up into a new personal account, type the
+    emailed code and return the logged-in user's JSON. The client is then logged in as them."""
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": True})
+    client.cookies.clear()
+    signed_up = client.post("/auth/signup", json={"email": email, "password": INDIVIDUAL_PASSWORD})
+    assert signed_up.status_code == 201, signed_up.text
+    verified = client.post("/auth/verify-email", json={"code": code_in(sender.sent[-1])})
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    assert (body["account_kind"], body["role"]) == ("personal", "admin")
+    return body
 
 
 @pytest.fixture

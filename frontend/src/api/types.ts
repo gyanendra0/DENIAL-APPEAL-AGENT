@@ -6,6 +6,9 @@
 // UserRole
 export type UserRole = "viewer" | "reviewer" | "admin";
 
+// src/db/models.py AccountKind: the team's shared account, or an individual's personal one.
+export type AccountKind = "shared" | "personal";
+
 // JobStatus
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
@@ -88,13 +91,15 @@ export type LetterProblemKind =
 // src/drafting/schemas.py ParagraphKind
 export type ParagraphKind = "policy" | "other";
 
-// src/api/schemas.py UserResponse
+// src/api/schemas.py UserResponse: a personal account's name is made up, so a screen shows its
+// kind instead.
 export interface UserResponse {
   user_id: number;
   email: string;
   role: UserRole;
   account_id: number;
   account_name: string;
+  account_kind: AccountKind;
 }
 
 // src/api/schemas.py AuthOptions: the ways in besides email and password.
@@ -103,10 +108,11 @@ export interface AuthOptions {
 }
 
 // src/api/schemas.py GoogleSignupInfo: the verified Google email a pending sign-up will use, and
-// the shared account it will join.
+// the account it will join: the shared account with its name, or a new personal one (no name).
 export interface GoogleSignupInfo {
   email: string;
-  account_name: string;
+  account_kind: AccountKind;
+  account_name: string | null;
 }
 
 // src/api/routes/jobs.py UploadAccepted

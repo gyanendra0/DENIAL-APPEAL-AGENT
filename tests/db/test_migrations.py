@@ -35,6 +35,9 @@ from src.db.migrations.versions import rev_0022_email_codes_and_mail_sends as mi
 from src.db.migrations.versions import (
     rev_0023_user_joined_and_uploads_owner_index as migration_0023,
 )
+from src.db.migrations.versions import (
+    rev_0024_account_kind_and_individual_upload_days as migration_0024,
+)
 from src.db.models import (
     CLAIM_LINE_AMOUNT_COLUMNS,
     CLAIM_LINE_MAX_NUMBER,
@@ -42,6 +45,7 @@ from src.db.models import (
     ISSUER_COUNT_COLUMNS,
     ISSUER_PERCENT_COLUMNS,
     PLAN_COUNT_COLUMNS,
+    AccountKind,
     AuditAction,
     DatasetSplit,
     DenialReasonCategory,
@@ -71,6 +75,7 @@ RESET_TABLE = "password_reset_tokens"
 IDENTITY_TABLE = "user_identities"
 EMAIL_CODE_TABLE = "email_codes"
 MAIL_SEND_TABLE = "mail_sends"
+UPLOAD_DAY_TABLE = "individual_upload_days"
 BUSINESS_TABLES = {
     "accounts",
     "users",
@@ -96,8 +101,8 @@ REFERENCE_TABLES = {
     "agent_runs",
 }
 # Neither customer data nor public data: counts and cost of the project's own model calls,
-# keyed hashes of failed logins, and what each sent email was for.
-OPERATIONAL_TABLES = {"llm_calls", "login_failures", MAIL_SEND_TABLE}
+# keyed hashes of failed logins, what each sent email was for, and individuals' uploads a day.
+OPERATIONAL_TABLES = {"llm_calls", "login_failures", MAIL_SEND_TABLE, UPLOAD_DAY_TABLE}
 TABLES = BUSINESS_TABLES | REFERENCE_TABLES | OPERATIONAL_TABLES
 STATS_TABLE = "issuer_denial_stats"
 PLAN_TABLE = "plan_denial_stats"
@@ -1341,6 +1346,97 @@ def test_downgrade_to_0022_refuses_while_a_user_joined_row_exists_and_changes_no
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM accounts"))
+        command.upgrade(alembic_config, "head")
+
+
+def _account_kinds(engine: Engine) -> dict[str, str]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT name, kind::text FROM accounts"))
+        return {name: kind for name, kind in rows}
+
+
+def test_migration_0024_lists_the_same_kinds_and_check_rule_as_the_model() -> None:
+    model_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in Base.metadata.tables[UPLOAD_DAY_TABLE].constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert tuple(member.value for member in AccountKind) == migration_0024.ACCOUNT_KIND
+    assert model_checks == {
+        "ck_individual_upload_days_count_not_negative": migration_0024.COUNT_NOT_NEGATIVE
+    }
+
+
+def test_individual_upload_days_has_only_the_day_its_count_and_timestamps(engine: Engine) -> None:
+    inspector = inspect(engine)
+    columns = {c["name"] for c in inspector.get_columns(UPLOAD_DAY_TABLE)}
+
+    # No account, user or letter: the cap counts uploads, never whose they were.
+    assert columns == {"day", "count", "created_at", "updated_at"}
+    assert inspector.get_pk_constraint(UPLOAD_DAY_TABLE)["constrained_columns"] == ["day"]
+    assert inspector.get_foreign_keys(UPLOAD_DAY_TABLE) == []
+
+
+def test_individual_upload_days_refuses_a_negative_count(engine: Engine) -> None:
+    with (
+        pytest.raises(IntegrityError, match="ck_individual_upload_days_count_not_negative"),
+        engine.begin() as conn,
+    ):
+        conn.execute(
+            text("INSERT INTO individual_upload_days (day, count) VALUES ('2026-10-28', -1)")
+        )
+
+
+def test_downgrade_to_0023_removes_the_kind_and_the_day_table_and_keeps_the_accounts(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO accounts (name) VALUES ('team')"))
+        command.downgrade(alembic_config, "0023")
+
+        assert "kind" not in {c["name"] for c in inspect(engine).get_columns("accounts")}
+        assert UPLOAD_DAY_TABLE not in set(inspect(engine).get_table_names())
+        assert _type_names(engine, migration_0024.NEW_ENUMS) == set()
+        with engine.connect() as conn:
+            assert list(conn.scalars(text("SELECT name FROM accounts"))) == ["team"]
+
+        # An account made before 0024 is the team's.
+        command.upgrade(alembic_config, "head")
+        assert _account_kinds(engine) == {"team": "shared"}
+        assert UPLOAD_DAY_TABLE in set(inspect(engine).get_table_names())
+    finally:
+        command.upgrade(alembic_config, "head")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+
+
+def test_downgrade_to_0023_refuses_while_a_personal_account_exists_and_changes_nothing(
+    engine: Engine, alembic_config: Config
+) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO accounts (name, kind) VALUES ('team', 'shared'),"
+                    " ('personal-a', 'personal')"
+                )
+            )
+            conn.execute(
+                text("INSERT INTO individual_upload_days (day, count) VALUES ('2026-10-28', 3)")
+            )
+
+        with pytest.raises(RuntimeError, match="1 personal account\\(s\\) exist"):
+            command.downgrade(alembic_config, "0023")
+
+        assert _account_kinds(engine) == {"team": "shared", "personal-a": "personal"}
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT count FROM individual_upload_days")) == 3
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM accounts"))
+            conn.execute(text("DELETE FROM individual_upload_days"))
         command.upgrade(alembic_config, "head")
 
 

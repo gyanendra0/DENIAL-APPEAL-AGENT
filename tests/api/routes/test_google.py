@@ -23,7 +23,15 @@ from src.api.routes.google import (
     JOIN_ACCOUNT_SCREEN,
     SIGNUP_EXPIRED,
 )
-from src.db.models import Account, AuditAction, AuditEvent, LoginFailure, User, UserIdentity
+from src.db.models import (
+    Account,
+    AccountKind,
+    AuditAction,
+    AuditEvent,
+    LoginFailure,
+    User,
+    UserIdentity,
+)
 from tests.api.conftest import (
     BASE_URL,
     PUBLIC_URL,
@@ -415,6 +423,53 @@ def test_a_new_email_not_allowed_to_sign_up_is_refused_and_writes_nothing(
     )
 
 
+def _open_to_individuals(client: TestClient) -> None:
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": True})
+
+
+def test_with_individual_sign_up_on_another_email_gets_a_personal_account(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
+    _open_to_individuals(client)
+    assert _sign_in(client, fake_google, email="eve@gmail.com") == (303, JOIN_ACCOUNT_SCREEN)
+    # The made-up name of the personal account is never shown.
+    assert client.get("/auth/google/signup").json() == {
+        "email": "eve@gmail.com",
+        "account_kind": "personal",
+        "account_name": None,
+    }
+
+    response = client.post("/auth/google/signup", json={})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert (body["email"], body["role"], body["account_kind"]) == (
+        "eve@gmail.com",
+        "admin",
+        "personal",
+    )
+    account = db_session.get(Account, body["account_id"])
+    assert account is not None and account.kind is AccountKind.PERSONAL
+    assert _actions(db_session) == [AuditAction.ACCOUNT_CREATED]
+    assert _count(db_session, UserIdentity) == 1
+    assert _me(client) == 200
+
+
+def test_individual_sign_up_turned_off_after_the_callback_is_refused_at_confirmation(
+    client: TestClient, fake_google: FakeGoogle, db_session: Session
+) -> None:
+    _open_to_individuals(client)
+    _sign_in(client, fake_google, email="eve@gmail.com")
+    state = client.app.state  # type: ignore[attr-defined]
+    state.api_settings = state.api_settings.model_copy(update={"individual_signup_enabled": False})
+
+    refused = client.post("/auth/google/signup", json={})
+
+    assert (refused.status_code, refused.json()["detail"]) == (403, SIGNUP_NOT_OPEN)
+    assert (_count(db_session, Account), _count(db_session, User)) == (0, 0)
+
+
 # --- a Google account with no user: join the account ---
 
 
@@ -437,6 +492,7 @@ def test_a_new_google_account_is_sent_to_join_the_account(
     assert (_count(db_session, User), _count(db_session, UserIdentity)) == (0, 0)
     assert client.get("/auth/google/signup").json() == {
         "email": "ann@gmail.com",
+        "account_kind": "shared",
         "account_name": "Example Clinic",
     }
 

@@ -1,23 +1,56 @@
-"""`GET /me` and `POST /me/password`: the logged-in user's own record and password, and 401
-without a valid login."""
+"""`GET /me`, `POST /me/password` and `POST /me/delete-account`: the logged-in user's own
+record, password and personal account, and 401 without a valid login."""
 
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from src.api.dependencies import AUTH_COOKIE_NAME, get_now
 from src.api.login_limit import TOO_MANY_LOGINS
 from src.api.routes import me as me_module
-from src.api.routes.me import NO_PASSWORD_YET, WRONG_CURRENT_PASSWORD
+from src.api.routes.me import (
+    LETTER_STILL_RUNNING,
+    LOGIN_AGAIN,
+    NO_PASSWORD_YET,
+    ONLY_PERSONAL_ACCOUNTS,
+    WRONG_CURRENT_PASSWORD,
+    WRONG_PASSWORD,
+)
 from src.api.schemas import MAX_LOGIN_PASSWORD_CHARACTERS
-from src.db.models import AuditAction, AuditEvent, LoginFailure, LoginKeyKind, User
+from src.db.base import Base
+from src.db.models import (
+    Account,
+    AuditAction,
+    AuditEvent,
+    DraftRevision,
+    IdentityProvider,
+    Job,
+    JobFailure,
+    LlmCall,
+    LlmProvider,
+    LoginFailure,
+    LoginKeyKind,
+    User,
+    UserIdentity,
+)
 from src.db.query import for_account
-from tests.api.conftest import signup_and_verify
+from src.jobs.store import finish_job_failed, start_job
+from tests.api.conftest import (
+    INDIVIDUAL_PASSWORD,
+    RecordingSender,
+    signup_and_verify,
+    signup_individual,
+)
+from tests.drafting.letter_helpers import good_letter
+from tests.jobs.helpers import Member
+from tests.review.helpers import add_job_with_draft, finish_job
 
 PASSWORD = "a-made-up-password"  # noqa: S105  (made up)
 NEW_PASSWORD = "a-new-made-up-password"  # noqa: S105  (made up)
@@ -41,7 +74,15 @@ def test_me_returns_the_user_and_the_account(api_client: TestClient) -> None:
     response = api_client.get("/me")
     assert response.status_code == 200
     assert response.json() == signed_up
-    assert set(signed_up) == {"user_id", "email", "role", "account_id", "account_name"}
+    assert set(signed_up) == {
+        "user_id",
+        "email",
+        "role",
+        "account_id",
+        "account_name",
+        "account_kind",
+    }
+    assert signed_up["account_kind"] == "shared"
 
 
 def test_user_of_account_a_sees_only_account_a(api_client: TestClient) -> None:
@@ -333,4 +374,256 @@ def test_change_password_never_logs_or_answers_a_password(
     assert "password changed: account" in caplog.text
     assert "password change failed" in caplog.text
     for secret in ("a@x.org", WRONG, PASSWORD, NEW_PASSWORD, "testclient"):
+        assert secret not in shown
+
+
+# --- POST /me/delete-account ---
+
+
+def _delete(client: TestClient, password: str | None = INDIVIDUAL_PASSWORD) -> int:
+    body = {} if password is None else {"password": password}
+    return client.post("/me/delete-account", json=body).status_code
+
+
+def _rows_of(session: Session, account_id: object) -> dict[str, int]:
+    """How many rows every business table holds for `account_id`, by table name."""
+    session.expire_all()
+    counts: dict[str, int] = {}
+    for table in Base.metadata.sorted_tables:
+        if "account_id" in table.c:
+            query = select(func.count()).select_from(table).where(table.c.account_id == account_id)
+            counts[table.name] = session.scalar(query) or 0
+    return counts
+
+
+def _account_exists(session: Session, account_id: object) -> bool:
+    session.expire_all()
+    return session.scalar(select(Account.id).where(Account.id == account_id)) is not None
+
+
+def _fill_account(session: Session, user: dict[str, Any]) -> None:
+    """A finished letter with a draft, a revision and a Google link, all in the user's account."""
+    member = Member(account_id=user["account_id"], user_id=user["user_id"])
+    job_id = add_job_with_draft(session, member)
+    finish_job(session, member.account_id, job_id)
+    session.add(
+        DraftRevision(
+            account_id=member.account_id,
+            job_id=job_id,
+            version=1,
+            edited_by=member.user_id,
+            letter=good_letter().model_dump(mode="json"),
+            text_sha256="b" * 64,
+        )
+    )
+    session.add(
+        UserIdentity(
+            account_id=member.account_id,
+            user_id=member.user_id,
+            provider=IdentityProvider.GOOGLE,
+            subject="made-up-google-subject",
+            email_at_link=user["email"],
+        )
+    )
+    session.commit()
+
+
+def _google_only(session: Session, user: dict[str, Any]) -> None:
+    session.execute(update(User).where(User.id == user["user_id"]).values(password_hash=None))
+    session.commit()
+
+
+def test_an_individual_deletes_their_account_and_everything_in_it(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    _fill_account(db_session, user)
+    db_session.add(
+        LlmCall(
+            provider=LlmProvider.PRIMARY,
+            model_name="example-model",
+            prompt_version="v1",
+            purpose="extraction",
+            input_tokens=1,
+            output_tokens=1,
+            cost_usd=Decimal("0.000100"),
+        )
+    )
+    db_session.commit()
+    before = _rows_of(db_session, user["account_id"])
+    for table in ("users", "uploads", "jobs", "upload_drafts", "draft_revisions", "audit_events"):
+        assert before[table] >= 1, table
+    assert before["user_identities"] == 1
+
+    response = api_client.post("/me/delete-account", json={"password": INDIVIDUAL_PASSWORD})
+
+    assert response.status_code == 204
+    assert "max-age=0" in response.headers["set-cookie"].lower()
+    assert not _account_exists(db_session, user["account_id"])
+    assert set(_rows_of(db_session, user["account_id"]).values()) == {0}
+    # The cost record holds no account and no content, so it stays.
+    assert db_session.scalar(select(func.count()).select_from(LlmCall)) == 1
+
+
+def test_the_old_login_stops_working_after_the_delete(
+    api_client: TestClient, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    signup_individual(api_client, sent_mail, "solo@individual.test")
+    cookie = api_client.cookies[AUTH_COOKIE_NAME]
+    assert _delete(api_client) == 204
+    api_client.cookies.set(AUTH_COOKIE_NAME, cookie)
+    assert api_client.get("/me").status_code == 401
+    assert _login(api_client, INDIVIDUAL_PASSWORD, email="solo@individual.test") == 401
+
+
+def test_another_individuals_account_is_left_alone(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    other = signup_individual(api_client, sent_mail, "other@individual.test")
+    _fill_account(db_session, other)
+    before = _rows_of(db_session, other["account_id"])
+    signup_individual(api_client, sent_mail, "solo@individual.test")
+    assert _delete(api_client) == 204
+    assert _account_exists(db_session, other["account_id"])
+    assert _rows_of(db_session, other["account_id"]) == before
+
+
+@pytest.mark.parametrize("password", [WRONG, None, "p" * (MAX_LOGIN_PASSWORD_CHARACTERS + 1)])
+def test_a_wrong_or_missing_password_is_400_counts_and_deletes_nothing(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    clock: _Clock,
+    password: str | None,
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    failures = len(_failure_ids(db_session))
+    response = api_client.post(
+        "/me/delete-account", json={} if password is None else {"password": password}
+    )
+    assert (response.status_code, response.json()) == (400, {"detail": WRONG_PASSWORD})
+    assert _account_exists(db_session, user["account_id"])
+    # One row for the email and one for the IP.
+    assert len(_failure_ids(db_session)) == failures + 2
+
+
+def test_five_wrong_passwords_then_even_the_right_one_is_429(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    for _ in range(5):
+        assert _delete(api_client, WRONG) == 400
+    clock.now = NOW + timedelta(minutes=1)
+    response = api_client.post("/me/delete-account", json={"password": INDIVIDUAL_PASSWORD})
+    assert (response.status_code, response.json()) == (429, {"detail": TOO_MANY_LOGINS})
+    assert response.headers["retry-after"] == str(14 * 60)
+    assert _account_exists(db_session, user["account_id"])
+
+
+def test_a_shared_account_user_is_403_and_nothing_is_deleted(
+    api_client: TestClient, db_session: Session, clock: _Clock
+) -> None:
+    signed_up = _signup(api_client, "One", "a@x.org")
+    failures = _failure_ids(db_session)
+    response = api_client.post("/me/delete-account", json={"password": PASSWORD})
+    assert (response.status_code, response.json()) == (403, {"detail": ONLY_PERSONAL_ACCOUNTS})
+    assert _account_exists(db_session, signed_up["account_id"])
+    # Refused before the password is looked at, so nothing counts.
+    assert _failure_ids(db_session) == failures
+
+
+@pytest.mark.parametrize(("minutes", "status"), [(9, 204), (11, 403)])
+def test_a_google_only_user_must_have_logged_in_within_ten_minutes(
+    api_client: TestClient,
+    db_session: Session,
+    sent_mail: RecordingSender,
+    clock: _Clock,
+    minutes: int,
+    status: int,
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    _google_only(db_session, user)
+    failures = _failure_ids(db_session)
+    # The login cookie was issued at the real time; the app's clock moves on from there.
+    clock.now = datetime.now(UTC) + timedelta(minutes=minutes)
+    response = api_client.post("/me/delete-account", json={})
+    assert response.status_code == status
+    assert _account_exists(db_session, user["account_id"]) is (status == 403)
+    if status == 403:
+        assert response.json() == {"detail": LOGIN_AGAIN}
+        # Nothing was guessed, so nothing new counts (older rows may be cleared).
+        assert set(_failure_ids(db_session)) <= set(failures)
+
+
+def test_an_unfinished_letter_is_409_and_nothing_is_deleted(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    account_id = user["account_id"]
+    uploaded = api_client.post(
+        "/uploads",
+        files={"file": ("letter.txt", b"Made-up denial letter, claim 999.\n", "text/plain")},
+        data={"no_personal_data": "true"},
+    )
+    assert uploaded.status_code == 202, uploaded.text
+    job_id = db_session.scalars(select(Job.id).where(Job.account_id == account_id)).one()
+    response = api_client.post("/me/delete-account", json={"password": INDIVIDUAL_PASSWORD})
+    assert (response.status_code, response.json()) == (409, {"detail": LETTER_STILL_RUNNING})
+    assert start_job(db_session, account_id, job_id)
+    db_session.commit()
+    assert _delete(api_client) == 409
+    assert _account_exists(db_session, account_id)
+    assert finish_job_failed(
+        db_session, account_id, job_id, JobFailure.INTERNAL_ERROR, Decimal("0")
+    )
+    db_session.commit()
+    assert _delete(api_client) == 204
+
+
+def test_delete_without_a_login_is_401(api_client: TestClient, clock: _Clock) -> None:
+    assert _delete(api_client) == 401
+
+
+def test_the_account_cannot_be_named_in_the_body(
+    api_client: TestClient, db_session: Session, sent_mail: RecordingSender, clock: _Clock
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    response = api_client.post(
+        "/me/delete-account",
+        json={"password": INDIVIDUAL_PASSWORD, "account_id": user["account_id"] + 1},
+    )
+    assert response.status_code == 422
+    assert _account_exists(db_session, user["account_id"])
+
+
+def test_user_deleted_before_the_delete_is_401(
+    api_client: TestClient,
+    sent_mail: RecordingSender,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signup_individual(api_client, sent_mail, "solo@individual.test")
+    # The row lookup inside the route finds nothing, as if the user was deleted meanwhile.
+    monkeypatch.setattr(me_module, "for_account", lambda model, _account_id: for_account(model, -1))
+    assert _delete(api_client) == 401
+
+
+def test_delete_logs_the_account_id_only(
+    api_client: TestClient,
+    sent_mail: RecordingSender,
+    clock: _Clock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user = signup_individual(api_client, sent_mail, "solo@individual.test")
+    caplog.set_level(logging.INFO)
+    responses = [
+        api_client.post("/me/delete-account", json={"password": password})
+        for password in (WRONG, INDIVIDUAL_PASSWORD)
+    ]
+    assert [response.status_code for response in responses] == [400, 204]
+    assert f"account deleted: account {user['account_id']}" in caplog.text
+    shown = caplog.text + "".join(
+        response.text + str(dict(response.headers)) for response in responses
+    )
+    for secret in ("solo@individual.test", WRONG, INDIVIDUAL_PASSWORD, "testclient"):
         assert secret not in shown

@@ -1,8 +1,8 @@
-"""Sign-up adds the user to the one shared account, only for allowed emails, and audits the
-joining only once the email is confirmed."""
+"""Sign-up adds an allowed email's user to the one shared account and any other user (while
+individual sign-up is on) to a new personal account, and audits the joining only once the email
+is confirmed."""
 
 import threading
-import time
 from datetime import UTC, datetime
 
 import pytest
@@ -17,13 +17,14 @@ from src.api.passwords import verify_password
 from src.api.signup import (
     EmailTakenError,
     create_member,
-    may_sign_up,
     record_joined,
     shared_account_id,
+    signup_kind,
 )
 from src.config.settings import ApiSettings
 from src.db.models import (
     Account,
+    AccountKind,
     AuditAction,
     AuditEvent,
     EmailCode,
@@ -31,7 +32,7 @@ from src.db.models import (
     User,
     UserRole,
 )
-from tests.api.conftest import add_old_unverified_admin, api_settings
+from tests.api.conftest import add_old_unverified_admin, api_settings, waits_on_a_lock
 
 # The users made here count as having confirmed their email.
 VERIFIED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -58,7 +59,12 @@ def _counts(session: Session) -> tuple[int, int]:
 
 def _member(session: Session, email: str, verified_at: datetime | None = VERIFIED_AT) -> User:
     return create_member(
-        session, settings=ALLOW_X, email=email, password=PASSWORD, verified_at=verified_at
+        session,
+        settings=ALLOW_X,
+        kind=AccountKind.SHARED,
+        email=email,
+        password=PASSWORD,
+        verified_at=verified_at,
     )
 
 
@@ -82,7 +88,23 @@ def _actions(session: Session) -> list[tuple[int, AuditAction]]:
 def test_only_admins_and_allowed_emails_or_domains_may_sign_up(
     settings: ApiSettings, email: str, allowed: bool
 ) -> None:
-    assert may_sign_up(settings, email) is allowed
+    assert signup_kind(settings, email) is (AccountKind.SHARED if allowed else None)
+
+
+@pytest.mark.parametrize(
+    ("email", "kind"),
+    [
+        (ADMIN, AccountKind.SHARED),
+        ("bob@x.org", AccountKind.SHARED),
+        ("bob@notx.org", AccountKind.PERSONAL),
+        ("bob@sub.x.org", AccountKind.PERSONAL),
+    ],
+)
+def test_with_individual_sign_up_on_any_other_email_gets_a_personal_account(
+    email: str, kind: AccountKind
+) -> None:
+    settings = ALLOW_X.model_copy(update={"individual_signup_enabled": True})
+    assert signup_kind(settings, email) is kind
 
 
 def test_the_first_member_creates_the_shared_account_with_a_hashed_password(
@@ -115,7 +137,12 @@ def test_an_existing_account_of_that_name_is_joined_not_added_again(session: Ses
 
 def test_a_google_only_member_has_no_password(session: Session) -> None:
     user = create_member(
-        session, settings=ALLOW_X, email="ann@x.org", password=None, verified_at=VERIFIED_AT
+        session,
+        settings=ALLOW_X,
+        kind=AccountKind.SHARED,
+        email="ann@x.org",
+        password=None,
+        verified_at=VERIFIED_AT,
     )
     assert user.password_hash is None
 
@@ -252,25 +279,57 @@ def test_the_first_to_confirm_creates_the_account_not_the_first_to_sign_up(
     assert early.id != late.id
 
 
+def _individual(session: Session, email: str, verified_at: datetime | None = VERIFIED_AT) -> User:
+    return create_member(
+        session,
+        settings=ALLOW_X,
+        kind=AccountKind.PERSONAL,
+        email=email,
+        password=PASSWORD,
+        verified_at=verified_at,
+    )
+
+
+def test_an_individual_gets_a_new_personal_account_of_their_own(session: Session) -> None:
+    team = _member(session, "ann@x.org")
+    ann = _individual(session, "ann@elsewhere.test")
+    bob = _individual(session, "bob@elsewhere.test")
+
+    accounts = {account.id: account for account in session.scalars(select(Account))}
+    assert len({team.account_id, ann.account_id, bob.account_id}) == 3
+    assert accounts[team.account_id].kind is AccountKind.SHARED
+    for user in (ann, bob):
+        account = accounts[user.account_id]
+        assert account.kind is AccountKind.PERSONAL
+        assert account.name.startswith(signup.PERSONAL_ACCOUNT_PREFIX)
+        assert account.name != SHARED
+        # Stored as reviewer like every sign-up; the personal account makes the admin.
+        assert user.role is UserRole.REVIEWER
+
+
+def test_an_individuals_first_confirmation_creates_their_account(session: Session) -> None:
+    ann = _individual(session, "ann@elsewhere.test")
+    record_joined(session, ann)
+    session.flush()
+    assert _actions(session) == [(ann.id, AuditAction.ACCOUNT_CREATED)]
+
+
+def test_an_unverified_individual_is_replaced_with_their_personal_account(
+    session: Session,
+) -> None:
+    old = _individual(session, "ann@elsewhere.test", verified_at=None)
+    old_account_id = old.account_id
+    user = _individual(session, "ann@elsewhere.test", verified_at=None)
+    session.expire_all()
+    assert session.get(Account, old_account_id) is None
+    assert user.account_id != old_account_id
+    assert _counts(session) == (1, 1)
+
+
 def test_sign_up_itself_writes_no_audit_event(session: Session) -> None:
     _member(session, "ann@x.org", verified_at=None)
     _member(session, "bob@x.org")
     assert _actions(session) == []
-
-
-def _waits_on_a_lock(engine: Engine, pid: int, timeout: float = 5.0) -> bool:
-    """True once backend `pid` waits on a lock; False after `timeout` seconds."""
-    deadline = time.monotonic() + timeout
-    with engine.connect() as watcher:
-        while time.monotonic() < deadline:
-            waiting = watcher.scalar(
-                text("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = :pid"),
-                {"pid": pid},
-            )
-            if waiting:
-                return True
-            time.sleep(0.02)
-    return False
 
 
 def test_two_sign_ups_at_the_same_moment_join_one_account(engine: Engine) -> None:
@@ -284,7 +343,7 @@ def test_two_sign_ups_at_the_same_moment_join_one_account(engine: Engine) -> Non
             assert second_pid is not None
             worker = threading.Thread(target=lambda: found.append(shared_account_id(second, name)))
             worker.start()
-            assert _waits_on_a_lock(engine, second_pid)
+            assert waits_on_a_lock(engine, second_pid)
             first.commit()
             worker.join(timeout=5)
             second.rollback()

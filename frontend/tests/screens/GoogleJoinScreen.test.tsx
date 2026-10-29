@@ -2,11 +2,26 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { ADMIN, EMPTY_WORKLIST, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
+import {
+  ADMIN,
+  EMPTY_WORKLIST,
+  INDIVIDUAL,
+  jsonResponse,
+  renderAt,
+  sentBody,
+  stubApi,
+} from "../helpers";
 import type { Answer } from "../helpers";
 
 const PATH = "/app/google/name-account";
-const PENDING = () => jsonResponse(200, { email: ADMIN.email, account_name: ADMIN.account_name });
+const PENDING = () =>
+  jsonResponse(200, {
+    email: ADMIN.email,
+    account_kind: "shared",
+    account_name: ADMIN.account_name,
+  });
+const PENDING_PERSONAL = () =>
+  jsonResponse(200, { email: INDIVIDUAL.email, account_kind: "personal", account_name: null });
 const EXPIRED = () =>
   jsonResponse(401, { detail: "the Google sign-up has expired; continue with Google again" });
 
@@ -114,5 +129,23 @@ describe("GoogleJoinScreen", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Something went wrong on the server. Try again later.",
     );
+  });
+
+  it("offers an individual their own personal space, then creates it", async () => {
+    const fetchStub = stubSignup(PENDING_PERSONAL, () => jsonResponse(201, INDIVIDUAL));
+    const { router } = renderAt(PATH);
+
+    expect(
+      await screen.findByRole("heading", { name: "Create your personal space" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Create your personal space as/)).toHaveTextContent(
+      `Create your personal space as ${INDIVIDUAL.email}?`,
+    );
+    expect(screen.queryByRole("button", { name: "Join" })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/worklist");
+    expect(sentBody(fetchStub, "POST /auth/google/signup")).toEqual({});
   });
 });

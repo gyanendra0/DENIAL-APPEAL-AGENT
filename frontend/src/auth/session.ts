@@ -1,6 +1,6 @@
 // The session is the answer of `GET /me`, kept in the query cache under one key. Login, the
 // emailed code that confirms a sign-up and a Google sign-up write the user they get back into it;
-// logout sets it to null. Each of them, and opening the login screen (where a 401 from any call
+// logout and deleting the account set it to null. Each of them, and opening the login screen (where a 401 from any call
 // leads), empties the rest of the cache, so no screen shows data of another user.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import {
   askPasswordReset,
   changePassword,
   confirmPasswordReset,
+  deleteAccount,
   fetchAuthOptions,
   fetchGoogleSignup,
   fetchMe,
@@ -21,6 +22,7 @@ import {
   verifyEmail,
 } from "../api/auth";
 import type {
+  AccountDeleteInput,
   LoginInput,
   PasswordChangeInput,
   PasswordResetAskInput,
@@ -116,6 +118,18 @@ export function useLogout() {
     onSuccess: () => {
       // Known to be logged out: the guard sends the user to login without asking `/me` again.
       // Removing the session query instead would make the mounted screens fetch it at once.
+      queryClient.setQueryData(SESSION_KEY, null);
+      clearAccountData(queryClient);
+    },
+  });
+}
+
+// The account is gone and the API cleared the cookie: the same end as a logout.
+export function useDeleteAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: AccountDeleteInput) => deleteAccount(input),
+    onSuccess: () => {
       queryClient.setQueryData(SESSION_KEY, null);
       clearAccountData(queryClient);
     },

@@ -418,6 +418,23 @@ button.app-logout:hover:not(:disabled) {
   font-weight: 600;
 }
 
+/* A label with its checkbox on one line, the box first. */
+.form label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A sentence the user must read before acting: the letter rules at upload, a delete warning. */
+.notice {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: var(--border-hairline) solid var(--color-border-strong);
+  border-left: 4px solid var(--color-accent);
+  border-radius: var(--radius-control);
+}
+
 input,
 select,
 textarea {

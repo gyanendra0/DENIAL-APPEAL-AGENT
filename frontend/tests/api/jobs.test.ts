@@ -4,7 +4,7 @@ import { fetchJob, uploadLetter } from "../../src/api/jobs";
 import { jsonResponse, stubApi } from "../helpers";
 
 describe("uploadLetter", () => {
-  it("sends the file as the multipart field `file` and lets the browser set the headers", async () => {
+  it("sends the file and the no-personal-data confirmation and lets the browser set the headers", async () => {
     const fetchStub = stubApi({
       "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
     });
@@ -16,6 +16,7 @@ describe("uploadLetter", () => {
     expect(init?.headers).toBeUndefined();
     expect(init?.body).toBeInstanceOf(FormData);
     expect((init?.body as FormData).get("file")).toBe(file);
+    expect((init?.body as FormData).get("no_personal_data")).toBe("true");
   });
 });
 

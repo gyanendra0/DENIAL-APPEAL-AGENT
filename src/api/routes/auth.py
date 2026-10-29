@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import (
-    AUTH_COOKIE_NAME,
     get_api_settings,
     get_mail_sender,
     get_now,
@@ -26,7 +25,7 @@ from src.api.email_verification import (
     prepare_verify_email,
 )
 from src.api.login import authenticate
-from src.api.login_cookie import set_login_cookie
+from src.api.login_cookie import clear_login_cookie, set_login_cookie
 from src.api.login_limit import (
     clear_email_failures,
     count_ip_try,
@@ -47,7 +46,7 @@ from src.api.schemas import (
     SignupRequest,
     UserResponse,
 )
-from src.api.signup import EmailTakenError, create_member, may_sign_up
+from src.api.signup import EmailTakenError, create_member, signup_kind
 from src.api.user_lookup import find_user_response
 from src.api.verify_cookie import set_verify_cookie
 from src.config.settings import ApiSettings
@@ -97,7 +96,8 @@ def signup(
     now: Now,
     sender: Sender,
 ) -> UserResponse:
-    """Add a user to the shared account (email not confirmed yet) and email the user a code.
+    """Add a user to the shared account, or to a new personal account of their own (email not
+    confirmed yet), and email the user a code.
     Does not log in; sets the `email_verify` cookie for the code screen. Nothing is audited
     until the code is typed.
 
@@ -113,13 +113,15 @@ def signup(
     with session_scope(factory) as session:
         retry_after = refuse_over_ip_limit(session, ip_hash, row_id, now=now, settings=settings)
         if retry_after is None:
-            if not may_sign_up(settings, body.email):
+            kind = signup_kind(settings, body.email)
+            if kind is None:
                 logger.info("sign-up refused: email not allowed")
                 raise HTTPException(status.HTTP_403_FORBIDDEN, SIGNUP_NOT_OPEN)
             try:
                 user = create_member(
                     session,
                     settings=settings,
+                    kind=kind,
                     email=body.email,
                     password=body.password,
                     verified_at=None,
@@ -246,10 +248,4 @@ def login(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(response: Response, settings: Settings) -> None:
     """Clear the login cookie. The token itself stays valid until it expires."""
-    response.delete_cookie(
-        AUTH_COOKIE_NAME,
-        path="/",
-        secure=settings.auth_cookie_secure,
-        httponly=True,
-        samesite="strict",
-    )
+    clear_login_cookie(response, settings)

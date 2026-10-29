@@ -2,6 +2,7 @@ import { useParams } from "react-router";
 
 import { ApiError } from "../api/client";
 import type { JobDetail } from "../api/types";
+import { useSession } from "../auth/session";
 import { AnalysisSection } from "../detail/AnalysisSection";
 import { DraftView } from "../detail/DraftView";
 import { ExtractionTable } from "../detail/ExtractionTable";
@@ -83,11 +84,19 @@ function JobDetailView({ jobId }: { jobId: number }) {
 }
 
 function SplitView({ detail }: { detail: JobDetail }) {
+  const session = useSession();
+
   return (
     <>
       <h1>
         Job {detail.job_id}: {detail.file_name}
       </h1>
+      {session.data?.account_kind === "personal" && (
+        <p className="notice">
+          This is an estimate, not legal or medical advice. Nothing is sent to your insurer; you
+          decide what to do with the letter.
+        </p>
+      )}
       <div className="split">
         <div>
           <section aria-label="Letter">

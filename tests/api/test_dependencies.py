@@ -25,13 +25,14 @@ from src.api.dependencies import (
 )
 from src.api.tokens import issue_token
 from src.config.settings import ApiSettings
-from src.db.models import Account, User, UserRole
+from src.db.models import Account, AccountKind, User, UserRole
 from src.db.session import create_session_factory
 from src.jobs.store import JobScope
 
 SECRET = "a-made-up-test-secret-of-forty-characters"  # noqa: S105  (made up, not a real secret)
 OTHER_SECRET = "another-made-up-secret-of-forty-characters"  # noqa: S105  (made up)
 FAKE_HASH = "not-used-here"  # noqa: S105  (these tests never check a password)
+LOGGED_IN_AT = datetime(2026, 10, 29, 9, 0, tzinfo=UTC)
 
 # Every session the app's factory opened, so a test can see whether one is still in a transaction.
 _opened: list[Session] = []
@@ -95,8 +96,14 @@ def client(session: Session) -> Iterator[TestClient]:
         yield test_client
 
 
-def _user(session: Session, account_name: str, email: str, role: UserRole) -> User:
-    account = Account(name=account_name)
+def _user(
+    session: Session,
+    account_name: str,
+    email: str,
+    role: UserRole,
+    kind: AccountKind = AccountKind.SHARED,
+) -> User:
+    account = Account(name=account_name, kind=kind)
     session.add(account)
     session.flush()
     user = User(account_id=account.id, email=email, password_hash=FAKE_HASH, role=role)
@@ -127,16 +134,20 @@ def _login(
 
 def test_valid_cookie_gives_the_current_user(client: TestClient, session: Session) -> None:
     user = _user(session, "Clinic A", "a@example.com", UserRole.REVIEWER)
-    _login(client, user_id=user.id, account_id=user.account_id)
+    logged_in = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=30)
+    _login(client, user_id=user.id, account_id=user.account_id, now=logged_in)
 
     response = client.get("/whoami")
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert datetime.fromisoformat(body.pop("logged_in_at")) == logged_in
+    assert body == {
         "user_id": user.id,
         "account_id": user.account_id,
         "email": "a@example.com",
         "role": "reviewer",
+        "account_kind": "shared",
     }
 
 
@@ -255,6 +266,15 @@ def test_a_stored_admin_not_in_admin_emails_acts_as_reviewer(
     assert client.get("/reviewers").status_code == 200
 
 
+def test_an_individual_acts_as_admin_of_their_personal_account(
+    client: TestClient, session: Session
+) -> None:
+    user = _user(session, "personal-a", "a@example.com", UserRole.REVIEWER, AccountKind.PERSONAL)
+    _login(client, user_id=user.id, account_id=user.account_id)
+    assert client.get("/whoami").json()["role"] == UserRole.ADMIN
+    assert client.get("/admin-only").status_code == 200
+
+
 def test_removing_an_email_from_admin_emails_demotes_on_the_next_request(
     client: TestClient, session: Session
 ) -> None:
@@ -331,11 +351,25 @@ def test_session_dependency_uses_the_factory_on_app_state(engine: Engine) -> Non
 
 
 def test_an_admins_job_scope_is_the_whole_account() -> None:
-    admin = CurrentUser(user_id=7, account_id=3, email="admin@x.org", role=UserRole.ADMIN)
+    admin = CurrentUser(
+        user_id=7,
+        account_id=3,
+        email="admin@x.org",
+        role=UserRole.ADMIN,
+        account_kind=AccountKind.SHARED,
+        logged_in_at=LOGGED_IN_AT,
+    )
     assert job_scope(admin) == JobScope(account_id=3, owner_id=None)
 
 
 @pytest.mark.parametrize("role", [UserRole.VIEWER, UserRole.REVIEWER])
 def test_a_non_admins_job_scope_is_their_own_uploads(role: UserRole) -> None:
-    user = CurrentUser(user_id=7, account_id=3, email="member@x.org", role=role)
+    user = CurrentUser(
+        user_id=7,
+        account_id=3,
+        email="member@x.org",
+        role=role,
+        account_kind=AccountKind.SHARED,
+        logged_in_at=LOGGED_IN_AT,
+    )
     assert job_scope(user) == JobScope(account_id=3, owner_id=7)

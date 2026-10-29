@@ -37,9 +37,10 @@ from src.api.google_oidc import GoogleOidc, GoogleSignInError
 from src.api.login_cookie import set_login_cookie
 from src.api.routes.auth import EMAIL_TAKEN, SIGNUP_NOT_OPEN
 from src.api.schemas import AuthOptions, GoogleSignupInfo, GoogleSignupRequest, UserResponse
-from src.api.signup import EmailTakenError, may_sign_up, record_joined
+from src.api.signup import EmailTakenError, record_joined, signup_kind
 from src.api.user_lookup import find_user_response
 from src.config.settings import ApiSettings
+from src.db.models import AccountKind
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ def callback(
     except GoogleRefusedError as refused:
         return _refuse(refused.reason, settings)
     if user is None:
-        if not may_sign_up(settings, identity.email):
+        if signup_kind(settings, identity.email) is None:
             return _refuse(GoogleRefusal.NOT_ALLOWED, settings)
         pending = PendingSignup(subject=identity.subject, email=identity.email)
         response = _redirect(JOIN_ACCOUNT_SCREEN, settings)
@@ -221,11 +222,15 @@ def _pending_signup(request: Request, settings: ApiSettings, now: datetime) -> P
 def signup_info(
     request: Request, _google: Google, settings: Settings, now: Now
 ) -> GoogleSignupInfo:
-    """Say which verified Google email the pending sign-up will use and which account it will
-    join, or 401 if there is none."""
+    """Say which verified Google email the pending sign-up will use and which kind of account it
+    will join (with the shared account's name; a personal account's is never shown), or 401 if
+    there is none. An email no longer allowed reads as personal or shared like any other; the
+    sign-up itself refuses it."""
+    email = _pending_signup(request, settings, now).email
+    if signup_kind(settings, email) is AccountKind.PERSONAL:
+        return GoogleSignupInfo(email=email, account_kind=AccountKind.PERSONAL, account_name=None)
     return GoogleSignupInfo(
-        email=_pending_signup(request, settings, now).email,
-        account_name=settings.shared_account_name,
+        email=email, account_kind=AccountKind.SHARED, account_name=settings.shared_account_name
     )
 
 
@@ -239,17 +244,23 @@ def signup(
     session: DbSession,
     now: Now,
 ) -> UserResponse:
-    """Add the user (no password) to the shared account with the Google link, audit that the
-    user created or joined the account, and log that user in. The email and the Google account
-    come from the cookie; the body is empty. An email the settings no longer allow is refused
-    (403) and nothing is created."""
+    """Add the user (no password) to the shared account or a new personal account with the
+    Google link, audit that the user created or joined the account, and log that user in. The
+    email and the Google account come from the cookie; the body is empty. An email the settings
+    no longer allow is refused (403) and nothing is created."""
     pending = _pending_signup(request, settings, now)
-    if not may_sign_up(settings, pending.email):
+    kind = signup_kind(settings, pending.email)
+    if kind is None:
         logger.info("google sign-up refused: email not allowed")
         raise HTTPException(status.HTTP_403_FORBIDDEN, SIGNUP_NOT_OPEN)
     try:
         user = create_google_member(
-            session, settings=settings, subject=pending.subject, email=pending.email, now=now
+            session,
+            settings=settings,
+            kind=kind,
+            subject=pending.subject,
+            email=pending.email,
+            now=now,
         )
     except EmailTakenError:
         raise HTTPException(status.HTTP_409_CONFLICT, EMAIL_TAKEN) from None

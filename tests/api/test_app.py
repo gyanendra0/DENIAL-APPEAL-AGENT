@@ -195,6 +195,7 @@ def test_routes_are_registered() -> None:
         "/auth/verify-email/resend",
         "/me",
         "/me/password",
+        "/me/delete-account",
         "/users/{user_id}",
         "/uploads",
         "/jobs/{job_id}",

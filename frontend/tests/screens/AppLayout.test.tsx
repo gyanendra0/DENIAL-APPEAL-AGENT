@@ -7,6 +7,7 @@ import { worklistKey } from "../../src/worklist/useWorklist";
 import {
   EMPTY_WORKLIST,
   ADMIN,
+  INDIVIDUAL,
   REVIEWER,
   VIEWER,
   jsonResponse,
@@ -23,6 +24,15 @@ describe("AppLayout", () => {
     expect(
       await screen.findByText("Made-up Clinic · ada@example.test (admin)"),
     ).toBeInTheDocument();
+  });
+
+  it("shows Personal for an individual and never the made-up account name", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, INDIVIDUAL) });
+
+    renderAt("/app/worklist");
+
+    expect(await screen.findByText("Personal · lin@individual.test (admin)")).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(INDIVIDUAL.account_name))).not.toBeInTheDocument();
   });
 
   it("logs out, empties the cache and goes to login", async () => {

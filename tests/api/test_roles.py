@@ -3,16 +3,17 @@
 import pytest
 
 from src.api.roles import DECIDE_ROLES, EDIT_ROLES, UPLOAD_ROLES, effective_role
-from src.db.models import UserRole
+from src.db.models import AccountKind, UserRole
 from tests.api.conftest import api_settings
 
 # The test settings list `admin@example.test` only.
 SETTINGS = api_settings()
+SHARED = AccountKind.SHARED
 
 
 @pytest.mark.parametrize("stored", list(UserRole))
 def test_a_listed_email_acts_as_admin_whatever_is_stored(stored: UserRole) -> None:
-    assert effective_role(SETTINGS, "admin@example.test", stored) is UserRole.ADMIN
+    assert effective_role(SETTINGS, "admin@example.test", stored, SHARED) is UserRole.ADMIN
 
 
 @pytest.mark.parametrize(
@@ -26,12 +27,17 @@ def test_a_listed_email_acts_as_admin_whatever_is_stored(stored: UserRole) -> No
 def test_an_unlisted_email_keeps_its_stored_role_but_never_admin(
     stored: UserRole, acts_as: UserRole
 ) -> None:
-    assert effective_role(SETTINGS, "ann@x.org", stored) is acts_as
+    assert effective_role(SETTINGS, "ann@x.org", stored, SHARED) is acts_as
 
 
 def test_the_list_is_compared_lowercased_like_a_stored_email() -> None:
     listed = SETTINGS.model_copy(update={"admin_emails": " Ann@X.org "})
-    assert effective_role(listed, "ann@x.org", UserRole.VIEWER) is UserRole.ADMIN
+    assert effective_role(listed, "ann@x.org", UserRole.VIEWER, SHARED) is UserRole.ADMIN
+
+
+@pytest.mark.parametrize("stored", list(UserRole))
+def test_an_individual_acts_as_admin_of_their_personal_account(stored: UserRole) -> None:
+    assert effective_role(SETTINGS, "ann@x.org", stored, AccountKind.PERSONAL) is UserRole.ADMIN
 
 
 @pytest.mark.parametrize(

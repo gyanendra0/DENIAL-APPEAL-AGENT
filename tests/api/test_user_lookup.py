@@ -5,8 +5,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from src.api.signup import create_member
 from src.api.user_lookup import find_user_response
-from src.db.models import UserRole
+from src.db.models import AccountKind, UserRole
 from tests.api.conftest import add_member, api_settings
 
 # The users made here count as having confirmed their email.
@@ -30,7 +31,24 @@ def test_returns_the_user_with_the_account_name(session: Session) -> None:
         "role": UserRole.REVIEWER,
         "account_id": user.account_id,
         "account_name": "One",
+        "account_kind": AccountKind.SHARED,
     }
+
+
+def test_reports_an_individual_as_admin_of_their_personal_account(session: Session) -> None:
+    user = create_member(
+        session,
+        settings=SETTINGS,
+        kind=AccountKind.PERSONAL,
+        email="ann@elsewhere.test",
+        password=PASSWORD,
+        verified_at=VERIFIED_AT,
+    )
+    found = find_user_response(
+        session, settings=SETTINGS, account_id=user.account_id, user_id=user.id
+    )
+    assert found is not None
+    assert (found.role, found.account_kind) == (UserRole.ADMIN, AccountKind.PERSONAL)
 
 
 def test_reports_admin_for_an_email_in_admin_emails_not_the_stored_role(session: Session) -> None:

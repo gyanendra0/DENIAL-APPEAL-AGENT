@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -41,7 +41,8 @@ function inTurn(jobs: JobResponse[]): Answer {
 }
 
 // The checkbox every upload needs: the letter holds no real personal details.
-const CONFIRMATION = "I confirm this letter holds no real personal details";
+const CONFIRMATION =
+  "I confirm this letter holds no real names, member ids, claim numbers or dates of birth";
 
 function letter(): File {
   return new File(["Made-up denial letter"], "letter.txt", { type: "text/plain" });
@@ -59,7 +60,58 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function dropZone(): HTMLElement {
+  const zone = screen.getByLabelText("Denial letter").closest(".dropzone");
+  if (!(zone instanceof HTMLElement)) {
+    throw new Error("no drop zone");
+  }
+  return zone;
+}
+
 describe("UploadScreen", () => {
+  it("takes a dropped letter like a picked one, and refuses a dropped wrong file", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+    await screen.findByLabelText("Denial letter");
+    await user.click(screen.getByLabelText(CONFIRMATION));
+
+    const image = new File(["made-up"], "scan.png", { type: "image/png" });
+    fireEvent.drop(dropZone(), { dataTransfer: { files: [image] } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Only a .txt file or a PDF can be uploaded.",
+    );
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+
+    fireEvent.drop(dropZone(), { dataTransfer: { files: [letter()] } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("letter.txt")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
+  });
+
+  it("turns Upload off again when the chosen letter is removed", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+    await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(screen.queryByText("letter.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+  });
+
+  it("says the limit in the hint under the drop zone", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    renderAt("/app/upload");
+
+    expect(await screen.findByLabelText("Denial letter")).toHaveAccessibleDescription(
+      ".txt or .pdf with text, up to 1 MB",
+    );
+  });
+
   it("uploads a letter, polls the job until it ends and then stops", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchStub = stubApi({
@@ -273,7 +325,7 @@ describe("UploadScreen", () => {
     const user = userEvent.setup();
     renderAt("/app/upload");
 
-    expect(await screen.findByText(/black out every personal detail/)).toBeInTheDocument();
+    expect(await screen.findByLabelText(CONFIRMATION)).not.toBeChecked();
     await user.upload(screen.getByLabelText("Denial letter"), letter());
     const button = screen.getByRole("button", { name: "Upload" });
     expect(button).toBeDisabled();

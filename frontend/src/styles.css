@@ -592,6 +592,190 @@ button:disabled {
   cursor: default;
 }
 
+/* The upload and account screens: one card in the middle of the space beside the sidebar. */
+.centered-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 64px);
+}
+
+.screen-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.screen-card.wide {
+  max-width: 960px;
+  padding: 48px;
+}
+
+.screen-card h1 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.card-lead {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+/* A part of a card under a thin line, with a small label instead of a big heading. */
+.card-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid var(--color-border);
+}
+
+.card-section h2 {
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.card-section > .form {
+  align-self: stretch;
+}
+
+/* The upload card keeps its parts in the middle; the button is as wide as its text. */
+.upload-card {
+  text-align: center;
+}
+
+.upload-card .form,
+.upload-card .card-section {
+  align-items: center;
+}
+
+.upload-card .form > label,
+.upload-card .dropzone {
+  align-self: stretch;
+}
+
+/* The upload drop zone: a dashed area that is the label of a hidden (not removed) file input. */
+.dropzone {
+  position: relative;
+}
+
+.dropzone-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  opacity: 0;
+}
+
+.dropzone-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 64px var(--space-4);
+  border: 2px dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  font-size: var(--text-interface);
+  font-weight: 400;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition:
+    background-color var(--motion-interaction) var(--motion-easing),
+    border-color var(--motion-interaction) var(--motion-easing);
+}
+
+.dropzone-area:hover,
+.dropzone.is-dragging .dropzone-area {
+  border-color: var(--color-accent);
+  background: var(--color-focus-glow);
+}
+
+.dropzone.has-file .dropzone-area {
+  border-style: solid;
+  border-color: var(--color-accent);
+  background: var(--color-card);
+}
+
+.dropzone-input:focus-visible + .dropzone-area {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.dropzone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--color-focus-glow);
+  color: var(--color-accent);
+}
+
+.dropzone-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.dropzone-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.dropzone-browse {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.dropzone-hint {
+  font-size: var(--text-metadata);
+}
+
+.dropzone-remove {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: var(--text-small);
+}
+
+.upload-card .form label.checkbox {
+  align-items: flex-start;
+  text-align: left;
+  font-weight: 400;
+}
+
+.upload-card .links {
+  justify-content: center;
+}
+
+/* On a phone the card starts at the top, under the bar. */
+@media (max-width: 760px) {
+  .centered-screen {
+    align-items: flex-start;
+    min-height: 0;
+  }
+
+  .screen-card {
+    padding: var(--space-4);
+  }
+}
+
 button.secondary {
   background: var(--color-card);
   border-color: var(--color-border-strong);
@@ -932,11 +1116,6 @@ textarea {
 .auth-form {
   margin-top: 20px;
   text-align: left;
-}
-
-/* The change password form on the account screen keeps the login form's width. */
-.account-form {
-  max-width: 420px;
 }
 
 .auth-panel {

@@ -47,11 +47,16 @@ export function AccountScreen() {
   const showsPassword = !(showsDelete && form === "delete");
 
   return (
-    <>
-      <h1>Account</h1>
-      {showsPassword && <PasswordChange key={`password-${form}`} startOpen={form === "password"} />}
-      {showsDelete && <DeleteAccount key={`delete-${form}`} startOpen={form === "delete"} />}
-    </>
+    <div className="centered-screen">
+      <div className="screen-card">
+        <h1>Account</h1>
+        {session.data && <p className="muted card-lead">{session.data.email}</p>}
+        {showsPassword && (
+          <PasswordChange key={`password-${form}`} startOpen={form === "password"} />
+        )}
+        {showsDelete && <DeleteAccount key={`delete-${form}`} startOpen={form === "delete"} />}
+      </div>
+    </div>
   );
 }
 
@@ -93,8 +98,8 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
   }
 
   return (
-    <>
-      <h2>Change password</h2>
+    <section className="card-section" aria-label="Password">
+      <h2>Password</h2>
       {changeMutation.isSuccess && (
         <p role="status">Your password is changed. Other sessions are logged out.</p>
       )}
@@ -110,7 +115,7 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
           Change password
         </button>
       ) : (
-        <form className="form account-form" noValidate onSubmit={onSubmit}>
+        <form className="form" noValidate onSubmit={onSubmit}>
           <PasswordField
             label="Current password"
             name="currentPassword"
@@ -151,7 +156,7 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
           </button>
         </form>
       )}
-    </>
+    </section>
   );
 }
 
@@ -176,14 +181,14 @@ function DeleteAccount({ startOpen }: { startOpen: boolean }) {
   }
 
   return (
-    <section aria-label="Delete my account">
-      <h2>Delete my account</h2>
+    <section className="card-section" aria-label="Delete my account">
+      <h2>Delete account</h2>
       {!confirming ? (
         <button type="button" className="secondary" onClick={() => setConfirming(true)}>
           Delete my account
         </button>
       ) : (
-        <form className="form account-form" noValidate onSubmit={onSubmit}>
+        <form className="form" noValidate onSubmit={onSubmit}>
           <p className="notice">
             This deletes your account, every letter you uploaded and every draft. It cannot be
             undone.

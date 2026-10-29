@@ -7,6 +7,7 @@ import {
   CloseIcon,
   EyeIcon,
   EyeOffIcon,
+  FileIcon,
   GoogleIcon,
   ListIcon,
   LockIcon,
@@ -17,6 +18,7 @@ import {
   PlusIcon,
   SidebarIcon,
   TrashIcon,
+  UploadIcon,
 } from "../../src/screens/icons";
 
 describe("icons", () => {
@@ -36,6 +38,8 @@ describe("icons", () => {
     ["GoogleIcon", GoogleIcon],
     ["TrashIcon", TrashIcon],
     ["ChevronUpIcon", ChevronUpIcon],
+    ["UploadIcon", UploadIcon],
+    ["FileIcon", FileIcon],
   ])("%s is decoration, hidden from screen readers", (_name, IconComponent) => {
     const { container } = render(<IconComponent />);
 

@@ -112,7 +112,7 @@ describe("AccountScreen", () => {
   it("names both empty fields, focuses the first and sends nothing", async () => {
     const fetchStub = stubChange(() => new Response(null, { status: 204 }));
     renderAt("/app/account");
-    await screen.findByRole("heading", { name: "Change password" });
+    await screen.findByRole("heading", { name: "Password" });
 
     await fillAndSubmit("", "");
 
@@ -211,7 +211,7 @@ async function confirmDelete(password: string) {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Delete my account" }));
   if (password !== "") {
-    await user.type(screen.getByLabelText(/^Password/), password);
+    await user.type(screen.getByLabelText(/^Password/, { selector: "input" }), password);
   }
   await user.click(screen.getByRole("button", { name: "Delete for good" }));
 }
@@ -224,7 +224,7 @@ describe("AccountScreen: delete my account", () => {
     stubDelete(() => new Response(null, { status: 204 }), user);
     renderAt("/app/account");
 
-    expect(await screen.findByRole("heading", { name: "Change password" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Password" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete my account" })).not.toBeInTheDocument();
   });
 
@@ -241,7 +241,7 @@ describe("AccountScreen: delete my account", () => {
     renderAt("/app/account?open=delete");
 
     expect(await screen.findByRole("button", { name: "Delete for good" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Change password" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Password" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Change password" })).not.toBeInTheDocument();
   });
 
@@ -250,7 +250,7 @@ describe("AccountScreen: delete my account", () => {
     renderAt("/app/account?open=password");
 
     expect(await screen.findByLabelText(/^Current password/)).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Delete my account" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Delete account" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete my account" })).not.toBeInTheDocument();
   });
 
@@ -277,12 +277,12 @@ describe("AccountScreen: delete my account", () => {
 
     await user.click(await screen.findByRole("button", { name: "Delete my account" }));
     expect(screen.getByText(/every letter you uploaded and every draft/)).toBeInTheDocument();
-    await user.type(screen.getByLabelText(/^Password/), CURRENT);
+    await user.type(screen.getByLabelText(/^Password/, { selector: "input" }), CURRENT);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(screen.queryByRole("button", { name: "Delete for good" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Delete my account" }));
-    expect(screen.getByLabelText(/^Password/)).toHaveValue("");
+    expect(screen.getByLabelText(/^Password/, { selector: "input" })).toHaveValue("");
     expect(fetchStub.mock.calls.filter(([path]) => path === "/me/delete-account")).toHaveLength(0);
   });
 

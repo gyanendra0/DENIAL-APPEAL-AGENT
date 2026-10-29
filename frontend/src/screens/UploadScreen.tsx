@@ -5,9 +5,11 @@ import { Link, useSearchParams } from "react-router";
 import { canUpload } from "../auth/roles";
 import { useSession } from "../auth/session";
 import { ApiError } from "../api/client";
-import { checkUploadFile } from "../jobs/uploadCheck";
+import { UPLOAD_MAX_BYTES, checkUploadFile } from "../jobs/uploadCheck";
 import { isJobFinished, useJob, useUploadLetter } from "../jobs/useJob";
 import { asSentence, describeError } from "./errorMessage";
+import { FileDropZone } from "./FileDropZone";
+import { formatFileSize } from "./fileSize";
 import { describeJob } from "./jobText";
 
 // The job id in the address (`?job=12`), so a reload keeps showing the same job.
@@ -27,25 +29,28 @@ export function UploadScreen() {
 
   if (!canUpload(session.data?.role)) {
     return (
-      <>
-        <h1>Upload a denial letter</h1>
-        <p className="error" role="alert">
-          Your role cannot do this.
-        </p>
-      </>
+      <div className="centered-screen">
+        <section className="screen-card wide upload-card">
+          <h1>Upload a denial letter</h1>
+          <p className="error" role="alert">
+            Your role cannot do this.
+          </p>
+        </section>
+      </div>
     );
   }
 
   return (
-    <>
-      <h1>Upload a denial letter</h1>
-      <p className="muted">
-        A text file or a PDF with text. A draft is written for a person to review; nothing is sent
-        to an insurer.
-      </p>
-      <UploadForm onUploaded={(id) => setSearchParams({ [JOB_PARAM]: String(id) })} />
-      {jobId !== null && <JobStatusBox key={jobId} jobId={jobId} />}
-    </>
+    <div className="centered-screen">
+      <section className="screen-card wide upload-card">
+        <h1>Upload a denial letter</h1>
+        <p className="muted card-lead">
+          A draft is written for a person to review. Nothing is sent to an insurer.
+        </p>
+        <UploadForm onUploaded={(id) => setSearchParams({ [JOB_PARAM]: String(id) })} />
+        {jobId !== null && <JobStatusBox key={jobId} jobId={jobId} />}
+      </section>
+    </div>
   );
 }
 
@@ -82,25 +87,20 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
 
   return (
     <form className="form" onSubmit={onSubmit}>
-      <label>
-        Denial letter
-        <input
-          type="file"
-          accept=".txt,.pdf,text/plain,application/pdf"
-          onChange={(event) => onPick(event.target.files?.[0] ?? null)}
-        />
-      </label>
-      <p className="notice">
-        This letter contains no real names, member ids, claim numbers or dates of birth. Use a
-        made-up letter or black out every personal detail.
-      </p>
+      <FileDropZone
+        label="Denial letter"
+        accept=".txt,.pdf,text/plain,application/pdf"
+        hint={`.txt or .pdf with text, up to ${formatFileSize(UPLOAD_MAX_BYTES)}`}
+        file={file}
+        onPick={onPick}
+      />
       <label className="checkbox">
         <input
           type="checkbox"
           checked={noPersonalData}
           onChange={(event) => setNoPersonalData(event.target.checked)}
         />
-        I confirm this letter holds no real personal details
+        I confirm this letter holds no real names, member ids, claim numbers or dates of birth
       </label>
       {fileProblem !== null && (
         <p className="error" role="alert">
@@ -123,7 +123,7 @@ function JobStatusBox({ jobId }: { jobId: number }) {
   const job = useJob(jobId);
 
   return (
-    <section className="status-box" aria-label="Job status">
+    <section className="card-section" aria-label="Job status">
       <h2>Job {jobId}</h2>
       {job.isPending && <p>Loading…</p>}
       {job.isError && (

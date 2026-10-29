@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 
+import type { UserResponse } from "../api/types";
+
 import { canUpload } from "../auth/roles";
 import { useLogout, useSession } from "../auth/session";
 import { describeError } from "./errorMessage";
@@ -22,6 +24,11 @@ import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarPreference
 const SIDEBAR_ID = "app-sidebar";
 // The width under which the sidebar is a drawer; the same number as in styles.css.
 const DRAWER_QUERY = "(max-width: 760px)";
+
+// A personal account's name is made up (`personal-…`), so the screen names its kind instead.
+function accountLabel(user: UserResponse): string {
+  return user.account_kind === "personal" ? "Personal" : user.account_name;
+}
 
 function Brand() {
   return (
@@ -181,7 +188,7 @@ export function AppLayout() {
         <div className="app-account">
           {user && (
             <span className="muted app-account-text">
-              {user.account_name} · {user.email} ({user.role})
+              {accountLabel(user)} · {user.email} ({user.role})
             </span>
           )}
           <button

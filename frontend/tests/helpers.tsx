@@ -16,10 +16,20 @@ export const ADMIN: UserResponse = {
   role: "admin",
   account_id: 10,
   account_name: "Made-up Clinic",
+  account_kind: "shared",
 };
 
 export const REVIEWER: UserResponse = { ...ADMIN, user_id: 2, role: "reviewer" };
 export const VIEWER: UserResponse = { ...ADMIN, user_id: 3, role: "viewer" };
+// An individual: admin of their own personal account, whose name is made up and never shown.
+export const INDIVIDUAL: UserResponse = {
+  user_id: 4,
+  email: "lin@individual.test",
+  role: "admin",
+  account_id: 20,
+  account_name: "personal-0123456789abcdef",
+  account_kind: "personal",
+};
 
 export function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {

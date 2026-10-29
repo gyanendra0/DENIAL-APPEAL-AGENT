@@ -9,7 +9,7 @@ import {
   focusFirstError,
 } from "../auth/credentialCheck";
 import type { FieldErrors, PasswordChangeField } from "../auth/credentialCheck";
-import { useChangePassword } from "../auth/session";
+import { useChangePassword, useDeleteAccount, useSession } from "../auth/session";
 import { PasswordField } from "./AuthField";
 import { asSentence, describeError } from "./errorMessage";
 
@@ -22,9 +22,31 @@ function passwordChangeError(error: unknown): string {
   return describeError(error);
 }
 
+// The API's 400 (wrong password), 403 (a login too old for a Google-only user) and 409 (a letter
+// still being read) are fixed sentences that say what to do; the screen shows them. A 429 is the
+// login limit and keeps the usual line.
+function deleteError(error: unknown): string {
+  if (error instanceof ApiError && [400, 403, 409].includes(error.status ?? 0)) {
+    return asSentence(error.message);
+  }
+  return describeError(error);
+}
+
 // Every role can change their own password. The API keeps this browser logged in with a new
 // cookie and ends every other session.
 export function AccountScreen() {
+  const session = useSession();
+
+  return (
+    <>
+      <h1>Account</h1>
+      <PasswordChange />
+      {session.data?.account_kind === "personal" && <DeleteAccount />}
+    </>
+  );
+}
+
+function PasswordChange() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors<PasswordChangeField>>({});
@@ -50,7 +72,6 @@ export function AccountScreen() {
 
   return (
     <>
-      <h1>Account</h1>
       <h2>Change password</h2>
       <form className="form account-form" noValidate onSubmit={onSubmit}>
         <PasswordField
@@ -88,5 +109,68 @@ export function AccountScreen() {
         </button>
       </form>
     </>
+  );
+}
+
+// Only an individual's personal account can be deleted; the first click opens the confirm step.
+// A user who logs in only with Google has no password and leaves the field empty; the API then
+// wants a login within the last 10 minutes. When the account is gone the session is null and the
+// guard sends the user to the login screen.
+function DeleteAccount() {
+  const [confirming, setConfirming] = useState(false);
+  const [password, setPassword] = useState("");
+  const deleteMutation = useDeleteAccount();
+
+  function onCancel() {
+    setConfirming(false);
+    setPassword("");
+    deleteMutation.reset();
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    deleteMutation.mutate({ password: password === "" ? null : password });
+  }
+
+  return (
+    <section aria-label="Delete my account">
+      <h2>Delete my account</h2>
+      {!confirming ? (
+        <button type="button" className="secondary" onClick={() => setConfirming(true)}>
+          Delete my account
+        </button>
+      ) : (
+        <form className="form account-form" noValidate onSubmit={onSubmit}>
+          <p className="notice">
+            This deletes your account, every letter you uploaded and every draft. It cannot be
+            undone.
+          </p>
+          <PasswordField
+            name="deletePassword"
+            autoComplete="current-password"
+            hint="Leave empty if you sign in only with Google."
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          {deleteMutation.isError && (
+            <p className="error" role="alert">
+              {deleteError(deleteMutation.error)}
+            </p>
+          )}
+          <button type="submit" className="auth-submit" disabled={deleteMutation.isPending}>
+            {deleteMutation.isPending && <span className="spinner" aria-hidden="true" />}
+            {deleteMutation.isPending ? "Deleting…" : "Delete for good"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={deleteMutation.isPending}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+    </section>
   );
 }

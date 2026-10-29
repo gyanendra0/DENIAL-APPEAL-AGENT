@@ -2,7 +2,17 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { NO_RECENT, VIEWER, jsonResponse, renderAt, sentBody, stubApi } from "../helpers";
+import type { UserResponse } from "../../src/api/types";
+import {
+  ADMIN,
+  INDIVIDUAL,
+  NO_RECENT,
+  VIEWER,
+  jsonResponse,
+  renderAt,
+  sentBody,
+  stubApi,
+} from "../helpers";
 import type { Answer } from "../helpers";
 
 const CURRENT = "a made-up current password";
@@ -132,5 +142,99 @@ describe("AccountScreen", () => {
       await screen.findByRole("button", { name: "Show current password" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show new password" })).toBeInTheDocument();
+  });
+});
+
+function stubDelete(answer: Answer, user: UserResponse = INDIVIDUAL) {
+  return stubApi({
+    ...NO_RECENT,
+    "GET /me": () => jsonResponse(200, user),
+    "POST /me/delete-account": answer,
+  });
+}
+
+// Opens the confirm step and sends it with the password typed, or with the field left empty.
+async function confirmDelete(password: string) {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Delete my account" }));
+  if (password !== "") {
+    await user.type(screen.getByLabelText(/^Password/), password);
+  }
+  await user.click(screen.getByRole("button", { name: "Delete for good" }));
+}
+
+describe("AccountScreen: delete my account", () => {
+  it.each([
+    ["the shared account's admin", ADMIN],
+    ["the shared account's viewer", VIEWER],
+  ])("is not offered to %s", async (_label, user) => {
+    stubDelete(() => new Response(null, { status: 204 }), user);
+    renderAt("/app/account");
+
+    expect(await screen.findByRole("heading", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete my account" })).not.toBeInTheDocument();
+  });
+
+  it("asks to confirm first and says what is deleted, and Cancel sends nothing", async () => {
+    const fetchStub = stubDelete(() => new Response(null, { status: 204 }));
+    const user = userEvent.setup();
+    renderAt("/app/account");
+
+    await user.click(await screen.findByRole("button", { name: "Delete my account" }));
+    expect(screen.getByText(/every letter you uploaded and every draft/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^Password/), CURRENT);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("button", { name: "Delete for good" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete my account" }));
+    expect(screen.getByLabelText(/^Password/)).toHaveValue("");
+    expect(fetchStub.mock.calls.filter(([path]) => path === "/me/delete-account")).toHaveLength(0);
+  });
+
+  it("deletes with the password and goes to login", async () => {
+    const fetchStub = stubDelete(() => new Response(null, { status: 204 }));
+    const { router } = renderAt("/app/account");
+
+    await confirmDelete(CURRENT);
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/app/login");
+    expect(sentBody(fetchStub, "POST /me/delete-account")).toEqual({ password: CURRENT });
+  });
+
+  it("sends no password when the field is left empty (a Google-only login)", async () => {
+    const fetchStub = stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account");
+
+    await confirmDelete("");
+
+    expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
+    expect(sentBody(fetchStub, "POST /me/delete-account")).toEqual({ password: null });
+  });
+
+  it.each([
+    [400, "the password is wrong", "The password is wrong."],
+    [
+      403,
+      "log in again, then delete your account within 10 minutes",
+      "Log in again, then delete your account within 10 minutes.",
+    ],
+    [
+      409,
+      "a letter is still being read; wait until it is finished, then delete",
+      "A letter is still being read; wait until it is finished, then delete.",
+    ],
+    [429, "too many failed logins; try again later", "Too many tries."],
+  ])("shows the refusal of a delete answered %i and stays", async (status, detail, message) => {
+    stubDelete(() => jsonResponse(status, { detail }));
+    const { router } = renderAt("/app/account");
+
+    await confirmDelete(CURRENT);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(message);
+    expect(alert).not.toHaveTextContent(CURRENT);
+    expect(router.state.location.pathname).toBe("/app/account");
+    expect(screen.getByRole("button", { name: "Delete for good" })).toBeEnabled();
   });
 });

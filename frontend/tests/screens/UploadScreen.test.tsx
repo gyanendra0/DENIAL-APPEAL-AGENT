@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobResponse } from "../../src/api/types";
 import { UPLOAD_MAX_BYTES } from "../../src/jobs/uploadCheck";
 import { JOB_POLL_MS } from "../../src/jobs/useJob";
-import { ADMIN, REVIEWER, VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
+import {
+  ADMIN,
+  INDIVIDUAL,
+  REVIEWER,
+  VIEWER,
+  jsonResponse,
+  renderAt,
+  stubApi,
+  NO_RECENT,
+} from "../helpers";
 import type { Answer } from "../helpers";
 
 const QUEUED: JobResponse = {
@@ -30,6 +39,9 @@ function inTurn(jobs: JobResponse[]): Answer {
   let call = 0;
   return () => jsonResponse(200, jobs[Math.min(call++, jobs.length - 1)]);
 }
+
+// The checkbox every upload needs: the letter holds no real personal details.
+const CONFIRMATION = "I confirm this letter holds no real personal details";
 
 function letter(): File {
   return new File(["Made-up denial letter"], "letter.txt", { type: "text/plain" });
@@ -62,6 +74,7 @@ describe("UploadScreen", () => {
     const button = await screen.findByRole("button", { name: "Upload" });
     expect(button).toBeDisabled();
     await user.upload(screen.getByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
     await user.click(button);
 
     expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
@@ -97,6 +110,7 @@ describe("UploadScreen", () => {
     const button = await screen.findByRole("button", { name: "Upload" });
     await waitFor(() => expect(recentCalls()).toBe(1));
     await user.upload(screen.getByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
     await user.click(button);
 
     expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
@@ -124,6 +138,7 @@ describe("UploadScreen", () => {
     renderAt("/app/upload");
 
     await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
@@ -194,6 +209,7 @@ describe("UploadScreen", () => {
     renderAt("/app/upload");
 
     await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
@@ -228,6 +244,7 @@ describe("UploadScreen", () => {
     await user.upload(input, new File(["made-up"], "scan.png", { type: "image/png" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     await user.upload(input, letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
@@ -244,6 +261,62 @@ describe("UploadScreen", () => {
 
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/login");
+  });
+
+  it("keeps Upload off until the no-personal-data box is ticked, then sends the confirmation", async () => {
+    const fetchStub = stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "POST /uploads": () => jsonResponse(202, { job_id: 7, status: "queued" }),
+      "GET /jobs/7": () => jsonResponse(200, QUEUED),
+    });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+
+    expect(await screen.findByText(/black out every personal detail/)).toBeInTheDocument();
+    await user.upload(screen.getByLabelText("Denial letter"), letter());
+    const button = screen.getByRole("button", { name: "Upload" });
+    expect(button).toBeDisabled();
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    expect(button).toBeEnabled();
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    expect(button).toBeDisabled();
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    await user.click(button);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
+    const upload = fetchStub.mock.calls.find(([path]) => path === "/uploads");
+    expect((upload?.[1]?.body as FormData).get("no_personal_data")).toBe("true");
+  });
+
+  it.each([
+    [
+      "this account has used its uploads for this month; try again next month",
+      "This account has used its uploads for this month; try again next month.",
+    ],
+    [
+      "today's uploads for personal accounts are used up; try again tomorrow",
+      "Today's uploads for personal accounts are used up; try again tomorrow.",
+    ],
+  ])("shows the API's sentence when a cap refuses the upload: %s", async (detail, message) => {
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, INDIVIDUAL),
+      "POST /uploads": () =>
+        new Response(JSON.stringify({ detail }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": "3600" },
+        }),
+    });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+
+    await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByRole("region", { name: "Job status" })).not.toBeInTheDocument();
   });
 
   it("lets a viewer upload too", async () => {

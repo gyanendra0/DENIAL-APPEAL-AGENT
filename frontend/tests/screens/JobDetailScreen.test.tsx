@@ -2,10 +2,10 @@ import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { JobDetail, JobResponse } from "../../src/api/types";
+import type { JobDetail, JobResponse, UserResponse } from "../../src/api/types";
 import { JOB_POLL_MS } from "../../src/jobs/useJob";
 import { DETAIL, DRAFT, EDITED, TRACE } from "../detail/fixtures";
-import { VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
+import { INDIVIDUAL, VIEWER, jsonResponse, renderAt, stubApi, NO_RECENT } from "../helpers";
 import type { Answer } from "../helpers";
 
 const DONE_JOB: JobResponse = {
@@ -28,11 +28,12 @@ function answer(body: unknown, status = 200): Answer {
   return () => jsonResponse(status, body);
 }
 
-// Opens the detail of job 9 as a viewer (any role may read it), with the given detail.
-function openDetail(detail: JobDetail, job: JobResponse = DONE_JOB) {
+// Opens the detail of job 9 as a viewer (any role may read it) unless another user is given, with
+// the given detail.
+function openDetail(detail: JobDetail, job: JobResponse = DONE_JOB, user: UserResponse = VIEWER) {
   const fetchStub = stubApi({
     ...NO_RECENT,
-    "GET /me": answer(VIEWER),
+    "GET /me": answer(user),
     "GET /jobs/9": answer(job),
     "GET /jobs/9/detail": answer(detail),
   });
@@ -56,7 +57,25 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// The line an individual sees above their result.
+const ESTIMATE =
+  /This is an estimate, not legal or medical advice\. Nothing is sent to your insurer/;
+
 describe("JobDetailScreen", () => {
+  it("tells an individual the result is an estimate and nothing is sent", async () => {
+    openDetail(DETAIL, DONE_JOB, INDIVIDUAL);
+
+    expect(await screen.findByRole("heading", { name: "Job 9: letter-9.txt" })).toBeInTheDocument();
+    expect(screen.getByText(ESTIMATE)).toBeInTheDocument();
+  });
+
+  it("shows no estimate line to the team's shared account", async () => {
+    openDetail(DETAIL);
+
+    expect(await screen.findByRole("heading", { name: "Job 9: letter-9.txt" })).toBeInTheDocument();
+    expect(screen.queryByText(ESTIMATE)).not.toBeInTheDocument();
+  });
+
   it("shows the letter beside the fields, the analysis and the job facts", async () => {
     openDetail(DETAIL);
 

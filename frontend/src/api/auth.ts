@@ -28,6 +28,11 @@ export interface PasswordChangeInput {
   new_password: string;
 }
 
+// The password, or null for a user who logs in only with Google (the API then wants a recent login).
+export interface AccountDeleteInput {
+  password: string | null;
+}
+
 export interface PasswordResetAskInput {
   email: string;
 }
@@ -67,6 +72,11 @@ export async function changePassword(input: PasswordChangeInput): Promise<void> 
   await apiRequest<undefined>("/me/password", jsonRequest("POST", input));
 }
 
+// Answers 204 and clears the login cookie: the personal account and everything in it are gone.
+export async function deleteAccount(input: AccountDeleteInput): Promise<void> {
+  await apiRequest<undefined>("/me/delete-account", jsonRequest("POST", input));
+}
+
 // Answers 202 and the same sentence whether or not the email has an account, so the body is not
 // read: the screen says it in its own words.
 export async function askPasswordReset(input: PasswordResetAskInput): Promise<void> {
@@ -95,8 +105,8 @@ export async function fetchGoogleSignup(): Promise<GoogleSignupInfo | null> {
   }
 }
 
-// The deliberate second click: adds the user (no password) to the shared account with the Google
-// link, and logs in. The body is empty; the email comes from the API's own signed cookie. A 403
+// The deliberate second click: adds the user (no password) to the shared account, or to a new
+// personal account, with the Google link, and logs in. The body is empty; the email comes from the API's own signed cookie. A 403
 // says the settings no longer allow this email.
 export function googleSignup(): Promise<UserResponse> {
   return apiRequest<UserResponse>("/auth/google/signup", jsonRequest("POST", {}));

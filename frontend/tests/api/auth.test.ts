@@ -4,6 +4,7 @@ import {
   askPasswordReset,
   changePassword,
   confirmPasswordReset,
+  deleteAccount,
   fetchAuthOptions,
   fetchGoogleSignup,
   fetchMe,
@@ -64,6 +65,32 @@ describe("auth calls", () => {
     await expect(
       changePassword({ current_password: "wrong", new_password: "a long made-up password" }),
     ).rejects.toMatchObject({ status: 400, message: "the current password is wrong" });
+  });
+});
+
+describe("deleteAccount", () => {
+  it.each([
+    ["a password", "a made-up password"],
+    ["no password (Google only)", null],
+  ])("sends %s as JSON and accepts the 204", async (_label, password) => {
+    const fetchStub = stubApi({
+      "POST /me/delete-account": () => new Response(null, { status: 204 }),
+    });
+
+    await expect(deleteAccount({ password })).resolves.toBeUndefined();
+    expect(sentBody(fetchStub, "POST /me/delete-account")).toEqual({ password });
+  });
+
+  it("raises the API's 403 for a shared account", async () => {
+    stubApi({
+      "POST /me/delete-account": () =>
+        jsonResponse(403, { detail: "only a personal account can be deleted here" }),
+    });
+
+    await expect(deleteAccount({ password: "pw" })).rejects.toMatchObject({
+      status: 403,
+      message: "only a personal account can be deleted here",
+    });
   });
 });
 
@@ -142,7 +169,7 @@ describe("Google sign-in calls", () => {
   });
 
   it("returns the email of the pending Google sign-up", async () => {
-    const info = { email: ADMIN.email, account_name: ADMIN.account_name };
+    const info = { email: ADMIN.email, account_kind: "shared", account_name: ADMIN.account_name };
     stubApi({ "GET /auth/google/signup": () => jsonResponse(200, info) });
 
     await expect(fetchGoogleSignup()).resolves.toEqual(info);

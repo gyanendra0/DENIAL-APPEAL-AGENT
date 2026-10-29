@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { canUpload } from "../auth/roles";
 import { useSession } from "../auth/session";
+import type { JobResponse } from "../api/types";
+import { useNotify } from "../notify/notify";
+import type { NotificationInput } from "../notify/notify";
 import { ApiError } from "../api/client";
 import { UPLOAD_MAX_BYTES, checkUploadFile } from "../jobs/uploadCheck";
 import { isJobFinished, useJob, useUploadLetter } from "../jobs/useJob";
@@ -68,6 +71,7 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
   const [fileProblem, setFileProblem] = useState<string | null>(null);
   const [noPersonalData, setNoPersonalData] = useState(false);
   const uploadMutation = useUploadLetter();
+  const notify = useNotify();
 
   // A file the browser refuses is never kept, so it cannot be sent.
   function onPick(picked: File | null) {
@@ -82,7 +86,16 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
     if (file === null || !noPersonalData) {
       return;
     }
-    uploadMutation.mutate(file, { onSuccess: (accepted) => onUploaded(accepted.job_id) });
+    uploadMutation.mutate(file, {
+      onSuccess: (accepted) => {
+        notify({
+          tone: "success",
+          title: "Letter uploaded",
+          detail: `Job ${accepted.job_id} is being read.`,
+        });
+        onUploaded(accepted.job_id);
+      },
+    });
   }
 
   return (
@@ -119,8 +132,45 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
   );
 }
 
+// The notification for a job that has just ended: a draft to review, another end, or a failure.
+function finishedNotification(job: JobResponse): NotificationInput {
+  const open = { label: "Open", to: `/app/jobs/${job.job_id}` };
+  if (job.status === "failed") {
+    return {
+      tone: "error",
+      title: "The letter could not be processed",
+      detail: describeJob(job),
+      action: open,
+    };
+  }
+  if (job.end_state === "needs_review") {
+    return { tone: "success", title: "Draft ready for review", action: open };
+  }
+  return {
+    tone: "info",
+    title: `Job ${job.job_id} finished`,
+    detail: describeJob(job),
+    action: open,
+  };
+}
+
 function JobStatusBox({ jobId }: { jobId: number }) {
   const job = useJob(jobId);
+  const notify = useNotify();
+  // Whether the job was still running when it was last seen. A job already finished when the
+  // screen opened (a reload) gets no notification; one that ends while it is watched gets one.
+  const wasRunning = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    if (job.data === undefined) {
+      return;
+    }
+    const finished = isJobFinished(job.data);
+    if (finished && wasRunning.current === true) {
+      notify(finishedNotification(job.data));
+    }
+    wasRunning.current = !finished;
+  }, [job.data, notify]);
 
   return (
     <section className="card-section" aria-label="Job status">

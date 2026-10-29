@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { JobDetail } from "../../src/api/types";
-import { jsonResponse, sentBody } from "../helpers";
+import { jsonResponse, notifications, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED, ORIGINAL } from "./fixtures";
 import { detailReads, findDraft, openDetail, refocusWindow } from "./reviewHelpers";
 
@@ -32,6 +32,7 @@ describe("DraftEditor", () => {
 
     expect(await screen.findByText(/Version 1, edited by a person\./)).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Edit the draft" })).not.toBeInTheDocument();
+    expect(notifications().getByText("Draft saved")).toBeInTheDocument();
     expect(sentBody(fetchStub, "PUT /jobs/9/draft")).toEqual({
       letter: EDITED,
       based_on_version: 0,

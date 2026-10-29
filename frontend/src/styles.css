@@ -1997,3 +1997,128 @@ textarea {
     transition: none;
   }
 }
+
+/* Notifications: light cards that slide in at the top right of the page, newest first. */
+.notifications {
+  position: fixed;
+  top: var(--space-3);
+  right: var(--space-3);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(400px, calc(100vw - 2 * var(--space-3)));
+  pointer-events: none;
+}
+
+.notifications > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 12px 14px 16px;
+  border: var(--border-hairline) solid var(--color-border);
+  border-left: 4px solid var(--notification-color);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  box-shadow:
+    0 2px 4px rgba(31, 30, 27, 0.06),
+    0 12px 32px rgba(31, 30, 27, 0.12);
+  pointer-events: auto;
+  animation: notification-in 260ms var(--motion-easing);
+}
+
+.notification.tone-success {
+  --notification-color: var(--color-good);
+}
+
+.notification.tone-info {
+  --notification-color: var(--color-accent);
+}
+
+.notification.tone-error {
+  --notification-color: var(--color-bad);
+}
+
+.notification-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--notification-color);
+}
+
+.notification-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.notification-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notification-title,
+.notification-detail {
+  margin: 0;
+}
+
+.notification-title {
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.notification-detail {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+
+button.notification-action {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+
+.notification-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  margin: -4px -2px 0 0;
+}
+
+.notification-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes notification-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* On a phone the notifications sit under the bar on top. */
+@media (max-width: 760px) {
+  .notifications {
+    top: 64px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification {
+    animation: none;
+  }
+}

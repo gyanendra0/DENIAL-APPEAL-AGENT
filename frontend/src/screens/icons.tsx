@@ -159,6 +159,38 @@ export function FileIcon() {
   );
 }
 
+// A tick in a circle: a success notification.
+export function CheckIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m8 12 3 3 5-6" />
+    </Icon>
+  );
+}
+
+// An "i" in a circle: an info notification.
+export function InfoIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </Icon>
+  );
+}
+
+// A "!" in a triangle: an error notification.
+export function WarningIcon() {
+  return (
+    <Icon>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </Icon>
+  );
+}
+
 // A bin: deleting the account.
 export function TrashIcon() {
   return (

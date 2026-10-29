@@ -11,6 +11,7 @@ import {
   REVIEWER,
   VIEWER,
   jsonResponse,
+  notifications,
   renderAt,
   stubApi,
 } from "../helpers";
@@ -136,6 +137,7 @@ describe("AppLayout", () => {
 
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/login");
+    expect(notifications().getByText("You're logged out")).toBeInTheDocument();
     expect(queryClient.getQueryData(allJobs)).toBeUndefined();
     expect(queryClient.getQueryData(SESSION_KEY)).toBeNull();
     expect(fetchStub.mock.calls.filter(([path]) => path === "/me")).toHaveLength(1);
@@ -152,7 +154,12 @@ describe("AppLayout", () => {
     const user = await openAccountMenu();
     await user.click(screen.getByRole("menuitem", { name: "Log out" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("The API could not be reached");
+    expect(await notifications().findByText("Logging out failed")).toBeInTheDocument();
+    expect(notifications().getByText(/The API could not be reached/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Notifications").firstElementChild).toHaveAttribute(
+      "aria-live",
+      "assertive",
+    );
     expect(router.state.location.pathname).toBe("/app/worklist");
   });
 

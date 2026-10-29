@@ -5,6 +5,7 @@ import { NavLink, Outlet, useNavigate } from "react-router";
 import { canUpload } from "../auth/roles";
 import { useLogout, useSession } from "../auth/session";
 import { AccountMenu } from "./AccountMenu";
+import { useNotify } from "../notify/notify";
 import { describeError } from "./errorMessage";
 import { ChartIcon, CloseIcon, ListIcon, LogoIcon, MenuIcon, PlusIcon, SidebarIcon } from "./icons";
 import { RecentDenials } from "./RecentDenials";
@@ -31,6 +32,7 @@ function Brand() {
 export function AppLayout() {
   const session = useSession();
   const logoutMutation = useLogout();
+  const notify = useNotify();
   const navigate = useNavigate();
   const user = session.data;
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
@@ -82,7 +84,12 @@ export function AppLayout() {
 
   function onLogout() {
     logoutMutation.mutate(undefined, {
-      onSuccess: () => void navigate("/app/login", { replace: true }),
+      onSuccess: () => {
+        notify({ tone: "info", title: "You're logged out" });
+        void navigate("/app/login", { replace: true });
+      },
+      onError: (error) =>
+        notify({ tone: "error", title: "Logging out failed", detail: describeError(error) }),
     });
   }
 
@@ -173,11 +180,6 @@ export function AppLayout() {
       </header>
       {drawerOpen && <div className="app-backdrop" aria-hidden="true" onClick={closeDrawer} />}
       <div className="app-main" inert={drawerOpen}>
-        {logoutMutation.isError && (
-          <p className="page error" role="alert">
-            {describeError(logoutMutation.error)}
-          </p>
-        )}
         <main className="page">
           <Outlet />
         </main>

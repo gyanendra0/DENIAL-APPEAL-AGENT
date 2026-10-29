@@ -11,6 +11,7 @@ import {
 } from "../auth/credentialCheck";
 import type { FieldErrors, PasswordChangeField } from "../auth/credentialCheck";
 import { useChangePassword, useDeleteAccount, useSession } from "../auth/session";
+import { useNotify } from "../notify/notify";
 import { ACCOUNT_OPEN_PARAM, readAccountForm } from "./accountPaths";
 import { PasswordField } from "./AuthField";
 import { asSentence, describeError } from "./errorMessage";
@@ -69,6 +70,7 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
   const [newPassword, setNewPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors<PasswordChangeField>>({});
   const changeMutation = useChangePassword();
+  const notify = useNotify();
 
   function onCancel() {
     setOpen(false);
@@ -92,6 +94,11 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
           setCurrentPassword("");
           setNewPassword("");
           setOpen(false);
+          notify({
+            tone: "success",
+            title: "Password changed",
+            detail: "Other sessions are logged out.",
+          });
         },
       },
     );
@@ -100,9 +107,6 @@ function PasswordChange({ startOpen }: { startOpen: boolean }) {
   return (
     <section className="card-section" aria-label="Password">
       <h2>Password</h2>
-      {changeMutation.isSuccess && (
-        <p role="status">Your password is changed. Other sessions are logged out.</p>
-      )}
       {!open ? (
         <button
           type="button"
@@ -168,6 +172,7 @@ function DeleteAccount({ startOpen }: { startOpen: boolean }) {
   const [confirming, setConfirming] = useState(startOpen);
   const [password, setPassword] = useState("");
   const deleteMutation = useDeleteAccount();
+  const notify = useNotify();
 
   function onCancel() {
     setConfirming(false);
@@ -177,7 +182,17 @@ function DeleteAccount({ startOpen }: { startOpen: boolean }) {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    deleteMutation.mutate({ password: password === "" ? null : password });
+    deleteMutation.mutate(
+      { password: password === "" ? null : password },
+      {
+        onSuccess: () =>
+          notify({
+            tone: "info",
+            title: "Account deleted",
+            detail: "Your letters and drafts are gone.",
+          }),
+      },
+    );
   }
 
   return (

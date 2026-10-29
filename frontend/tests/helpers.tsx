@@ -1,7 +1,7 @@
 // Shared test helpers: a stubbed `fetch` that answers per "METHOD /path", and the app rendered at
 // a path with a memory router and a fresh cache. No test reaches a live API.
 
-import { render } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { vi } from "vitest";
 
@@ -96,6 +96,11 @@ export function sentBody(fetchStub: ReturnType<typeof stubApi>, key: string): un
     throw new Error(`no request to ${key}`);
   }
   return JSON.parse(String(call[1]?.body));
+}
+
+// The notifications at the top of the page, to look for one by its words.
+export function notifications() {
+  return within(screen.getByLabelText("Notifications"));
 }
 
 export function renderAt(path: string) {

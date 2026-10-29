@@ -11,6 +11,7 @@ import {
   REVIEWER,
   VIEWER,
   jsonResponse,
+  notifications,
   renderAt,
   stubApi,
   NO_RECENT,
@@ -69,6 +70,64 @@ function dropZone(): HTMLElement {
 }
 
 describe("UploadScreen", () => {
+  it("says when the watched job fails, and Open goes to its screen", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const failed: JobResponse = { ...RUNNING, status: "failed", failure: "extraction_failed" };
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": inTurn([RUNNING, failed]),
+      "GET /jobs/7/detail": () => jsonResponse(404, { detail: "job not found" }),
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { router } = renderAt("/app/upload?job=7");
+    await screen.findByRole("status");
+
+    await nextPoll();
+
+    expect(notifications().getByText("The letter could not be processed")).toBeInTheDocument();
+    expect(
+      notifications().getByText("Failed: the letter could not be read into fields"),
+    ).toBeInTheDocument();
+    await user.click(notifications().getByRole("button", { name: "Open" }));
+    expect(router.state.location.pathname).toBe("/app/jobs/7");
+    expect(
+      notifications().queryByText("The letter could not be processed"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says a watched job finished another way, with its end in words", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const stopped: JobResponse = { ...DONE, end_state: "stopped_by_rules" };
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": inTurn([RUNNING, stopped]),
+    });
+    renderAt("/app/upload?job=7");
+    await screen.findByRole("status");
+
+    await nextPoll();
+
+    expect(notifications().getByText("Job 7 finished")).toBeInTheDocument();
+    expect(
+      notifications().getByText("Stopped by the rules (deadline or amount); no draft was written"),
+    ).toBeInTheDocument();
+  });
+
+  it("gives no notification for a job already finished when the screen opens", async () => {
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": () => jsonResponse(200, DONE),
+    });
+
+    renderAt("/app/upload?job=7");
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Draft ready for review");
+    expect(notifications().queryByText("Draft ready for review")).not.toBeInTheDocument();
+  });
+
   it("takes a dropped letter like a picked one, and refuses a dropped wrong file", async () => {
     stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
     const user = userEvent.setup();
@@ -131,10 +190,14 @@ describe("UploadScreen", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
     expect(router.state.location.search).toBe("?job=7");
+    expect(notifications().getByText("Letter uploaded")).toBeInTheDocument();
+    expect(notifications().getByText("Job 7 is being read.")).toBeInTheDocument();
     await nextPoll();
     expect(screen.getByRole("status")).toHaveTextContent("Reading the letter and drafting");
+    expect(notifications().queryByText("Draft ready for review")).not.toBeInTheDocument();
     await nextPoll();
     expect(screen.getByRole("status")).toHaveTextContent("Draft ready for review");
+    expect(notifications().getByText("Draft ready for review")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Go to the worklist" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open the denial" })).toHaveAttribute(
       "href",

@@ -9,6 +9,7 @@ import {
   NO_RECENT,
   VIEWER,
   jsonResponse,
+  notifications,
   renderAt,
   sentBody,
   stubApi,
@@ -51,9 +52,8 @@ describe("AccountScreen", () => {
 
     await fillAndSubmit();
 
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Your password is changed. Other sessions are logged out.",
-    );
+    expect(await notifications().findByText("Password changed")).toBeInTheDocument();
+    expect(notifications().getByText("Other sessions are logged out.")).toBeInTheDocument();
     expect(sentBody(fetchStub, "POST /me/password")).toEqual({
       current_password: CURRENT,
       new_password: NEW,
@@ -62,7 +62,6 @@ describe("AccountScreen", () => {
 
     await openPasswordForm();
 
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByLabelText(/^Current password/)).toHaveValue("");
     expect(screen.getByLabelText(/^New password/)).toHaveValue("");
   });
@@ -295,6 +294,7 @@ describe("AccountScreen: delete my account", () => {
     expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/login");
     expect(sentBody(fetchStub, "POST /me/delete-account")).toEqual({ password: CURRENT });
+    expect(notifications().getByText("Account deleted")).toBeInTheDocument();
   });
 
   it("sends no password when the field is left empty (a Google-only login)", async () => {

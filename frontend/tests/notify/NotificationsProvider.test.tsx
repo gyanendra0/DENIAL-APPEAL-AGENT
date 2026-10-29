@@ -78,6 +78,32 @@ describe("NotificationsProvider", () => {
     expect(region().queryByText("Saved")).not.toBeInTheDocument();
   });
 
+  it("keeps a success open while the keyboard focus is in it", async () => {
+    const { send, user } = renderWith({
+      tone: "success",
+      title: "Draft ready",
+      action: { label: "Open", to: "/app/jobs/7" },
+    });
+    await send();
+
+    await user.tab();
+    expect(region().getByRole("button", { name: "Open" })).toHaveFocus();
+    await act(() => vi.advanceTimersByTimeAsync(NOTIFICATION_MS * 2));
+    expect(region().getByText("Draft ready")).toBeInTheDocument();
+
+    // Moving between the card's own buttons keeps it paused.
+    await user.tab();
+    expect(region().getByRole("button", { name: "Close notification" })).toHaveFocus();
+    await act(() => vi.advanceTimersByTimeAsync(NOTIFICATION_MS * 2));
+    expect(region().getByText("Draft ready")).toBeInTheDocument();
+
+    await user.tab({ shift: true });
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Send" })).toHaveFocus();
+    await act(() => vi.advanceTimersByTimeAsync(NOTIFICATION_MS + 100));
+    expect(region().queryByText("Draft ready")).not.toBeInTheDocument();
+  });
+
   it("keeps an error until it is closed, and reads it out at once", async () => {
     const { send } = renderWith({ tone: "error", title: "It failed" });
     await send();

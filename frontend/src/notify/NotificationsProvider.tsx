@@ -48,7 +48,7 @@ export function NotificationsProvider({ navigate, children }: NotificationsProvi
   return (
     <NotifyContext.Provider value={notify}>
       {children}
-      <div className="notifications" aria-label="Notifications">
+      <div className="notifications" role="region" aria-label="Notifications">
         <div aria-live="assertive">
           {urgent.map((item) => (
             <NotificationCard key={item.id} item={item} navigate={navigate} onClose={dismiss} />
@@ -71,9 +71,12 @@ interface NotificationCardProps {
 }
 
 // Closes itself after NOTIFICATION_MS unless it is an error; the time stops while the pointer is
-// on it and starts again in full when the pointer leaves.
+// on it or the focus is in it (a keyboard user on its link), and starts again in full when both
+// have left.
 function NotificationCard({ item, navigate, onClose }: NotificationCardProps) {
-  const [paused, setPaused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused;
   const Icon = TONE_ICON[item.tone];
 
   useEffect(() => {
@@ -87,8 +90,15 @@ function NotificationCard({ item, navigate, onClose }: NotificationCardProps) {
   return (
     <div
       className={`notification tone-${item.tone}`}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+          setFocused(false);
+        }
+      }}
     >
       <span className="notification-icon">
         <Icon />

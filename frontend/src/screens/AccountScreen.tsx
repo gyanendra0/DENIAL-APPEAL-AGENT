@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { useSearchParams } from "react-router";
+import { useLocation, useSearchParams } from "react-router";
 
 import { ApiError } from "../api/client";
 import {
@@ -36,10 +36,12 @@ function deleteError(error: unknown): string {
 }
 
 // The account menu links here with `?open=password` or `?open=delete`, which opens that form
-// straight away and leaves the other out; the key starts the form afresh when the menu asks for
-// another one.
+// straight away and leaves the other out. The key starts the form afresh at every visit, also when
+// the menu asks again for the form already in the address (after Cancel closed it, say): each
+// navigation has its own location key.
 export function AccountScreen() {
   const session = useSession();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const form = readAccountForm(searchParams.get(ACCOUNT_OPEN_PARAM));
   // The form the menu asked for is shown alone; with none asked for, both are. A shared account
@@ -53,9 +55,11 @@ export function AccountScreen() {
         <h1>Account</h1>
         {session.data && <p className="muted card-lead">{session.data.email}</p>}
         {showsPassword && (
-          <PasswordChange key={`password-${form}`} startOpen={form === "password"} />
+          <PasswordChange key={`password-${location.key}`} startOpen={form === "password"} />
         )}
-        {showsDelete && <DeleteAccount key={`delete-${form}`} startOpen={form === "delete"} />}
+        {showsDelete && (
+          <DeleteAccount key={`delete-${location.key}`} startOpen={form === "delete"} />
+        )}
       </div>
     </div>
   );

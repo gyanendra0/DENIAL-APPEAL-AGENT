@@ -274,7 +274,12 @@ describe("WorklistScreen", () => {
 
     expect(await screen.findByText("No jobs match these filters.")).toBeInTheDocument();
     expect(router.state.location.search).toBe("?status=failed&review_status=pending");
-    expect(screen.getByText(/Jobs without a draft are left out/)).toBeInTheDocument();
+    // The note sits under the filters it explains, before the list.
+    const note = screen.getByText(/Jobs without a draft are left out/);
+    expect(
+      note.compareDocumentPosition(screen.getByText("No jobs match these filters.")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
     await user.selectOptions(screen.getByLabelText("Job status"), "");
 

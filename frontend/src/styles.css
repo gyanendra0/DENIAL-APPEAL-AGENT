@@ -1029,6 +1029,11 @@ button.secondary:hover:not(:disabled) {
   margin-bottom: 0;
 }
 
+.worklist-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-small);
+}
+
 .worklist-count {
   margin: 0 0 10px auto;
   font-size: var(--text-small);
@@ -1709,7 +1714,7 @@ textarea {
 
 .overview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: var(--space-3);
   align-items: start;
 }
@@ -1838,7 +1843,7 @@ textarea {
 
 .chart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: var(--space-4) 40px;
 }
 
@@ -1908,8 +1913,10 @@ textarea {
   outline-offset: 2px;
 }
 
-/* The tooltip: the segment's own name, above it, on hover or focus. */
-.stacked-segment::after {
+/* The tooltip: the segment's own name, above it, on hover or focus. It has content only then: a
+   hidden one would still be laid out and could push the page wider than a phone. */
+.stacked-segment:hover::after,
+.stacked-segment:focus-visible::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 8px);
@@ -1923,17 +1930,7 @@ textarea {
   font-weight: 500;
   white-space: nowrap;
   pointer-events: none;
-  opacity: 0;
-  transform: translate(-50%, 4px);
-  transition:
-    opacity var(--motion-interaction) var(--motion-easing),
-    transform var(--motion-interaction) var(--motion-easing);
-}
-
-.stacked-segment:hover::after,
-.stacked-segment:focus-visible::after {
-  opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translateX(-50%);
 }
 
 .chart-legend {
@@ -1992,8 +1989,7 @@ textarea {
 
 @media (prefers-reduced-motion: reduce) {
   .count-fill,
-  .meter-fill,
-  .stacked-segment::after {
+  .meter-fill {
     transition: none;
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { FocusEvent, KeyboardEvent } from "react";
 import { Link } from "react-router";
 
 import type { UserResponse } from "../api/types";
@@ -79,11 +79,21 @@ export function AccountMenu({ user, loggingOut, onLogout }: AccountMenuProps) {
     }
   }
 
+  // Tab out of the menu closes it. Only a focus that lands somewhere else counts: with no new
+  // target (a click on a button some browsers do not focus, such as this menu's own button) the
+  // click handlers decide.
+  function onBlur(event: FocusEvent<HTMLDivElement>) {
+    const next = event.relatedTarget;
+    if (open && next instanceof Node && !event.currentTarget.contains(next)) {
+      setOpen(false);
+    }
+  }
+
   return (
-    <div ref={root} className="account-menu" onKeyDown={onKeyDown}>
+    <div ref={root} className="account-menu" onKeyDown={onKeyDown} onBlur={onBlur}>
       {open && (
         <div ref={menu} id={MENU_ID} className="account-menu-list" role="menu" aria-label={name}>
-          <p className="account-menu-who">
+          <p className="account-menu-who" role="none">
             <span>{user.email}</span>
             <span className="muted">
               {accountLabel(user)} · {user.role}

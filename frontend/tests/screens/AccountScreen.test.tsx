@@ -74,6 +74,19 @@ describe("AccountScreen", () => {
     expect(screen.getByLabelText(/^New password/)).toBeInTheDocument();
   });
 
+  it("opens the password form again when the menu asks for it after Cancel", async () => {
+    stubChange(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=password");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Ada" }));
+    await user.click(screen.getByRole("menuitem", { name: "Change password" }));
+
+    expect(await screen.findByLabelText(/^Current password/)).toHaveValue("");
+  });
+
   it("opens nothing for an unknown form in the address", async () => {
     stubChange(() => new Response(null, { status: 204 }));
     renderAt("/app/account?open=everything");
@@ -233,6 +246,19 @@ describe("AccountScreen: delete my account", () => {
 
     expect(await screen.findByRole("button", { name: "Delete for good" })).toBeInTheDocument();
     expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+  });
+
+  it("opens the delete step again when the menu asks for it after Cancel", async () => {
+    stubDelete(() => new Response(null, { status: 204 }));
+    renderAt("/app/account?open=delete");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("button", { name: "Delete for good" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Lin" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete account" }));
+
+    expect(await screen.findByRole("button", { name: "Delete for good" })).toBeInTheDocument();
   });
 
   it("shows only the delete step when the menu asks for it, not the password part", async () => {

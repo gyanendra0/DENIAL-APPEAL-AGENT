@@ -126,9 +126,6 @@ export function WorklistScreen() {
           </label>
         </div>
       </WorklistTable>
-      {filters.reviewStatus !== null && (
-        <p className="muted">Jobs without a draft are left out while a review status is chosen.</p>
-      )}
     </>
   );
 }
@@ -161,6 +158,12 @@ function WorklistTable({ filters, onClearFilters, children }: WorklistTableProps
           </button>
         )}
       </div>
+      {/* Under the filters it is about, not after the table. */}
+      {filters.reviewStatus !== null && (
+        <p className="muted worklist-note">
+          Jobs without a draft are left out while a review status is chosen.
+        </p>
+      )}
       {worklist.isPending && <p>Loading…</p>}
       {/* A failed first page leaves no data; a failed later page keeps the pages already shown. */}
       {!worklist.isPending && worklist.data === undefined && (

@@ -5134,7 +5134,7 @@ screen:
 | `frontend/src/worklist/useRecentDenials.ts` | `useRecentDenials`: the sidebar's newest `RECENT_DENIALS_LIMIT` (10) jobs; its key starts with `worklist`, so an approval, a rejection, a new upload or a job that finishes refreshes it |
 | `frontend/src/worklist/useWorklist.ts` | `useWorklist`, one page after another; `WORKLIST_PAGE_SIZE` 50 |
 | `frontend/src/screens/` | `LoginScreen`, `SignupScreen`, `VerifyEmailScreen`, `ForgotPasswordScreen`, `GoogleJoinScreen` (all in `AuthFrame`, with `AuthField` and `PasswordField`, which shows or hides the password and takes an optional label, so two password fields on one form have differently named show buttons; `GoogleButton`; `icons.tsx`, inline icons), `AccountScreen` (the password change and, for a personal account, the delete, in one centered card), `AppLayout` (a sidebar on the left: Upload, Worklist, Overview, `RecentDenials` (the newest 10 jobs from `GET /worklist?limit=10`, each a link to its split view), and `AccountMenu` at the bottom; it collapses to icons and the browser remembers that (`sidebarPreference.ts`); under 760 pixels a bar on top opens it as a drawer; while it is open the page behind is `inert`, Escape closes it wherever the focus is, and a window that grows past 760 pixels closes it), `UploadScreen`, `WorklistScreen`; `errorMessage.ts` and `jobText.ts`, the sentences shown |
-| `frontend/src/screens/AccountMenu.tsx`, `firstName.ts`, `accountPaths.ts` | The user at the bottom of the sidebar: a round initial and a first name made from the email (`firstNameFromEmail`, "ada.lovelace@x.org" gives "Ada"; the API keeps no name). A click opens a menu above it with the email, the account ("Personal" for a personal account) and the role, and the items Change password, Delete account (personal accounts only) and Log out; Escape, a click outside or an item closes it, the arrow keys move between the items, and Escape closes only the menu, not the drawer around it. `accountFormPath` gives `/app/account?open=password` or `?open=delete`; `readAccountForm` ignores any other value |
+| `frontend/src/screens/AccountMenu.tsx`, `firstName.ts`, `accountPaths.ts` | The user at the bottom of the sidebar: a round initial and a first name made from the email (`firstNameFromEmail`, "ada.lovelace@x.org" gives "Ada"; the API keeps no name). A click opens a menu above it with the email, the account ("Personal" for a personal account) and the role, and the items Change password, Delete account (personal accounts only) and Log out; Escape, a click outside, Tab out of it or an item closes it, the arrow keys move between the items, and Escape closes only the menu, not the drawer around it; the email, account and role line has `role="none"`, so the menu holds only its items. `accountFormPath` gives `/app/account?open=password` or `?open=delete`; `readAccountForm` ignores any other value |
 | `frontend/src/screens/FileDropZone.tsx`, `fileSize.ts` | The upload's drop area (see "An upload, step by step"); `formatFileSize` ("812 B", "4 KB", "1.2 MB", 1 KB = 1,000 bytes, as `UPLOAD_MAX_BYTES` is "1 MB") |
 | `frontend/src/notify/notify.ts`, `NotificationsProvider.tsx` | `useNotify` and the notification cards (see "Notifications"); `NOTIFICATION_MS` (5,000), `MAX_NOTIFICATIONS` (3) |
 | `frontend/src/styles.css` | Plain CSS with variables; warm theme: cream page (`#FAF9F5`), warm grey sidebar, warm near-black text, terracotta accent (`#A9482A`) for actions, links and focus, Source Serif 4 headings and Inter text (both self-hosted through `@fontsource-variable`, no request to a font service); login and sign-up in two columns (headline and form card left, a framed panel right) with a black main button; all text pairs WCAG AA, field borders and the focus ring 3:1; transitions off under reduced motion. Since #88 also the centered cards (`.centered-screen`, `.screen-card`, 420 pixels wide, `wide` 960), the drop area, the pills, tags and bars of the worklist and the overview (colour tones `good`, `waiting`, `bad`, `neutral`, each at least 3:1 on its card and its track), the account menu and the notification cards |
@@ -5239,7 +5239,9 @@ a "Change password" button. The button opens the form: the current password and 
 each a `PasswordField`, with Change password and Cancel; Cancel closes it and forgets what
 was typed. There is no "repeat the new password" field; the show button lets the user see
 what they typed. "Change password" in the account menu opens `/app/account?open=password`:
-the form is open at once and the delete part is left out.
+the form is open at once and the delete part is left out. Each visit starts the form afresh
+(its key is the router's location key), so the menu item opens it again after Cancel closed it,
+on the same address.
 
 1. The browser checks first (`checkPasswordChange`): an empty current password gets "Enter
    your current password."; a new password outside 12 to 128 characters gets "Use 12 to 128
@@ -5371,10 +5373,10 @@ The `status` and `review_status` filters sit in a toolbar above the table, besid
 count ("12 jobs"; "50 jobs so far" while more pages are left; "3 jobs shown" with a filter)
 and a "Clear filters" link while one is set. They are kept in the address
 (`?status=done`), so a reload or a shared link shows the same list; an unknown value is
-ignored. A review-status filter leaves out jobs that have no draft, and the screen says so.
-An empty list says "No jobs match these filters." with a Clear filters button, or, with no
-filter, "No jobs here yet." with an "Upload your first letter" button for a role that can
-upload.
+ignored. A review-status filter leaves out jobs that have no draft, and a line under the
+toolbar says so. An empty list says "No jobs match these filters." with a Clear filters
+button, or, with no filter, "No jobs here yet." with an "Upload your first letter" button for
+a role that can upload.
 
 ### Notifications
 
@@ -5384,11 +5386,13 @@ moves with the router (no new page load). A screen sends one with `useNotify`; a
 on its own, outside the provider, sends it nowhere.
 
 - **Tones.** `success` and `info` close by themselves after 5 seconds (`NOTIFICATION_MS`);
-  the time stops while the pointer is on the card and starts again in full when it leaves.
+  the time stops while the pointer is on the card or the keyboard focus is in it (on its
+  Open link, say), and starts again in full when both have left.
   An `error` stays until it is closed. Every card has a close button.
 - **At most 3** (`MAX_NOTIFICATIONS`); a new one pushes the oldest out.
-- **Read out.** Errors are in an `aria-live="assertive"` region, the rest in a
-  `polite` one. Neither has a `role`, so a screen keeps its own single `status` and `alert`.
+- **Read out.** The cards sit in a `region` named "Notifications". Errors are in an
+  `aria-live="assertive"` part of it, the rest in a `polite` one. Neither part has a `role`, so
+  a screen keeps its own single `status` and `alert`.
 - **Fixed words.** A card's title and detail are fixed sentences or a job number; a
   notification never shows a file name, what the user typed or what a letter says.
 
@@ -5437,8 +5441,8 @@ Library; `fetch` is stubbed, so no test reaches a server, and a request with no 
 fails the test that made it (`tests/helpers.tsx`, checked after each test). Coverage on `frontend/src/` must be
 at least 70% (lines, functions, branches, statements), the same as `src/`. CI runs all of it
 as a second job, `frontend`, beside the Python job. At the end of this branch: 134 tests,
-99.60% of lines and 96.72% of branches. After the dashboard polish (#88): 475 tests, 99.69%
-of lines.
+99.60% of lines and 96.72% of branches. After the dashboard polish (#88): 479 tests, 99.79%
+of lines and 97.04% of branches.
 
 ### Starting it
 

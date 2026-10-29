@@ -108,6 +108,23 @@ describe("AppLayout", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
+  it("closes the menu when Tab moves the focus out of it, not while it stays inside", async () => {
+    stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
+    renderAt("/app/worklist");
+    const user = await openAccountMenu();
+
+    await user.tab();
+    expect(screen.getByRole("menuitem", { name: "Log out" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Ada" })).toHaveFocus();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    await user.tab();
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ada" })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("moves between the menu items with the arrow keys, round the ends", async () => {
     stubApi({ ...EMPTY_WORKLIST, "GET /me": () => jsonResponse(200, ADMIN) });
     renderAt("/app/worklist");

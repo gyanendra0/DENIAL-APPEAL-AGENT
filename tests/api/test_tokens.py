@@ -39,9 +39,11 @@ def _payload(**changes: Any) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def test_token_round_trip_gives_user_account_and_version() -> None:
-    assert read_token(_token(), secret=SECRET) == TokenClaims(
-        user_id=7, account_id=3, token_version=2
+def test_token_round_trip_gives_user_account_version_and_issue_time() -> None:
+    now = datetime.now(UTC).replace(microsecond=700000)
+    # The issue time is kept to the second.
+    assert read_token(_token(now), secret=SECRET) == TokenClaims(
+        user_id=7, account_id=3, token_version=2, issued_at=now.replace(microsecond=0)
     )
 
 
@@ -117,6 +119,8 @@ def test_rejects_a_token_missing_a_claim(missing: str) -> None:
         {"ver": True},
         {"ver": 2.0},
         {"ver": -1},
+        {"iat": True},
+        {"iat": 1_000_000.5},
     ],
 )
 def test_rejects_claims_of_the_wrong_shape(changes: dict[str, Any]) -> None:

@@ -38,7 +38,8 @@ JobRunner = Callable[[int, int], None]
 class CurrentUser(BaseModel):
     """The logged-in user, read from the database on every request. `role` is the role the user
     acts with (`effective_role`: `ADMIN_EMAILS` decides who is admin), not the stored one;
-    `account_kind` says whether the account is the shared one or the user's personal one."""
+    `account_kind` says whether the account is the shared one or the user's personal one;
+    `logged_in_at` is when the login cookie's token was issued."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -47,6 +48,7 @@ class CurrentUser(BaseModel):
     email: str
     role: UserRole
     account_kind: AccountKind
+    logged_in_at: datetime
 
 
 def job_scope(user: CurrentUser) -> JobScope:
@@ -137,6 +139,7 @@ def _user_from_cookie(request: Request, settings: ApiSettings, session: Session)
         email=user.email,
         role=effective_role(settings, user.email, user.role, account_kind),
         account_kind=account_kind,
+        logged_in_at=claims.issued_at,
     )
 
 

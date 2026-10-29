@@ -1,6 +1,7 @@
 """The login cookie: a fresh token in an HttpOnly, SameSite=Strict cookie.
 
-Set at sign-up, at login and after a password change (with the raised token version).
+Set at sign-up, at login and after a password change (with the raised token version);
+cleared at logout and when the user deletes their account.
 """
 
 from datetime import UTC, datetime
@@ -33,6 +34,17 @@ def set_login_cookie(
         AUTH_COOKIE_NAME,
         token,
         max_age=settings.auth_token_ttl_minutes * 60,
+        path="/",
+        secure=settings.auth_cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def clear_login_cookie(response: Response, settings: ApiSettings) -> None:
+    """Tell the browser to drop the login cookie. The token itself stays valid until it expires."""
+    response.delete_cookie(
+        AUTH_COOKIE_NAME,
         path="/",
         secure=settings.auth_cookie_secure,
         httponly=True,

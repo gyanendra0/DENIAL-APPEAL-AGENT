@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import (
-    AUTH_COOKIE_NAME,
     get_api_settings,
     get_mail_sender,
     get_now,
@@ -26,7 +25,7 @@ from src.api.email_verification import (
     prepare_verify_email,
 )
 from src.api.login import authenticate
-from src.api.login_cookie import set_login_cookie
+from src.api.login_cookie import clear_login_cookie, set_login_cookie
 from src.api.login_limit import (
     clear_email_failures,
     count_ip_try,
@@ -249,10 +248,4 @@ def login(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(response: Response, settings: Settings) -> None:
     """Clear the login cookie. The token itself stays valid until it expires."""
-    response.delete_cookie(
-        AUTH_COOKIE_NAME,
-        path="/",
-        secure=settings.auth_cookie_secure,
-        httponly=True,
-        samesite="strict",
-    )
+    clear_login_cookie(response, settings)

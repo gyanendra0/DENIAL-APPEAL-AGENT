@@ -72,6 +72,19 @@ class PasswordChangeRequest(BaseModel):
     new_password: Password
 
 
+class AccountDeleteRequest(BaseModel):
+    """The password that confirms "Delete my account". The account comes from the login, never
+    from the body. A user who logs in only with Google has no password and sends none; the
+    route then wants a recent login instead.
+
+    The length is not checked here, so a wrong length is the same 400 as a wrong password.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: str | None = None
+
+
 class PasswordResetRequest(BaseModel):
     """The email a reset code is asked for. The answer never says whether it has an account."""
 

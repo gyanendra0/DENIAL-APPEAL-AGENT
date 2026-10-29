@@ -16,6 +16,13 @@
   --color-accent-hover: #8f3b21;
   --color-on-accent: #ffffff;
   --color-error: #b42318;
+  /* Bars on the overview: what a value means. Each is 3:1 or more on a card and on the track,
+     and white text on each is 4.5:1 or more (the counts inside the admin's stacked bars). */
+  --color-good: #2e7d4f;
+  --color-waiting: #9a5d00;
+  --color-bad: #b42318;
+  --color-neutral-mark: #77746c;
+  --color-track: #ece9e1;
   --color-focus: #a9482a;
   --color-focus-glow: rgba(169, 72, 42, 0.16);
   --color-hover: rgba(31, 30, 27, 0.06);
@@ -590,6 +597,44 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* A link that goes to another screen but looks like the main button. */
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: var(--space-2) 18px;
+  border: var(--border-hairline) solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--text-interface);
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    background-color var(--motion-interaction) var(--motion-easing),
+    border-color var(--motion-interaction) var(--motion-easing);
+}
+
+a.button-link:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+/* The quiet, compact kind, for a button in every row of a table. */
+a.button-link.secondary {
+  min-height: 30px;
+  padding: 3px 14px;
+  border-color: var(--color-border-strong);
+  background: var(--color-card);
+  color: var(--color-text);
+  font-size: var(--text-small);
+}
+
+a.button-link.secondary:hover {
+  background: var(--color-surface);
+  border-color: var(--color-field-border);
 }
 
 /* The upload and account screens: one card in the middle of the space beside the sidebar. */
@@ -1451,5 +1496,337 @@ textarea {
 
   .spinner {
     animation-duration: 2.4s;
+  }
+}
+
+/* The overview: headline tiles, then one card per count with a bar for each value's share. */
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 18px 20px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.stat-tile dt {
+  font-size: var(--text-metadata);
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.stat-tile dd {
+  margin: 0;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 34px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stat-note {
+  font-size: var(--text-metadata);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.count-card {
+  padding: 20px 22px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.count-card h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: 19px;
+}
+
+.count-card-total {
+  font-family: var(--font-body);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.count-bars {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+
+.count-bars th,
+.count-bars td {
+  padding: 8px 0;
+  vertical-align: top;
+  border-bottom: var(--border-hairline) solid var(--color-border);
+}
+
+.count-bars tr:last-child th,
+.count-bars tr:last-child td {
+  border-bottom: none;
+}
+
+.count-bars th {
+  width: 100%;
+  font-weight: 400;
+  text-align: left;
+}
+
+.count-value {
+  padding-left: var(--space-3);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.count-bars tr.is-zero th,
+.count-bars tr.is-zero .count-value {
+  color: var(--color-muted);
+}
+
+.count-track {
+  display: block;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 4px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.count-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  transition: width 400ms var(--motion-easing);
+}
+
+.tone-good {
+  background: var(--color-good);
+}
+
+.tone-waiting {
+  background: var(--color-waiting);
+}
+
+.tone-bad {
+  background: var(--color-bad);
+}
+
+.tone-neutral {
+  background: var(--color-neutral-mark);
+}
+
+.overview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-card);
+  border: var(--border-hairline) dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+}
+
+.overview-empty p {
+  margin: 0;
+}
+
+/* The admin's charts: a stacked bar per count and the approval meter. */
+.overview-charts {
+  margin: 0 0 var(--space-4);
+  padding: 20px 22px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.overview-charts h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 19px;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-4) 40px;
+}
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+}
+
+.chart-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.chart-title .muted {
+  font-size: var(--text-metadata);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-empty {
+  margin: 0;
+  font-size: var(--text-small);
+}
+
+/* Segments touch with a 2px gap of card between them; only the two ends are rounded. */
+.stacked-bar {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+}
+
+.stacked-segment {
+  position: relative;
+  display: flex;
+  flex-basis: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 4px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.stacked-segment:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.stacked-segment:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.stacked-segment:only-child {
+  border-radius: 4px;
+}
+
+.stacked-segment:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The tooltip: the segment's own name, above it, on hover or focus. */
+.stacked-segment::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 5;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--color-button-dark);
+  color: #ffffff;
+  font-size: var(--text-metadata);
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity var(--motion-interaction) var(--motion-easing),
+    transform var(--motion-interaction) var(--motion-easing);
+}
+
+.stacked-segment:hover::after,
+.stacked-segment:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-metadata);
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend li.is-zero {
+  color: var(--color-muted);
+}
+
+.legend-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.meter-value {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 6px 6px 0;
+  transition: width 400ms var(--motion-easing);
+}
+
+.meter-note {
+  margin: 0;
+  font-size: var(--text-metadata);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .count-fill,
+  .meter-fill,
+  .stacked-segment::after {
+    transition: none;
   }
 }

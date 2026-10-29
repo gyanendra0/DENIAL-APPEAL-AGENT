@@ -2,33 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 
-import type { UserResponse } from "../api/types";
-
 import { canUpload } from "../auth/roles";
 import { useLogout, useSession } from "../auth/session";
+import { AccountMenu } from "./AccountMenu";
+import { useNotify } from "../notify/notify";
 import { describeError } from "./errorMessage";
-import {
-  ChartIcon,
-  CloseIcon,
-  ListIcon,
-  LogOutIcon,
-  LogoIcon,
-  MenuIcon,
-  PlusIcon,
-  SidebarIcon,
-  UserIcon,
-} from "./icons";
+import { ChartIcon, CloseIcon, ListIcon, LogoIcon, MenuIcon, PlusIcon, SidebarIcon } from "./icons";
 import { RecentDenials } from "./RecentDenials";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebarPreference";
 
 const SIDEBAR_ID = "app-sidebar";
 // The width under which the sidebar is a drawer; the same number as in styles.css.
 const DRAWER_QUERY = "(max-width: 760px)";
-
-// A personal account's name is made up (`personal-…`), so the screen names its kind instead.
-function accountLabel(user: UserResponse): string {
-  return user.account_kind === "personal" ? "Personal" : user.account_name;
-}
 
 function Brand() {
   return (
@@ -47,6 +32,7 @@ function Brand() {
 export function AppLayout() {
   const session = useSession();
   const logoutMutation = useLogout();
+  const notify = useNotify();
   const navigate = useNavigate();
   const user = session.data;
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
@@ -98,7 +84,12 @@ export function AppLayout() {
 
   function onLogout() {
     logoutMutation.mutate(undefined, {
-      onSuccess: () => void navigate("/app/login", { replace: true }),
+      onSuccess: () => {
+        notify({ tone: "info", title: "You're logged out" });
+        void navigate("/app/login", { replace: true });
+      },
+      onError: (error) =>
+        notify({ tone: "error", title: "Logging out failed", detail: describeError(error) }),
     });
   }
 
@@ -179,36 +170,16 @@ export function AppLayout() {
             <ChartIcon />
             <span className="nav-text">Overview</span>
           </NavLink>
-          <NavLink to="/app/account">
-            <UserIcon />
-            <span className="nav-text">Account</span>
-          </NavLink>
         </nav>
         <RecentDenials />
         <div className="app-account">
           {user && (
-            <span className="muted app-account-text">
-              {accountLabel(user)} · {user.email} ({user.role})
-            </span>
+            <AccountMenu user={user} loggingOut={logoutMutation.isPending} onLogout={onLogout} />
           )}
-          <button
-            type="button"
-            className="secondary app-logout"
-            onClick={onLogout}
-            disabled={logoutMutation.isPending}
-          >
-            <LogOutIcon />
-            <span className="nav-text">Log out</span>
-          </button>
         </div>
       </header>
       {drawerOpen && <div className="app-backdrop" aria-hidden="true" onClick={closeDrawer} />}
       <div className="app-main" inert={drawerOpen}>
-        {logoutMutation.isError && (
-          <p className="page error" role="alert">
-            {describeError(logoutMutation.error)}
-          </p>
-        )}
         <main className="page">
           <Outlet />
         </main>

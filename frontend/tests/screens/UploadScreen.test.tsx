@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +11,7 @@ import {
   REVIEWER,
   VIEWER,
   jsonResponse,
+  notifications,
   renderAt,
   stubApi,
   NO_RECENT,
@@ -41,7 +42,8 @@ function inTurn(jobs: JobResponse[]): Answer {
 }
 
 // The checkbox every upload needs: the letter holds no real personal details.
-const CONFIRMATION = "I confirm this letter holds no real personal details";
+const CONFIRMATION =
+  "I confirm this letter holds no real names, member ids, claim numbers or dates of birth";
 
 function letter(): File {
   return new File(["Made-up denial letter"], "letter.txt", { type: "text/plain" });
@@ -59,7 +61,116 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function dropZone(): HTMLElement {
+  const zone = screen.getByLabelText("Denial letter").closest(".dropzone");
+  if (!(zone instanceof HTMLElement)) {
+    throw new Error("no drop zone");
+  }
+  return zone;
+}
+
 describe("UploadScreen", () => {
+  it("says when the watched job fails, and Open goes to its screen", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const failed: JobResponse = { ...RUNNING, status: "failed", failure: "extraction_failed" };
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": inTurn([RUNNING, failed]),
+      "GET /jobs/7/detail": () => jsonResponse(404, { detail: "job not found" }),
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { router } = renderAt("/app/upload?job=7");
+    await screen.findByRole("status");
+
+    await nextPoll();
+
+    expect(notifications().getByText("The letter could not be processed")).toBeInTheDocument();
+    expect(
+      notifications().getByText("Failed: the letter could not be read into fields"),
+    ).toBeInTheDocument();
+    await user.click(notifications().getByRole("button", { name: "Open" }));
+    expect(router.state.location.pathname).toBe("/app/jobs/7");
+    expect(
+      notifications().queryByText("The letter could not be processed"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says a watched job finished another way, with its end in words", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const stopped: JobResponse = { ...DONE, end_state: "stopped_by_rules" };
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": inTurn([RUNNING, stopped]),
+    });
+    renderAt("/app/upload?job=7");
+    await screen.findByRole("status");
+
+    await nextPoll();
+
+    expect(notifications().getByText("Job 7 finished")).toBeInTheDocument();
+    expect(
+      notifications().getByText("Stopped by the rules (deadline or amount); no draft was written"),
+    ).toBeInTheDocument();
+  });
+
+  it("gives no notification for a job already finished when the screen opens", async () => {
+    stubApi({
+      ...NO_RECENT,
+      "GET /me": () => jsonResponse(200, REVIEWER),
+      "GET /jobs/7": () => jsonResponse(200, DONE),
+    });
+
+    renderAt("/app/upload?job=7");
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Draft ready for review");
+    expect(notifications().queryByText("Draft ready for review")).not.toBeInTheDocument();
+  });
+
+  it("takes a dropped letter like a picked one, and refuses a dropped wrong file", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+    await screen.findByLabelText("Denial letter");
+    await user.click(screen.getByLabelText(CONFIRMATION));
+
+    const image = new File(["made-up"], "scan.png", { type: "image/png" });
+    fireEvent.drop(dropZone(), { dataTransfer: { files: [image] } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Only a .txt file or a PDF can be uploaded.",
+    );
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+
+    fireEvent.drop(dropZone(), { dataTransfer: { files: [letter()] } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("letter.txt")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
+  });
+
+  it("turns Upload off again when the chosen letter is removed", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    const user = userEvent.setup();
+    renderAt("/app/upload");
+    await user.upload(await screen.findByLabelText("Denial letter"), letter());
+    await user.click(screen.getByLabelText(CONFIRMATION));
+    expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(screen.queryByText("letter.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+  });
+
+  it("says the limit in the hint under the drop zone", async () => {
+    stubApi({ ...NO_RECENT, "GET /me": () => jsonResponse(200, REVIEWER) });
+    renderAt("/app/upload");
+
+    expect(await screen.findByLabelText("Denial letter")).toHaveAccessibleDescription(
+      ".txt or .pdf with text, up to 1 MB",
+    );
+  });
+
   it("uploads a letter, polls the job until it ends and then stops", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchStub = stubApi({
@@ -79,10 +190,14 @@ describe("UploadScreen", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent("Waiting to start");
     expect(router.state.location.search).toBe("?job=7");
+    expect(notifications().getByText("Letter uploaded")).toBeInTheDocument();
+    expect(notifications().getByText("Job 7 is being read.")).toBeInTheDocument();
     await nextPoll();
     expect(screen.getByRole("status")).toHaveTextContent("Reading the letter and drafting");
+    expect(notifications().queryByText("Draft ready for review")).not.toBeInTheDocument();
     await nextPoll();
     expect(screen.getByRole("status")).toHaveTextContent("Draft ready for review");
+    expect(notifications().getByText("Draft ready for review")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Go to the worklist" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open the denial" })).toHaveAttribute(
       "href",
@@ -273,7 +388,7 @@ describe("UploadScreen", () => {
     const user = userEvent.setup();
     renderAt("/app/upload");
 
-    expect(await screen.findByText(/black out every personal detail/)).toBeInTheDocument();
+    expect(await screen.findByLabelText(CONFIRMATION)).not.toBeChecked();
     await user.upload(screen.getByLabelText("Denial letter"), letter());
     const button = screen.getByRole("button", { name: "Upload" });
     expect(button).toBeDisabled();

@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { DraftDetail, DraftRejectReason } from "../api/types";
 import { REJECT_REASON_TEXT } from "./detailText";
 import { ReviewError } from "./ReviewError";
+import { useNotify } from "../notify/notify";
 import { useApproveDraft, useRejectDraft } from "./useDraftActions";
 
 const REJECT_REASONS = Object.keys(REJECT_REASON_TEXT) as DraftRejectReason[];
@@ -27,6 +28,7 @@ export function DraftActions({
   const [version, setVersion] = useState(draft.latest_version);
   const approve = useApproveDraft(jobId);
   const reject = useRejectDraft(jobId);
+  const notify = useNotify();
   const pending = approve.isPending || reject.isPending;
 
   function open(next: "approve" | "reject" | null) {
@@ -59,7 +61,20 @@ export function DraftActions({
             this system.
           </p>
           <div className="links">
-            <button type="button" disabled={pending} onClick={() => approve.mutate(version)}>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                approve.mutate(version, {
+                  onSuccess: () =>
+                    notify({
+                      tone: "success",
+                      title: "Draft approved",
+                      detail: "It is ready for you to send. Nothing is sent by this system.",
+                    }),
+                })
+              }
+            >
               {approve.isPending ? "Approving…" : "Yes, approve"}
             </button>
             <button type="button" className="secondary" onClick={() => open(null)}>
@@ -92,7 +107,9 @@ export function DraftActions({
               disabled={reason === null || pending}
               onClick={() => {
                 if (reason !== null) {
-                  reject.mutate(reason);
+                  reject.mutate(reason, {
+                    onSuccess: () => notify({ tone: "info", title: "Draft rejected" }),
+                  });
                 }
               }}
             >

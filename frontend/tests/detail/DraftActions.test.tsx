@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { JobDetail } from "../../src/api/types";
-import { REVIEWER, VIEWER, jsonResponse, sentBody } from "../helpers";
+import { REVIEWER, VIEWER, jsonResponse, notifications, sentBody } from "../helpers";
 import { DETAIL, DRAFT, EDITED } from "./fixtures";
 import { detailReads, findDraft, openDetail, refocusWindow } from "./reviewHelpers";
 
@@ -51,6 +51,7 @@ describe("DraftActions", () => {
 
     expect(await screen.findByText("Approved version")).toBeInTheDocument();
     expect(sentBody(fetchStub, "POST /jobs/9/draft/approve")).toEqual({ version: 1 });
+    expect(notifications().getByText("Draft approved")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
@@ -117,6 +118,7 @@ describe("DraftActions", () => {
 
     expect(await screen.findByText("Rejected")).toBeInTheDocument();
     expect(sentBody(fetchStub, "POST /jobs/9/draft/reject")).toEqual({ reason: "wrong_fact" });
+    expect(notifications().getByText("Draft rejected")).toBeInTheDocument();
     expect(detailReads(fetchStub)).toBe(2);
   });
 

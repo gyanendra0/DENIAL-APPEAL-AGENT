@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { canUpload } from "../auth/roles";
 import { useSession } from "../auth/session";
+import type { JobResponse } from "../api/types";
+import { useNotify } from "../notify/notify";
+import type { NotificationInput } from "../notify/notify";
 import { ApiError } from "../api/client";
-import { checkUploadFile } from "../jobs/uploadCheck";
+import { UPLOAD_MAX_BYTES, checkUploadFile } from "../jobs/uploadCheck";
 import { isJobFinished, useJob, useUploadLetter } from "../jobs/useJob";
 import { asSentence, describeError } from "./errorMessage";
+import { FileDropZone } from "./FileDropZone";
+import { formatFileSize } from "./fileSize";
 import { describeJob } from "./jobText";
 
 // The job id in the address (`?job=12`), so a reload keeps showing the same job.
@@ -27,25 +32,28 @@ export function UploadScreen() {
 
   if (!canUpload(session.data?.role)) {
     return (
-      <>
-        <h1>Upload a denial letter</h1>
-        <p className="error" role="alert">
-          Your role cannot do this.
-        </p>
-      </>
+      <div className="centered-screen">
+        <section className="screen-card wide upload-card">
+          <h1>Upload a denial letter</h1>
+          <p className="error" role="alert">
+            Your role cannot do this.
+          </p>
+        </section>
+      </div>
     );
   }
 
   return (
-    <>
-      <h1>Upload a denial letter</h1>
-      <p className="muted">
-        A text file or a PDF with text. A draft is written for a person to review; nothing is sent
-        to an insurer.
-      </p>
-      <UploadForm onUploaded={(id) => setSearchParams({ [JOB_PARAM]: String(id) })} />
-      {jobId !== null && <JobStatusBox key={jobId} jobId={jobId} />}
-    </>
+    <div className="centered-screen">
+      <section className="screen-card wide upload-card">
+        <h1>Upload a denial letter</h1>
+        <p className="muted card-lead">
+          A draft is written for a person to review. Nothing is sent to an insurer.
+        </p>
+        <UploadForm onUploaded={(id) => setSearchParams({ [JOB_PARAM]: String(id) })} />
+        {jobId !== null && <JobStatusBox key={jobId} jobId={jobId} />}
+      </section>
+    </div>
   );
 }
 
@@ -63,6 +71,7 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
   const [fileProblem, setFileProblem] = useState<string | null>(null);
   const [noPersonalData, setNoPersonalData] = useState(false);
   const uploadMutation = useUploadLetter();
+  const notify = useNotify();
 
   // A file the browser refuses is never kept, so it cannot be sent.
   function onPick(picked: File | null) {
@@ -77,30 +86,34 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
     if (file === null || !noPersonalData) {
       return;
     }
-    uploadMutation.mutate(file, { onSuccess: (accepted) => onUploaded(accepted.job_id) });
+    uploadMutation.mutate(file, {
+      onSuccess: (accepted) => {
+        notify({
+          tone: "success",
+          title: "Letter uploaded",
+          detail: `Job ${accepted.job_id} is being read.`,
+        });
+        onUploaded(accepted.job_id);
+      },
+    });
   }
 
   return (
     <form className="form" onSubmit={onSubmit}>
-      <label>
-        Denial letter
-        <input
-          type="file"
-          accept=".txt,.pdf,text/plain,application/pdf"
-          onChange={(event) => onPick(event.target.files?.[0] ?? null)}
-        />
-      </label>
-      <p className="notice">
-        This letter contains no real names, member ids, claim numbers or dates of birth. Use a
-        made-up letter or black out every personal detail.
-      </p>
+      <FileDropZone
+        label="Denial letter"
+        accept=".txt,.pdf,text/plain,application/pdf"
+        hint={`.txt or .pdf with text, up to ${formatFileSize(UPLOAD_MAX_BYTES)}`}
+        file={file}
+        onPick={onPick}
+      />
       <label className="checkbox">
         <input
           type="checkbox"
           checked={noPersonalData}
           onChange={(event) => setNoPersonalData(event.target.checked)}
         />
-        I confirm this letter holds no real personal details
+        I confirm this letter holds no real names, member ids, claim numbers or dates of birth
       </label>
       {fileProblem !== null && (
         <p className="error" role="alert">
@@ -119,11 +132,48 @@ function UploadForm({ onUploaded }: { onUploaded: (jobId: number) => void }) {
   );
 }
 
+// The notification for a job that has just ended: a draft to review, another end, or a failure.
+function finishedNotification(job: JobResponse): NotificationInput {
+  const open = { label: "Open", to: `/app/jobs/${job.job_id}` };
+  if (job.status === "failed") {
+    return {
+      tone: "error",
+      title: "The letter could not be processed",
+      detail: describeJob(job),
+      action: open,
+    };
+  }
+  if (job.end_state === "needs_review") {
+    return { tone: "success", title: "Draft ready for review", action: open };
+  }
+  return {
+    tone: "info",
+    title: `Job ${job.job_id} finished`,
+    detail: describeJob(job),
+    action: open,
+  };
+}
+
 function JobStatusBox({ jobId }: { jobId: number }) {
   const job = useJob(jobId);
+  const notify = useNotify();
+  // Whether the job was still running when it was last seen. A job already finished when the
+  // screen opened (a reload) gets no notification; one that ends while it is watched gets one.
+  const wasRunning = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    if (job.data === undefined) {
+      return;
+    }
+    const finished = isJobFinished(job.data);
+    if (finished && wasRunning.current === true) {
+      notify(finishedNotification(job.data));
+    }
+    wasRunning.current = !finished;
+  }, [job.data, notify]);
 
   return (
-    <section className="status-box" aria-label="Job status">
+    <section className="card-section" aria-label="Job status">
       <h2>Job {jobId}</h2>
       {job.isPending && <p>Loading…</p>}
       {job.isError && (

@@ -40,7 +40,7 @@ describe("LoginScreen", () => {
 
     expect(await screen.findByRole("heading", { name: "Worklist" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/app/worklist");
-    expect(screen.getByText(/Made-up Clinic/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ada" })).toBeInTheDocument();
     expect(sentBody(fetchStub, "POST /auth/login")).toEqual({
       email: ADMIN.email,
       password: "a long made-up password",

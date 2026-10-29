@@ -16,6 +16,13 @@
   --color-accent-hover: #8f3b21;
   --color-on-accent: #ffffff;
   --color-error: #b42318;
+  /* Bars on the overview: what a value means. Each is 3:1 or more on a card and on the track,
+     and white text on each is 4.5:1 or more (the counts inside the admin's stacked bars). */
+  --color-good: #2e7d4f;
+  --color-waiting: #9a5d00;
+  --color-bad: #b42318;
+  --color-neutral-mark: #77746c;
+  --color-track: #ece9e1;
   --color-focus: #a9482a;
   --color-focus-glow: rgba(169, 72, 42, 0.16);
   --color-hover: rgba(31, 30, 27, 0.06);
@@ -232,8 +239,7 @@ a {
 }
 
 .new-upload svg,
-.app-nav svg,
-.app-logout svg {
+.app-nav svg {
   flex: none;
   width: 18px;
   height: 18px;
@@ -333,24 +339,113 @@ a {
   overflow-wrap: anywhere;
 }
 
-.app-account-text {
-  padding: 0 8px;
+/* The user at the bottom of the sidebar; its menu opens above it. */
+.account-menu {
+  position: relative;
 }
 
-button.app-logout {
+button.account-menu-button {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: var(--space-2) 12px;
+  padding: var(--space-2) 8px;
   border: none;
   background: transparent;
   color: var(--color-text);
+  font-size: var(--text-interface);
+  text-align: left;
   box-shadow: none;
 }
 
-button.app-logout:hover:not(:disabled) {
+button.account-menu-button:hover:not(:disabled),
+button.account-menu-button[aria-expanded="true"] {
   background: var(--color-hover);
+}
+
+.avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-menu-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-chevron svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  color: var(--color-muted);
+}
+
+.account-menu-list {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  max-width: calc(100vw - 2 * var(--space-4));
+  padding: 6px;
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  box-shadow: var(--shadow-card);
+}
+
+.account-menu-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  padding: 6px 10px 10px;
+  border-bottom: var(--border-hairline) solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.account-menu-list a,
+.account-menu-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-interface);
+  font-weight: 400;
+  text-align: left;
+  text-decoration: none;
+}
+
+.account-menu-list a:hover,
+.account-menu-list a:focus-visible,
+.account-menu-list button:hover:not(:disabled),
+.account-menu-list button:focus-visible {
+  background: var(--color-hover);
+}
+
+.account-menu-list svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 .app-main {
@@ -363,7 +458,9 @@ button.app-logout:hover:not(:disabled) {
     grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
   }
 
+  /* The account menu is wider than the column, so the column lets it show. */
   .is-collapsed .app-header {
+    overflow: visible;
     align-items: center;
     padding: var(--space-3) var(--space-2);
   }
@@ -385,15 +482,14 @@ button.app-logout:hover:not(:disabled) {
 
   .is-collapsed .new-upload,
   .is-collapsed .app-nav a,
-  .is-collapsed button.app-logout {
+  .is-collapsed button.account-menu-button {
     justify-content: center;
     width: 44px;
     height: 40px;
     padding: 0;
   }
 
-  .is-collapsed .recent,
-  .is-collapsed .app-account-text {
+  .is-collapsed .recent {
     display: none;
   }
 
@@ -503,6 +599,237 @@ button:disabled {
   cursor: default;
 }
 
+/* A link that goes to another screen but looks like the main button. */
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: var(--space-2) 18px;
+  border: var(--border-hairline) solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--text-interface);
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    background-color var(--motion-interaction) var(--motion-easing),
+    border-color var(--motion-interaction) var(--motion-easing);
+}
+
+a.button-link:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+/* The quiet, compact kind, for a button in every row of a table. */
+a.button-link.secondary {
+  min-height: 30px;
+  padding: 3px 14px;
+  border-color: var(--color-border-strong);
+  background: var(--color-card);
+  color: var(--color-text);
+  font-size: var(--text-small);
+}
+
+a.button-link.secondary:hover {
+  background: var(--color-surface);
+  border-color: var(--color-field-border);
+}
+
+/* A screen title with its main action on the right; the action wraps below on a phone. */
+.page-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* The upload and account screens: one card in the middle of the space beside the sidebar. */
+.centered-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 64px);
+}
+
+.screen-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.screen-card.wide {
+  max-width: 960px;
+  padding: 48px;
+}
+
+.screen-card h1 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.card-lead {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+/* A part of a card under a thin line, with a small label instead of a big heading. */
+.card-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid var(--color-border);
+}
+
+.card-section h2 {
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.card-section > .form {
+  align-self: stretch;
+}
+
+/* The upload card keeps its parts in the middle; the button is as wide as its text. */
+.upload-card {
+  text-align: center;
+}
+
+.upload-card .form,
+.upload-card .card-section {
+  align-items: center;
+}
+
+.upload-card .form > label,
+.upload-card .dropzone {
+  align-self: stretch;
+}
+
+/* The upload drop zone: a dashed area that is the label of a hidden (not removed) file input. */
+.dropzone {
+  position: relative;
+}
+
+.dropzone-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  opacity: 0;
+}
+
+.dropzone-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 64px var(--space-4);
+  border: 2px dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  font-size: var(--text-interface);
+  font-weight: 400;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition:
+    background-color var(--motion-interaction) var(--motion-easing),
+    border-color var(--motion-interaction) var(--motion-easing);
+}
+
+.dropzone-area:hover,
+.dropzone.is-dragging .dropzone-area {
+  border-color: var(--color-accent);
+  background: var(--color-focus-glow);
+}
+
+.dropzone.has-file .dropzone-area {
+  border-style: solid;
+  border-color: var(--color-accent);
+  background: var(--color-card);
+}
+
+.dropzone-input:focus-visible + .dropzone-area {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.dropzone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--color-focus-glow);
+  color: var(--color-accent);
+}
+
+.dropzone-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.dropzone-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.dropzone-browse {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.dropzone-hint {
+  font-size: var(--text-metadata);
+}
+
+.dropzone-remove {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: var(--text-small);
+}
+
+.upload-card .form label.checkbox {
+  align-items: flex-start;
+  text-align: left;
+  font-weight: 400;
+}
+
+.upload-card .links {
+  justify-content: center;
+}
+
+/* On a phone the card starts at the top, under the bar. */
+@media (max-width: 760px) {
+  .centered-screen {
+    align-items: flex-start;
+    min-height: 0;
+  }
+
+  .screen-card {
+    padding: var(--space-4);
+  }
+}
+
 button.secondary {
   background: var(--color-card);
   border-color: var(--color-border-strong);
@@ -579,6 +906,169 @@ button.secondary:hover:not(:disabled) {
   font-weight: 600;
   color: var(--color-muted);
   background: var(--color-surface);
+}
+
+/* The worklist: a card that scrolls on its own, so its header row stays in view. */
+.worklist-card {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.worklist {
+  font-size: var(--text-small);
+}
+
+.worklist th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  white-space: nowrap;
+}
+
+.worklist td {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  vertical-align: middle;
+}
+
+.worklist tbody tr {
+  transition: background-color var(--motion-interaction) var(--motion-easing);
+}
+
+.worklist tbody tr:hover {
+  background: var(--color-hover);
+}
+
+.worklist .worklist-edit {
+  text-align: right;
+}
+
+.worklist-file {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 180px;
+  overflow-wrap: anywhere;
+}
+
+.worklist-file svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--color-accent);
+}
+
+.worklist-sub {
+  display: block;
+  font-size: var(--text-metadata);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  font-size: var(--text-metadata);
+  font-weight: 500;
+}
+
+.pill-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--color-selected);
+  font-size: var(--text-metadata);
+  white-space: nowrap;
+}
+
+.chance {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chance-track {
+  display: block;
+  width: 56px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.chance-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 3px 3px 0;
+}
+
+.worklist-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.worklist-toolbar .filters {
+  margin-bottom: 0;
+}
+
+.worklist-note {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-small);
+}
+
+.worklist-count {
+  margin: 0 0 10px auto;
+  font-size: var(--text-small);
+}
+
+/* A button that looks like a link: a quiet action beside other text. */
+button.link-button {
+  min-height: 0;
+  margin-bottom: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--text-small);
+  text-decoration: underline;
+}
+
+button.link-button:hover:not(:disabled) {
+  background: none;
+  color: var(--color-accent-hover);
+}
+
+.worklist-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-card);
+  border: var(--border-hairline) dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+}
+
+.worklist-empty p {
+  margin: 0;
 }
 
 /* Two columns only: as wide as their content, not the whole page. */
@@ -843,11 +1333,6 @@ textarea {
 .auth-form {
   margin-top: 20px;
   text-align: left;
-}
-
-/* The change password form on the account screen keeps the login form's width. */
-.account-form {
-  max-width: 420px;
 }
 
 .auth-panel {
@@ -1183,5 +1668,453 @@ textarea {
 
   .spinner {
     animation-duration: 2.4s;
+  }
+}
+
+/* The overview: headline tiles, then one card per count with a bar for each value's share. */
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 18px 20px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.stat-tile dt {
+  font-size: var(--text-metadata);
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.stat-tile dd {
+  margin: 0;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 34px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stat-note {
+  font-size: var(--text-metadata);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.count-card {
+  padding: 20px 22px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.count-card h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: 19px;
+}
+
+.count-card-total {
+  font-family: var(--font-body);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.count-bars {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+
+.count-bars th,
+.count-bars td {
+  padding: 8px 0;
+  vertical-align: top;
+  border-bottom: var(--border-hairline) solid var(--color-border);
+}
+
+.count-bars tr:last-child th,
+.count-bars tr:last-child td {
+  border-bottom: none;
+}
+
+.count-bars th {
+  width: 100%;
+  font-weight: 400;
+  text-align: left;
+}
+
+.count-value {
+  padding-left: var(--space-3);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.count-bars tr.is-zero th,
+.count-bars tr.is-zero .count-value {
+  color: var(--color-muted);
+}
+
+.count-track {
+  display: block;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 4px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.count-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  transition: width 400ms var(--motion-easing);
+}
+
+.tone-good {
+  background: var(--color-good);
+}
+
+.tone-waiting {
+  background: var(--color-waiting);
+}
+
+.tone-bad {
+  background: var(--color-bad);
+}
+
+.tone-neutral {
+  background: var(--color-neutral-mark);
+}
+
+.overview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-card);
+  border: var(--border-hairline) dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+}
+
+.overview-empty p {
+  margin: 0;
+}
+
+/* The admin's charts: a stacked bar per count and the approval meter. */
+.overview-charts {
+  margin: 0 0 var(--space-4);
+  padding: 20px 22px;
+  background: var(--color-card);
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.overview-charts h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 19px;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--space-4) 40px;
+}
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+}
+
+.chart-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.chart-title .muted {
+  font-size: var(--text-metadata);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-empty {
+  margin: 0;
+  font-size: var(--text-small);
+}
+
+/* Segments touch with a 2px gap of card between them; only the two ends are rounded. */
+.stacked-bar {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+}
+
+.stacked-segment {
+  position: relative;
+  display: flex;
+  flex-basis: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 4px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.stacked-segment:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.stacked-segment:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.stacked-segment:only-child {
+  border-radius: 4px;
+}
+
+.stacked-segment:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The tooltip: the segment's own name, above it, on hover or focus. It has content only then: a
+   hidden one would still be laid out and could push the page wider than a phone. */
+.stacked-segment:hover::after,
+.stacked-segment:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 5;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--color-button-dark);
+  color: #ffffff;
+  font-size: var(--text-metadata);
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-metadata);
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend li.is-zero {
+  color: var(--color-muted);
+}
+
+.legend-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.meter-value {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 6px 6px 0;
+  transition: width 400ms var(--motion-easing);
+}
+
+.meter-note {
+  margin: 0;
+  font-size: var(--text-metadata);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .count-fill,
+  .meter-fill {
+    transition: none;
+  }
+}
+
+/* Notifications: light cards that slide in at the top right of the page, newest first. */
+.notifications {
+  position: fixed;
+  top: var(--space-3);
+  right: var(--space-3);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(400px, calc(100vw - 2 * var(--space-3)));
+  pointer-events: none;
+}
+
+.notifications > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 12px 14px 16px;
+  border: var(--border-hairline) solid var(--color-border);
+  border-left: 4px solid var(--notification-color);
+  border-radius: var(--radius-control);
+  background: var(--color-card);
+  box-shadow:
+    0 2px 4px rgba(31, 30, 27, 0.06),
+    0 12px 32px rgba(31, 30, 27, 0.12);
+  pointer-events: auto;
+  animation: notification-in 260ms var(--motion-easing);
+}
+
+.notification.tone-success {
+  --notification-color: var(--color-good);
+}
+
+.notification.tone-info {
+  --notification-color: var(--color-accent);
+}
+
+.notification.tone-error {
+  --notification-color: var(--color-bad);
+}
+
+.notification-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--notification-color);
+}
+
+.notification-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.notification-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notification-title,
+.notification-detail {
+  margin: 0;
+}
+
+.notification-title {
+  font-size: var(--text-interface);
+  font-weight: 600;
+}
+
+.notification-detail {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+
+button.notification-action {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+
+.notification-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  margin: -4px -2px 0 0;
+}
+
+.notification-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes notification-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* On a phone the notifications sit under the bar on top. */
+@media (max-width: 760px) {
+  .notifications {
+    top: 64px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification {
+    animation: none;
   }
 }

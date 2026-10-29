@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import type { DraftDetail, LetterParagraph } from "../api/types";
 import { PARAGRAPH_KIND_TEXT, SOURCE_TEXT, describeLetterProblem } from "./detailText";
 import { ReviewError } from "./ReviewError";
+import { useNotify } from "../notify/notify";
 import { useSaveDraft } from "./useDraftActions";
 
 // A paragraph being edited, with a key that stays the same when an earlier one is removed.
@@ -36,6 +37,7 @@ export function DraftEditor({
     base.paragraphs.map((paragraph, key) => ({ key, paragraph })),
   );
   const save = useSaveDraft(jobId);
+  const notify = useNotify();
 
   const paragraphs = items.map((item) => item.paragraph);
   const changed = JSON.stringify(paragraphs) !== JSON.stringify(base.paragraphs);
@@ -76,7 +78,15 @@ export function DraftEditor({
   }
 
   function submit() {
-    save.mutate({ letter: { paragraphs }, basedOnVersion: base.version }, { onSuccess: onClose });
+    save.mutate(
+      { letter: { paragraphs }, basedOnVersion: base.version },
+      {
+        onSuccess: () => {
+          notify({ tone: "success", title: "Draft saved", detail: "A new version is kept." });
+          onClose();
+        },
+      },
+    );
   }
 
   return (

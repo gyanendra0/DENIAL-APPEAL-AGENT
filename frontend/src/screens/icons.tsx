@@ -118,22 +118,85 @@ export function ChartIcon() {
   );
 }
 
-// A head and shoulders: the account screen.
-export function UserIcon() {
-  return (
-    <Icon>
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 21a8 8 0 0 1 16 0" />
-    </Icon>
-  );
-}
-
 export function LogOutIcon() {
   return (
     <Icon>
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <path d="m16 17 5-5-5-5" />
       <path d="M21 12H9" />
+    </Icon>
+  );
+}
+
+// An arrow rising out of a tray: the upload drop zone.
+export function UploadIcon() {
+  return (
+    <Icon>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="m17 8-5-5-5 5" />
+      <path d="M12 3v12" />
+    </Icon>
+  );
+}
+
+// A page: a chosen file.
+export function FileIcon() {
+  return (
+    <Icon>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </Icon>
+  );
+}
+
+// A tick in a circle: a success notification.
+export function CheckIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m8 12 3 3 5-6" />
+    </Icon>
+  );
+}
+
+// An "i" in a circle: an info notification.
+export function InfoIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </Icon>
+  );
+}
+
+// A "!" in a triangle: an error notification.
+export function WarningIcon() {
+  return (
+    <Icon>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </Icon>
+  );
+}
+
+// A bin: deleting the account.
+export function TrashIcon() {
+  return (
+    <Icon>
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </Icon>
+  );
+}
+
+// A small arrow pointing up: the account menu opens above its button.
+export function ChevronUpIcon() {
+  return (
+    <Icon>
+      <path d="m18 15-6-6-6 6" />
     </Icon>
   );
 }

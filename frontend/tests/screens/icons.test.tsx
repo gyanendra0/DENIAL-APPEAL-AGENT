@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   ChartIcon,
+  CheckIcon,
+  ChevronUpIcon,
   CloseIcon,
   EyeIcon,
   EyeOffIcon,
+  FileIcon,
   GoogleIcon,
+  InfoIcon,
   ListIcon,
   LockIcon,
   LogOutIcon,
@@ -15,6 +19,9 @@ import {
   MenuIcon,
   PlusIcon,
   SidebarIcon,
+  TrashIcon,
+  UploadIcon,
+  WarningIcon,
 } from "../../src/screens/icons";
 
 describe("icons", () => {
@@ -32,6 +39,13 @@ describe("icons", () => {
     ["ChartIcon", ChartIcon],
     ["LogOutIcon", LogOutIcon],
     ["GoogleIcon", GoogleIcon],
+    ["TrashIcon", TrashIcon],
+    ["ChevronUpIcon", ChevronUpIcon],
+    ["UploadIcon", UploadIcon],
+    ["FileIcon", FileIcon],
+    ["CheckIcon", CheckIcon],
+    ["InfoIcon", InfoIcon],
+    ["WarningIcon", WarningIcon],
   ])("%s is decoration, hidden from screen readers", (_name, IconComponent) => {
     const { container } = render(<IconComponent />);
 

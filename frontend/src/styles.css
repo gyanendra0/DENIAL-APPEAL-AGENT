@@ -637,6 +637,15 @@ a.button-link.secondary:hover {
   border-color: var(--color-field-border);
 }
 
+/* A screen title with its main action on the right; the action wraps below on a phone. */
+.page-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 /* The upload and account screens: one card in the middle of the space beside the sidebar. */
 .centered-screen {
   display: flex;
@@ -897,6 +906,164 @@ button.secondary:hover:not(:disabled) {
   font-weight: 600;
   color: var(--color-muted);
   background: var(--color-surface);
+}
+
+/* The worklist: a card that scrolls on its own, so its header row stays in view. */
+.worklist-card {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.worklist {
+  font-size: var(--text-small);
+}
+
+.worklist th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  white-space: nowrap;
+}
+
+.worklist td {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  vertical-align: middle;
+}
+
+.worklist tbody tr {
+  transition: background-color var(--motion-interaction) var(--motion-easing);
+}
+
+.worklist tbody tr:hover {
+  background: var(--color-hover);
+}
+
+.worklist .worklist-edit {
+  text-align: right;
+}
+
+.worklist-file {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 180px;
+  overflow-wrap: anywhere;
+}
+
+.worklist-file svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--color-accent);
+}
+
+.worklist-sub {
+  display: block;
+  font-size: var(--text-metadata);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: var(--border-hairline) solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  font-size: var(--text-metadata);
+  font-weight: 500;
+}
+
+.pill-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--color-selected);
+  font-size: var(--text-metadata);
+  white-space: nowrap;
+}
+
+.chance {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chance-track {
+  display: block;
+  width: 56px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-track);
+  overflow: hidden;
+}
+
+.chance-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 3px 3px 0;
+}
+
+.worklist-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.worklist-toolbar .filters {
+  margin-bottom: 0;
+}
+
+.worklist-count {
+  margin: 0 0 10px auto;
+  font-size: var(--text-small);
+}
+
+/* A button that looks like a link: a quiet action beside other text. */
+button.link-button {
+  min-height: 0;
+  margin-bottom: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--text-small);
+  text-decoration: underline;
+}
+
+button.link-button:hover:not(:disabled) {
+  background: none;
+  color: var(--color-accent-hover);
+}
+
+.worklist-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-card);
+  border: var(--border-hairline) dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+}
+
+.worklist-empty p {
+  margin: 0;
 }
 
 /* Two columns only: as wide as their content, not the whole page. */

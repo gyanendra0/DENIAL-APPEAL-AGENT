@@ -119,7 +119,9 @@ Rules:
   customer data. Any table that does is a business table.
 - Operational tables (the system's own bookkeeping, such as `llm_calls`, the record of what
   each model call cost) have no `account_id` either. They never hold customer data, document
-  text or personal fields.
+  text or personal fields. `individual_upload_days` is one: one count per UTC day of the
+  uploads of all personal accounts, with no account, user or letter, so the individuals'
+  daily cap needs no query across accounts and is not another exception to the rule above.
 - Every table has `created_at` and `updated_at`.
 - Money uses an exact decimal type, never a float.
 - Enumerated values (roles, statuses) use constrained types, not free text.

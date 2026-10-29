@@ -92,7 +92,10 @@ Settings come from a `.env` file; `.env.example` lists every key.
    `APP_PUBLIC_URL=http://127.0.0.1:5173` (Google sign-in returns there), the shared
    account's name `SHARED_ACCOUNT_NAME`, your own email in `ADMIN_EMAILS` (only listed emails
    are admins, and only they, the emails in `SIGNUP_ALLOWED_EMAILS` and the domains in
-   `SIGNUP_ALLOWED_DOMAINS` may sign up) and, on plain HTTP as here,
+   `SIGNUP_ALLOWED_DOMAINS` may sign up; set `INDIVIDUAL_SIGNUP_ENABLED=true` to let anyone
+   else sign up into a personal account of their own, capped at `INDIVIDUAL_MONTHLY_UPLOADS`
+   uploads a month each and `INDIVIDUAL_DAILY_UPLOADS` a day for all of them; it is off by
+   default) and, on plain HTTP as here,
    `AUTH_COOKIE_SECURE=false`, or the browser never sends the login cookie back:
    ```
    uvicorn src.api.app:create_app --factory
@@ -129,6 +132,9 @@ Settings come from a `.env` file; `.env.example` lists every key.
    [3.18](docs/03-architecture.md#318-api-and-auth), "Signing in with Google").
 
 Uploading a letter calls a model and spends money (within the monthly cap in the settings).
+Every upload asks for a tick that the letter holds no real personal data: use made-up letters
+only (architecture [3.18](docs/03-architecture.md#318-api-and-auth), "Individuals and personal
+accounts").
 
 Checks: `ruff check . && black --check . && mypy && pytest` for the backend (database tests
 need `TEST_DATABASE_URL`), and `npm run check` in `frontend/` for the dashboard. How the
@@ -142,7 +148,8 @@ screens) also runs from one compose file, the same one the production machine us
 Docker and the trained model files in `models/`.
 
 1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
-   usual keys (including `SHARED_ACCOUNT_NAME` and `ADMIN_EMAILS`), set `POSTGRES_PASSWORD`
+   usual keys (including `SHARED_ACCOUNT_NAME` and `ADMIN_EMAILS`; keep
+   `INDIVIDUAL_SIGNUP_ENABLED=false` until backups run), set `POSTGRES_PASSWORD`
    (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost` and
    `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
    `AUTH_COOKIE_SECURE=true` and set `MAIL_BACKEND=smtp` with the `MAIL_SMTP_*` and `MAIL_FROM`

@@ -187,7 +187,8 @@ denial-appeal-agent/
 ├─ deploy/          container and deployment manifests
 ├─ docs/            these documents
 ├─ .github/         workflows and the Dependabot config
-└─ .trivyignore     findings Trivy may skip, each with a reason and a date
+├─ .trivyignore     findings Trivy may skip, each with a reason and a date
+└─ trivy-secret.yaml  turns off Trivy's default secret skips
 ```
 
 ## 3.7 Non-functional targets
@@ -5849,6 +5850,7 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `.github/workflows/security.yml` | Job `zizmor` (workflow files) and job `trivy` (libraries, secrets, Dockerfiles) |
 | `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
 | `.trivyignore` | Findings Trivy may skip; empty today |
+| `trivy-secret.yaml` | Turns off Trivy's default secret skips for tests, Markdown and examples |
 | `tests/deploy/test_dependabot.py` | Pins what the Dependabot config promises |
 
 ### What blocks a pull request
@@ -5863,6 +5865,10 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
 above its id, and what would end the exception.
+
+By default Trivy does not look for secrets in test paths, in Markdown files or in anything named
+`example`, such as `.env.example`. `trivy-secret.yaml` turns those three skips off, so a key pasted
+into a test, a doc or an example file blocks too.
 
 The first run on this branch found nothing at any severity, so there is no exception. zizmor had
 no findings; it hid 6 pedantic style notes.

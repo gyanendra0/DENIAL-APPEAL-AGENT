@@ -83,6 +83,7 @@ jobs:
       - name: Scan for the Security tab
         run: >-
           "$RUNNER_TEMP/trivy" fs --scanners vuln,secret,misconfig
+          --secret-config trivy-secret.yaml
           --format sarif --output "$RUNNER_TEMP/trivy.sarif" .
 
       # Dependabot and fork pull requests get a read-only token, which cannot upload.
@@ -102,7 +103,9 @@ jobs:
           --ignore-unfixed --exit-code 1 .
 
       - name: Block on any secret
-        run: '"$RUNNER_TEMP/trivy" fs --scanners secret --exit-code 1 .'
+        run: >-
+          "$RUNNER_TEMP/trivy" fs --scanners secret
+          --secret-config trivy-secret.yaml --exit-code 1 .
 
       - name: Block on a HIGH or CRITICAL misconfiguration
         run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'

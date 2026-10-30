@@ -204,7 +204,7 @@ To run them locally before pushing, install the versions set in
 ```
 GH_TOKEN="$(gh auth token)" zizmor .
 trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
-trivy fs --scanners secret --exit-code 1 .
+trivy fs --scanners secret --secret-config trivy-secret.yaml --exit-code 1 .
 trivy config --severity HIGH,CRITICAL --exit-code 1 .
 ```
 

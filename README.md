@@ -211,9 +211,12 @@ trivy config --severity HIGH,CRITICAL --exit-code 1 .
 Three things are set by hand in GitHub, once:
 1. **Settings > Advanced Security:** turn on secret scanning and push protection.
 2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the status checks
-   `checks`, `frontend`, `zizmor` and `trivy`.
+   `checks`, `frontend`, `zizmor` and `trivy`. Choose **GitHub Actions** as the source of each one:
+   a pull request also shows code-scanning results named `zizmor` and `Trivy`, and those are not
+   the gates.
 3. **After the first merge:** open **Insights > Dependency graph > Dependabot** and read its first
-   run. Check that it updates `deploy/api/requirements.txt` with hashes and that it reads
+   run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
+   `deploy/api/.python-version` and stays on Python 3.11, and that it reads
    `deploy/prod/compose.yml`.
 
 ## How work is split across machines

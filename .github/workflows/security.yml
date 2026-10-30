@@ -56,7 +56,7 @@ jobs:
         run: '"$RUNNER_TEMP/zizmor" .'
 
   # No secrets here: Trivy's own action was compromised in CVE-2026-33634, so it is a plain
-  # download with a checked hash, and this job only ever gets the read-only token.
+  # download with a checked hash, and no Trivy step is handed the job's token.
   trivy:
     runs-on: ubuntu-latest
     timeout-minutes: 10

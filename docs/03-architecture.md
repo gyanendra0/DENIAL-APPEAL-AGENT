@@ -5880,7 +5880,8 @@ no findings; it hid 6 pedantic style notes.
   so the SHA is its only protection.
 - **Neither scanner is an action.** Trivy's own action was compromised on 2026-03-19
   (CVE-2026-33634), so both are plain downloads of a pinned version, checked by sha256. No
-  third-party action has to be trusted, and the jobs hold no secrets.
+  third-party action has to be trusted. The only credential in these jobs is GitHub's short-lived
+  job token: Trivy's steps never get it, and zizmor gets it for its online checks.
 - **Least permissions.** Each workflow starts with `permissions: {}` and each job asks only for
   what it uses: `contents: read`, plus `security-events: write` for the scanners. Every checkout
   has `persist-credentials: false`, so the token does not stay on the disk for later steps.
@@ -5924,9 +5925,13 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
   `checks` job and in `deploy/api/Dockerfile` fails such a bump; the fix is to refresh the lock by
   hand (the command is in the README).
 - **`pip check` proves dependencies, not behaviour.** No test runs on the locked versions.
-- **Hand-kept digests.** The `pgvector` digest in `checks.yml` is changed by hand. The Python
-  digest also appears in `README.md` and in a comment in `deploy/api/Dockerfile`; both go stale
-  after a digest pull request.
+- **Hand-kept pins.** The `pgvector` digest in `checks.yml` is changed by hand. So are the Trivy
+  and zizmor versions and hashes in `security.yml`: Dependabot cannot see them, so the scanners
+  age until someone updates them. The Python digest also appears in `README.md` and in a comment
+  in `deploy/api/Dockerfile`; both go stale after a digest pull request.
+- **zizmor holds a token that can write.** The job token carries `security-events: write`, so a
+  compromised zizmor release could change code-scanning data, though not the code. The checksum
+  pin limits this; moving the upload to its own job would end it.
 - **Compose is not scanned by Trivy.** Only the two Dockerfiles are.
 - **npm dev dependencies are not scanned** (Trivy's default).
 - **Trivy's cosign signature is not verified.** The download is checked by sha256 only.

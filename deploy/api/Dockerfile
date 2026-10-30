@@ -1,7 +1,7 @@
 # The API image. Build from the repository root:
 #   docker build -f deploy/api/Dockerfile -t denial-appeal-agent-api .
 #
-# It installs exactly the versions in requirements.lock (with their hashes). Refresh the lock
+# It installs exactly the versions in requirements.txt (with their hashes). Refresh the lock
 # after a change to pyproject.toml, in the same base image so the Linux / Python 3.11 packages
 # are the ones chosen:
 #   docker run --rm -v "$PWD/pyproject.toml:/w/pyproject.toml:ro" \
@@ -9,7 +9,7 @@
 #     python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937 \
 #     sh -c "pip install -q --root-user-action=ignore pip-tools==7.6.2 && pip-compile -q \
 #       --upgrade --generate-hashes --strip-extras --allow-unsafe \
-#       --output-file out/requirements.lock pyproject.toml"
+#       --output-file out/requirements.txt pyproject.toml"
 #
 # Not in the image: settings and secrets (given at run time), the model files (mounted at
 # MODEL_DIR), tests, data. See .dockerignore.
@@ -21,9 +21,11 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN python -m venv /opt/venv
-COPY deploy/api/requirements.lock /tmp/requirements.lock
+COPY deploy/api/requirements.txt /tmp/requirements.txt
 # Every package must match a hash in the lock, so a changed file on the index fails the build.
-RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.lock
+RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.txt
+# --no-deps checks nothing, and a Dependabot bump adds no new package, so fail on a gap here.
+RUN /opt/venv/bin/pip check
 
 
 FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937

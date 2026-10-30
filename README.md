@@ -179,7 +179,7 @@ Stop it with `docker compose -f deploy/prod/compose.yml down`; the data stays in
 (`down -v` deletes it). How it is built: architecture
 [3.23](docs/03-architecture.md#323-running-in-containers).
 
-The API image installs exactly the packages in `deploy/api/requirements.lock` (each with its
+The API image installs exactly the packages in `deploy/api/requirements.txt` (each with its
 version and hash). After any change to the dependencies in `pyproject.toml`, refresh the lock from
 the repository root, inside the image's own base so the Linux / Python 3.11 packages are chosen,
 then rebuild with step 2:
@@ -189,10 +189,35 @@ docker run --rm -v "$PWD/pyproject.toml:/w/pyproject.toml:ro" \
   python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937 \
   sh -c "pip install -q --root-user-action=ignore pip-tools==7.6.2 && pip-compile -q \
     --upgrade --generate-hashes --strip-extras --allow-unsafe \
-    --output-file out/requirements.lock pyproject.toml"
+    --output-file out/requirements.txt pyproject.toml"
 ```
 The same command is at the top of `deploy/api/Dockerfile`; if the base image's digest changes
 there, change it here too.
+
+## Security checks
+
+Every pull request runs zizmor (workflow files) and Trivy (libraries, secrets, Dockerfiles). What
+blocks and why: architecture [3.24](docs/03-architecture.md#324-checks-on-every-pull-request).
+
+To run them locally before pushing, install the versions set in
+`.github/workflows/security.yml`, then from the repository root:
+```
+GH_TOKEN="$(gh auth token)" zizmor .
+trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+trivy fs --scanners secret --secret-config trivy-secret.yaml --exit-code 1 .
+trivy config --severity HIGH,CRITICAL --exit-code 1 .
+```
+
+Three things are set by hand in GitHub, once:
+1. **Settings > Advanced Security:** turn on secret scanning and push protection.
+2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the status checks
+   `checks`, `frontend`, `zizmor` and `trivy`. Choose **GitHub Actions** as the source of each one:
+   a pull request also shows code-scanning results named `zizmor` and `Trivy`, and those are not
+   the gates.
+3. **After the first merge:** open **Insights > Dependency graph > Dependabot** and read its first
+   run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
+   `deploy/api/.python-version` and stays on Python 3.11, and that it reads
+   `deploy/prod/compose.yml`.
 
 ## How work is split across machines
 

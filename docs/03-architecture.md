@@ -185,7 +185,10 @@ denial-appeal-agent/
 ├─ frontend/        React dashboard
 ├─ config/          prompts, evaluation question sets, rule config
 ├─ deploy/          container and deployment manifests
-└─ docs/            these documents
+├─ docs/            these documents
+├─ .github/         workflows and the Dependabot config
+├─ .trivyignore     findings Trivy may skip, each with a reason and a date
+└─ trivy-secret.yaml  turns off Trivy's default secret skips
 ```
 
 ## 3.7 Non-functional targets
@@ -5667,7 +5670,7 @@ runs locally and, in the next branch, on the production machine. Built in `feat/
 | File | What it does |
 |---|---|
 | `deploy/api/Dockerfile` | The API image: two stages on `python:3.11-slim` by digest; a virtual environment from the lock file, then the code; runs as uid 10001 |
-| `deploy/api/requirements.lock` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
+| `deploy/api/requirements.txt` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
 | `deploy/web/Dockerfile` | The web image: `node:26-slim` builds the screens (`npm ci`, `npm run build`), `caddy:2-alpine` serves them; both by multi-arch digest (amd64 + arm64); runs as uid 10001 |
 | `deploy/web/Caddyfile` | What the web container answers: API paths to the API, screens, assets, headers |
 | `deploy/prod/compose.yml` | The four services, one network, three volumes |
@@ -5699,7 +5702,7 @@ replaced the development database container and used its volume (see Gotchas).
 
 ### The API image
 
-- **Exact packages.** `pip install --require-hashes --no-deps -r requirements.lock`: a package
+- **Exact packages.** `pip install --require-hashes --no-deps -r requirements.txt`: a package
   whose file changed on the index fails the build. After a change to `pyproject.toml`, the lock
   is made again with the command at the top of the Dockerfile.
 - **The project is not installed.** uvicorn and Alembic import `src` from `/app`
@@ -5831,3 +5834,110 @@ made-up user went through it in a real browser.
 - **HSTS on `localhost`.** With `SITE_ADDRESS=localhost` the browser keeps using HTTPS for every
   `localhost` port for a year, so the development server must be opened as
   `http://127.0.0.1:5173` (as the README says), not `localhost:5173`.
+
+## 3.24 Checks on every pull request
+
+Every pull request and every push to `main` runs two workflows. `checks.yml` is the quality
+gate; `security.yml` looks for unsafe workflows, known-vulnerable libraries, secrets and unsafe
+image files. Dependabot keeps the pinned versions moving. Built in `chore/security-scans`
+(Stage 6, branch 2). No migration, no model call, no server.
+
+### The code
+
+| File | What it does |
+|---|---|
+| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest) and job `frontend` (ESLint, Prettier, `tsc`, Vitest) |
+| `.github/workflows/security.yml` | Job `zizmor` (workflow files) and job `trivy` (libraries, secrets, Dockerfiles) |
+| `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
+| `.trivyignore` | Findings Trivy may skip; empty today |
+| `trivy-secret.yaml` | Turns off Trivy's default secret skips for tests, Markdown and examples |
+| `tests/deploy/test_dependabot.py` | Pins what the Dependabot config promises |
+
+### What blocks a pull request
+
+| Job | Blocks on |
+|---|---|
+| `zizmor` | Any finding |
+| `trivy` | A HIGH or CRITICAL library problem that has a fix |
+| `trivy` | Any secret |
+| `trivy` | A HIGH or CRITICAL misconfiguration |
+
+A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
+the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
+above its id, and what would end the exception.
+
+By default Trivy does not look for secrets in test paths, in Markdown files or in anything named
+`example`, such as `.env.example`. `trivy-secret.yaml` turns those three skips off, so a key pasted
+into a test, a doc or an example file blocks too.
+
+The first run on this branch found nothing at any severity, so there is no exception. zizmor had
+no findings; it hid 6 pedantic style notes.
+
+### Why it is built this way
+
+- **Actions are pinned by full commit SHA**, with the version in a comment. A tag can be moved to
+  other code; a SHA cannot. `actions/checkout` is the one release used here that is not immutable,
+  so the SHA is its only protection.
+- **Neither scanner is an action.** Trivy's own action was compromised on 2026-03-19
+  (CVE-2026-33634), so both are plain downloads of a pinned version, checked by sha256. No
+  third-party action has to be trusted. The only credential in these jobs is GitHub's short-lived
+  job token: Trivy's steps never get it, and zizmor gets it for its online checks.
+- **Least permissions.** Each workflow starts with `permissions: {}` and each job asks only for
+  what it uses: `contents: read`, plus `security-events: write` for the scanners. Every checkout
+  has `persist-credentials: false`, so the token does not stay on the disk for later steps.
+- **Each scanner runs more than once.** The SARIF run feeds the Security tab and blocks nothing
+  (zizmor's SARIF mode always exits 0). The gates are separate runs.
+- **The upload is skipped for Dependabot and fork pull requests.** Their token is read-only and
+  cannot upload. The gates still run.
+
+### Dependabot
+
+| Ecosystem | Folder | Limit |
+|---|---|---|
+| GitHub Actions | `/` | None |
+| pip | `/deploy/api` | Reads the lock `requirements.txt`, not `pyproject.toml` |
+| npm | `/frontend` | None |
+| Docker | `/deploy/api`, `/deploy/web` | Python: new digest of 3.11 only; Node and Caddy stay on their major |
+| Docker Compose | `/deploy/prod` | `pgvector/pgvector` stays on its major |
+
+Each ecosystem gets one grouped pull request a week, and the normal checks run on it. A 7-day
+cooldown gives a bad release a week to be caught; security updates skip the wait.
+
+The lock is named `requirements.txt` because Dependabot reads only `.txt` and `.in` files: it
+would have skipped `requirements.lock` with no error. Trivy lists it under this name too.
+
+### Measured
+
+- **First CI run** (draft PR #91): every job passed, including the action upgrades (checkout v4
+  to v7, setup-python v5 to v7, setup-node v4 to v7). Trivy read `deploy/api/requirements.txt`,
+  `frontend/package-lock.json` and both Dockerfiles.
+- **Each Trivy gate failed once on purpose** (throwaway PR #92, closed, never merged): an old
+  `PyYAML` blocked the library gate, a made-up AWS key blocked the secret gate both in a plain
+  folder and under `tests/`, and a Dockerfile with `USER root` blocked the misconfiguration gate.
+  The `PyYAML` findings reached the Security tab as two critical alerts for that pull request.
+- **Not seen:** the zizmor gate failing on a real finding.
+
+### Known limits
+
+- **Dependabot is unproven.** It runs only from `main`, so the config has passed GitHub's schema
+  check and nothing more. Three questions stay open until its first run: does it update
+  `requirements.txt` with hashes when no `.in` file sits next to it, does it read
+  `deploy/api/.python-version` and stay on Python 3.11, and does it read the name `compose.yml`.
+- **A lock bump changes versions only.** With no `.in` file, Dependabot rewrites the lines already
+  in the lock and resolves nothing, so a new version that needs a package the lock lacks is not
+  added. The tests install from `pyproject.toml` and never see this. The `pip check` step in the
+  `checks` job and in `deploy/api/Dockerfile` fails such a bump; the fix is to refresh the lock by
+  hand (the command is in the README).
+- **`pip check` proves dependencies, not behaviour.** No test runs on the locked versions.
+- **Hand-kept pins.** The `pgvector` digest in `checks.yml` is changed by hand. So are the Trivy
+  and zizmor versions and hashes in `security.yml`: Dependabot cannot see them, so the scanners
+  age until someone updates them. The Python digest also appears in `README.md` and in a comment
+  in `deploy/api/Dockerfile`; both go stale after a digest pull request.
+- **zizmor holds a token that can write.** The job token carries `security-events: write`, so a
+  compromised zizmor release could change code-scanning data, though not the code. The checksum
+  pin limits this; moving the upload to its own job would end it.
+- **Compose is not scanned by Trivy.** Only the two Dockerfiles are.
+- **npm dev dependencies are not scanned** (Trivy's default).
+- **Trivy's cosign signature is not verified.** The download is checked by sha256 only.
+- **GitHub settings are outside the repository.** Secret scanning, push protection and required
+  checks are set by hand; the steps are in the README.

@@ -1,0 +1,111 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      ZIZMOR_VERSION: "1.31.1"
+      ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/zizmor.tar.gz" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  $RUNNER_TEMP/zizmor.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor.tar.gz" -C "$RUNNER_TEMP"
+
+      # SARIF mode always exits 0, so this run only feeds the Security tab; the gate is the plain run.
+      - name: Scan for the Security tab
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/zizmor" --format=sarif . > "$RUNNER_TEMP/zizmor.sarif"'
+
+      # Dependabot and fork pull requests get a read-only token, which cannot upload.
+      - name: Upload to the Security tab
+        if: >-
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]')
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/zizmor.sarif
+          category: zizmor
+
+      - name: Block on any finding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/zizmor" .'
+
+  # No secrets here: Trivy's own action was compromised in CVE-2026-33634, so it is a plain
+  # download with a checked hash, and no Trivy step is handed the job's token.
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      TRIVY_VERSION: "0.76.1"
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+      TRIVY_NO_PROGRESS: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Trivy (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+
+      # Every finding goes to the Security tab; this run blocks nothing, the three below do.
+      - name: Scan for the Security tab
+        run: >-
+          "$RUNNER_TEMP/trivy" fs --scanners vuln,secret,misconfig
+          --secret-config trivy-secret.yaml
+          --format sarif --output "$RUNNER_TEMP/trivy.sarif" .
+
+      # Dependabot and fork pull requests get a read-only token, which cannot upload.
+      - name: Upload to the Security tab
+        if: >-
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]')
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/trivy.sarif
+          category: trivy
+
+      - name: Block on a HIGH or CRITICAL library with a fix
+        run: >-
+          "$RUNNER_TEMP/trivy" fs --scanners vuln --severity HIGH,CRITICAL
+          --ignore-unfixed --exit-code 1 .
+
+      - name: Block on any secret
+        run: >-
+          "$RUNNER_TEMP/trivy" fs --scanners secret
+          --secret-config trivy-secret.yaml --exit-code 1 .
+
+      - name: Block on a HIGH or CRITICAL misconfiguration
+        run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'

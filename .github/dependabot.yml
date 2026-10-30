@@ -1,0 +1,84 @@
+# Weekly, one grouped pull request per ecosystem. The cooldown gives a bad release a week to be
+# caught; security updates skip it.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Dependabot reads only .txt and .in files, which is why the lock is named requirements.txt.
+  # pyproject.toml is left out: it holds only minimum versions and CI installs the newest.
+  - package-ecosystem: pip
+    directory: /deploy/api
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm:
+        patterns: ["*"]
+
+  # A new digest of the same tag only: moving to another Python or Node is its own decision.
+  - package-ecosystem: docker
+    directories:
+      - /deploy/api
+      - /deploy/web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: caddy
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker-compose
+    directory: /deploy/prod
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docker-compose:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: pgvector/pgvector
+        update-types: ["version-update:semver-major"]

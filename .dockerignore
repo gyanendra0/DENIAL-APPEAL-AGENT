@@ -3,7 +3,7 @@
 *
 !alembic.ini
 !config/prompts/
-!deploy/api/requirements.lock
+!deploy/api/requirements.txt
 !deploy/web/Caddyfile
 !frontend/
 !src/

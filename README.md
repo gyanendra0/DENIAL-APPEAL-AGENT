@@ -179,7 +179,7 @@ Stop it with `docker compose -f deploy/prod/compose.yml down`; the data stays in
 (`down -v` deletes it). How it is built: architecture
 [3.23](docs/03-architecture.md#323-running-in-containers).
 
-The API image installs exactly the packages in `deploy/api/requirements.lock` (each with its
+The API image installs exactly the packages in `deploy/api/requirements.txt` (each with its
 version and hash). After any change to the dependencies in `pyproject.toml`, refresh the lock from
 the repository root, inside the image's own base so the Linux / Python 3.11 packages are chosen,
 then rebuild with step 2:
@@ -189,7 +189,7 @@ docker run --rm -v "$PWD/pyproject.toml:/w/pyproject.toml:ro" \
   python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937 \
   sh -c "pip install -q --root-user-action=ignore pip-tools==7.6.2 && pip-compile -q \
     --upgrade --generate-hashes --strip-extras --allow-unsafe \
-    --output-file out/requirements.lock pyproject.toml"
+    --output-file out/requirements.txt pyproject.toml"
 ```
 The same command is at the top of `deploy/api/Dockerfile`; if the base image's digest changes
 there, change it here too.

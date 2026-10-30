@@ -5667,7 +5667,7 @@ runs locally and, in the next branch, on the production machine. Built in `feat/
 | File | What it does |
 |---|---|
 | `deploy/api/Dockerfile` | The API image: two stages on `python:3.11-slim` by digest; a virtual environment from the lock file, then the code; runs as uid 10001 |
-| `deploy/api/requirements.lock` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
+| `deploy/api/requirements.txt` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
 | `deploy/web/Dockerfile` | The web image: `node:26-slim` builds the screens (`npm ci`, `npm run build`), `caddy:2-alpine` serves them; both by multi-arch digest (amd64 + arm64); runs as uid 10001 |
 | `deploy/web/Caddyfile` | What the web container answers: API paths to the API, screens, assets, headers |
 | `deploy/prod/compose.yml` | The four services, one network, three volumes |
@@ -5699,7 +5699,7 @@ replaced the development database container and used its volume (see Gotchas).
 
 ### The API image
 
-- **Exact packages.** `pip install --require-hashes --no-deps -r requirements.lock`: a package
+- **Exact packages.** `pip install --require-hashes --no-deps -r requirements.txt`: a package
   whose file changed on the index fails the build. After a change to `pyproject.toml`, the lock
   is made again with the command at the top of the Dockerfile.
 - **The project is not installed.** uvicorn and Alembic import `src` from `/app`

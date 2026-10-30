@@ -79,10 +79,6 @@ jobs:
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
 
-      # Trivy finds Python packages by the file name requirements.txt, so the lock needs that name.
-      - name: Name the Python lock so Trivy reads it
-        run: cp deploy/api/requirements.lock deploy/api/requirements.txt
-
       # Every finding goes to the Security tab; this run blocks nothing, the three below do.
       - name: Scan for the Security tab
         run: >-

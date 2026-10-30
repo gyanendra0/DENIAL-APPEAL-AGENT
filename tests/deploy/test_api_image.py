@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "deploy" / "api" / "Dockerfile"
-LOCK_FILE = ROOT / "deploy" / "api" / "requirements.lock"
+LOCK_FILE = ROOT / "deploy" / "api" / "requirements.txt"
 DOCKERIGNORE = ROOT / ".dockerignore"
 
 
@@ -85,7 +85,7 @@ def test_the_build_context_leaves_everything_out_unless_let_in() -> None:
     assert allowed == {
         "alembic.ini",
         "config/prompts/",
-        "deploy/api/requirements.lock",
+        "deploy/api/requirements.txt",
         "deploy/web/Caddyfile",
         "frontend/",
         "src/",

@@ -5911,7 +5911,11 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
 - **First CI run** (draft PR #91): every job passed, including the action upgrades (checkout v4
   to v7, setup-python v5 to v7, setup-node v4 to v7). Trivy read `deploy/api/requirements.txt`,
   `frontend/package-lock.json` and both Dockerfiles.
-- **Not seen:** a gate failing on a real finding.
+- **Each Trivy gate failed once on purpose** (throwaway PR #92, closed, never merged): an old
+  `PyYAML` blocked the library gate, a made-up AWS key blocked the secret gate both in a plain
+  folder and under `tests/`, and a Dockerfile with `USER root` blocked the misconfiguration gate.
+  The `PyYAML` findings reached the Security tab as two critical alerts for that pull request.
+- **Not seen:** the zizmor gate failing on a real finding.
 
 ### Known limits
 

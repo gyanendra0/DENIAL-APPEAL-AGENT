@@ -194,6 +194,28 @@ docker run --rm -v "$PWD/pyproject.toml:/w/pyproject.toml:ro" \
 The same command is at the top of `deploy/api/Dockerfile`; if the base image's digest changes
 there, change it here too.
 
+## Security checks
+
+Every pull request runs zizmor (workflow files) and Trivy (libraries, secrets, Dockerfiles). What
+blocks and why: architecture [3.24](docs/03-architecture.md#324-checks-on-every-pull-request).
+
+To run them locally before pushing, install the versions set in
+`.github/workflows/security.yml`, then from the repository root:
+```
+GH_TOKEN="$(gh auth token)" zizmor .
+trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+trivy fs --scanners secret --exit-code 1 .
+trivy config --severity HIGH,CRITICAL --exit-code 1 .
+```
+
+Three things are set by hand in GitHub, once:
+1. **Settings > Advanced Security:** turn on secret scanning and push protection.
+2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the status checks
+   `checks`, `frontend`, `zizmor` and `trivy`.
+3. **After the first merge:** open **Insights > Dependency graph > Dependabot** and read its first
+   run. Check that it updates `deploy/api/requirements.txt` with hashes and that it reads
+   `deploy/prod/compose.yml`.
+
 ## How work is split across machines
 
 | Authoring machine | Run machine |

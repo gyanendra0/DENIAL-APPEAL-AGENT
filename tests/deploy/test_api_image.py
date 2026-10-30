@@ -4,10 +4,14 @@ hashed lock file and a build context that lets in only what the image needs."""
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "deploy" / "api" / "Dockerfile"
 LOCK_FILE = ROOT / "deploy" / "api" / "requirements.txt"
+PYTHON_VERSION = ROOT / "deploy" / "api" / ".python-version"
 DOCKERIGNORE = ROOT / ".dockerignore"
+CHECKS_WORKFLOW = ROOT / ".github" / "workflows" / "checks.yml"
 
 
 def _instructions(name: str) -> list[str]:
@@ -74,6 +78,24 @@ def test_every_locked_package_is_pinned_with_a_hash() -> None:
     for first, *rest in entries:
         assert re.fullmatch(r"[a-z0-9._-]+==\S+ \\", first), first
         assert any(line.strip().startswith("--hash=sha256:") for line in rest), first
+
+
+def test_the_image_build_fails_on_a_lock_with_a_missing_package() -> None:
+    # `--no-deps` checks nothing, so `pip check` must follow the install.
+    runs = _instructions("RUN")
+    install = next(i for i, run in enumerate(runs) if "--no-deps" in run)
+    assert runs[install + 1] == "/opt/venv/bin/pip check"
+
+
+def test_ci_installs_the_lock_and_checks_it() -> None:
+    workflow = yaml.safe_load(CHECKS_WORKFLOW.read_text())
+    commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["checks"]["steps"])
+    assert "--require-hashes --no-deps -r deploy/api/requirements.txt" in commands
+    assert '"$RUNNER_TEMP/lock/bin/pip" check' in commands
+
+
+def test_dependabot_is_told_the_python_the_lock_is_for() -> None:
+    assert PYTHON_VERSION.read_text().strip() == "3.11"
 
 
 def test_the_build_context_leaves_everything_out_unless_let_in() -> None:

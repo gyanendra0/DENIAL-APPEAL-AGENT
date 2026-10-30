@@ -5915,12 +5915,15 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
 ### Known limits
 
 - **Dependabot is unproven.** It runs only from `main`, so the config has passed GitHub's schema
-  check and nothing more. Two questions stay open until its first run: does it update
-  `requirements.txt` with hashes when no `.in` file sits next to it, and does it read the name
-  `compose.yml`.
-- **A lock bump is barely tested.** CI installs from `pyproject.toml` and builds no image, so a
-  green Dependabot pull request for the lock proves little; only Trivy sees the new versions. The
-  image-build branch fixes this.
+  check and nothing more. Three questions stay open until its first run: does it update
+  `requirements.txt` with hashes when no `.in` file sits next to it, does it read
+  `deploy/api/.python-version` and stay on Python 3.11, and does it read the name `compose.yml`.
+- **A lock bump changes versions only.** With no `.in` file, Dependabot rewrites the lines already
+  in the lock and resolves nothing, so a new version that needs a package the lock lacks is not
+  added. The tests install from `pyproject.toml` and never see this. The `pip check` step in the
+  `checks` job and in `deploy/api/Dockerfile` fails such a bump; the fix is to refresh the lock by
+  hand (the command is in the README).
+- **`pip check` proves dependencies, not behaviour.** No test runs on the locked versions.
 - **Hand-kept digests.** The `pgvector` digest in `checks.yml` is changed by hand. The Python
   digest also appears in `README.md` and in a comment in `deploy/api/Dockerfile`; both go stale
   after a digest pull request.

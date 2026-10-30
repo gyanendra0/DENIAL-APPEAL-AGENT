@@ -24,6 +24,8 @@ RUN python -m venv /opt/venv
 COPY deploy/api/requirements.txt /tmp/requirements.txt
 # Every package must match a hash in the lock, so a changed file on the index fails the build.
 RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.txt
+# --no-deps checks nothing, and a Dependabot bump adds no new package, so fail on a gap here.
+RUN /opt/venv/bin/pip check
 
 
 FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937

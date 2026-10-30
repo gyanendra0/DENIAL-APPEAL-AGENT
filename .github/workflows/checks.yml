@@ -62,6 +62,13 @@ jobs:
       - name: Tests (pytest + coverage >= 70%)
         run: pytest
 
+      # The tests use pyproject.toml, not the lock, so this is what looks at a lock bump.
+      - name: Lock installs and is complete (pip check)
+        run: |
+          python -m venv "$RUNNER_TEMP/lock"
+          "$RUNNER_TEMP/lock/bin/pip" install --require-hashes --no-deps -r deploy/api/requirements.txt
+          "$RUNNER_TEMP/lock/bin/pip" check
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10

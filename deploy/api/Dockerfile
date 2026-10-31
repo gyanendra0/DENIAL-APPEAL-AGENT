@@ -22,7 +22,10 @@ FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63a
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN python -m venv /opt/venv
+# The venv comes with setuptools, which bundles old copies of other packages and nothing needs it
+# at run time. It goes before the install, so the `pip check` below proves no locked package
+# asks for it.
+RUN python -m venv /opt/venv && /opt/venv/bin/pip uninstall -y setuptools
 COPY deploy/api/requirements.txt /tmp/requirements.txt
 # Every package must match a hash in the lock, so a changed file on the index fails the build.
 RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.txt
@@ -40,6 +43,8 @@ ENV PATH=/opt/venv/bin:$PATH \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app
+# The base image's own copies, for the same reason. The app runs from /opt/venv and never uses them.
+RUN python -m pip uninstall -y setuptools wheel
 
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv

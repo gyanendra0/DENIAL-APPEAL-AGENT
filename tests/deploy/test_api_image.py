@@ -2,6 +2,7 @@
 hashed lock file and a build context that lets in only what the image needs."""
 
 import re
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "deploy" / "api" / "Dockerfile"
 LOCK_FILE = ROOT / "deploy" / "api" / "requirements.txt"
+PYPROJECT = ROOT / "pyproject.toml"
 PYTHON_VERSION = ROOT / "deploy" / "api" / ".python-version"
 DOCKERIGNORE = ROOT / ".dockerignore"
 CHECKS_WORKFLOW = ROOT / ".github" / "workflows" / "checks.yml"
@@ -78,6 +80,21 @@ def test_every_locked_package_is_pinned_with_a_hash() -> None:
     for first, *rest in entries:
         assert re.fullmatch(r"[a-z0-9._-]+==\S+ \\", first), first
         assert any(line.strip().startswith("--hash=sha256:") for line in rest), first
+
+
+def _version_numbers(version: str) -> tuple[int, ...]:
+    """A version as numbers, so 6.9 sorts below 6.21; as text it would sort above."""
+    return tuple(int(part) for part in version.split("."))
+
+
+def test_the_locked_pypdf_meets_the_floor_in_pyproject() -> None:
+    # The floor keeps out the versions with known denial-of-service bugs; the image installs the
+    # lock, not pyproject.toml, so a lock left behind would ship them.
+    dependencies = tomllib.loads(PYPROJECT.read_text())["project"]["dependencies"]
+    floor = next(item.removeprefix("pypdf>=") for item in dependencies if "pypdf" in item)
+    locked = re.search(r"^pypdf==(\S+) \\$", LOCK_FILE.read_text(), re.MULTILINE)
+    assert locked is not None
+    assert _version_numbers(locked.group(1)) >= _version_numbers(floor)
 
 
 def test_the_image_build_fails_on_a_lock_with_a_missing_package() -> None:

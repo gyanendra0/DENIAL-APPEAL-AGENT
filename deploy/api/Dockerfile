@@ -10,6 +10,8 @@
 #     sh -c "pip install -q --root-user-action=ignore pip-tools==7.6.2 && pip-compile -q \
 #       --upgrade --generate-hashes --strip-extras --allow-unsafe \
 #       --output-file out/requirements.txt pyproject.toml"
+# To move one package and leave every other version alone, write --upgrade-package <name> in
+# place of --upgrade.
 #
 # Not in the image: settings and secrets (given at run time), the model files (mounted at
 # MODEL_DIR), tests, data. See .dockerignore.

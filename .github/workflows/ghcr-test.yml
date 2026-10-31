@@ -1,0 +1,117 @@
+# TEMPORARY, issue #94: proves a push, SBOM, keyless signature and anonymous pull on GHCR with a
+# throwaway package. Removed before the pull request. On push because a manual run needs the file
+# on main; rerun with `gh run rerun`.
+name: ghcr-test
+
+on:
+  push:
+    branches: [chore/image-pipeline]
+    paths: [.github/workflows/ghcr-test.yml]
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/gyanendra0/denial-appeal-agent/ghcr-test
+  COSIGN_VERSION: "3.1.4"
+  COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+  TRIVY_NO_PROGRESS: "true"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
+      - name: Install Trivy (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+
+      - name: Write the throwaway image
+        run: |
+          mkdir "$RUNNER_TEMP/image"
+          echo "ghcr test, issue 94" > "$RUNNER_TEMP/image/hello.txt"
+          printf 'FROM scratch\nCOPY hello.txt /hello.txt\n' > "$RUNNER_TEMP/image/Dockerfile"
+          docker buildx create --use
+
+      # Before the login, so Trivy never sits beside the registry credentials.
+      - name: Make the SBOM from a local build
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --load \
+            -t ghcr-test:local "$RUNNER_TEMP/image"
+          "$RUNNER_TEMP/trivy" image --format cyclonedx --output "$RUNNER_TEMP/sbom.json" ghcr-test:local
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push both platforms
+        id: push
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=false --push \
+            --metadata-file "$RUNNER_TEMP/metadata.json" -t "$IMAGE:test" "$RUNNER_TEMP/image"
+          digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed $IMAGE@$digest"
+
+      - name: Attach the SBOM as a signed attestation
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          "$RUNNER_TEMP/cosign" attest --yes --type cyclonedx \
+            --predicate "$RUNNER_TEMP/sbom.json" "$IMAGE@$DIGEST"
+
+      - name: Sign keyless, by digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: '"$RUNNER_TEMP/cosign" sign --yes "$IMAGE@$DIGEST"'
+
+  # No login and no token: this is what the cluster sees. A failed pull means the package is private.
+  check-anonymous:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
+      - name: Anonymous pull
+        run: docker pull "$IMAGE@$DIGEST"
+
+      - name: Verify the signature
+        run: |
+          "$RUNNER_TEMP/cosign" verify \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE@$DIGEST"
+
+      - name: Verify the SBOM attestation
+        run: |
+          "$RUNNER_TEMP/cosign" verify-attestation --type cyclonedx \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE@$DIGEST" > /dev/null

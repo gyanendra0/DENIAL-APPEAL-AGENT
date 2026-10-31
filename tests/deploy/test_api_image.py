@@ -104,11 +104,37 @@ def test_the_image_build_fails_on_a_lock_with_a_missing_package() -> None:
     assert runs[install + 1] == "/opt/venv/bin/pip check"
 
 
-def test_ci_installs_the_lock_and_checks_it() -> None:
+def test_the_venv_drops_setuptools_before_the_lock_is_installed() -> None:
+    # Uninstalled first, so the `pip check` after the install fails if a locked package needs it.
+    runs = _instructions("RUN")
+    drop = next(i for i, run in enumerate(runs) if "/opt/venv/bin/pip uninstall" in run)
+    install = next(i for i, run in enumerate(runs) if "--no-deps" in run)
+    assert "-y setuptools" in runs[drop]
+    assert drop < install
+
+
+def test_the_final_image_drops_setuptools_and_wheel() -> None:
+    # Only the last stage ships, and uninstalling needs root, so it must come before USER.
+    final_stage = DOCKERFILE.read_text().rpartition("\nFROM ")[2]
+    drop = final_stage.index("RUN python -m pip uninstall -y setuptools wheel\n")
+    assert drop < final_stage.index("\nUSER 10001\n")
+
+
+def _lock_test_commands() -> list[str]:
     workflow = yaml.safe_load(CHECKS_WORKFLOW.read_text())
-    commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["checks"]["steps"])
+    return [step["run"] for step in workflow["jobs"]["lock-tests"]["steps"] if "run" in step]
+
+
+def test_ci_installs_the_lock_and_checks_it() -> None:
+    commands = "\n".join(_lock_test_commands())
     assert "--require-hashes --no-deps -r deploy/api/requirements.txt" in commands
     assert '"$RUNNER_TEMP/lock/bin/pip" check' in commands
+
+
+def test_ci_runs_the_tests_on_the_locked_versions() -> None:
+    commands = "\n".join(_lock_test_commands())
+    assert '-e ".[dev]" -c "$RUNNER_TEMP/locked.txt"' in commands
+    assert _lock_test_commands()[-1] == '"$RUNNER_TEMP/lock/bin/pytest"'
 
 
 def test_dependabot_is_told_the_python_the_lock_is_for() -> None:

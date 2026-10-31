@@ -18,11 +18,26 @@ COPY frontend ./
 RUN npm run build
 
 
-FROM caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+# Caddy compiled here, not taken from the image below: v2.11.7, the newest release, was built with
+# a Go and two modules that have known vulnerabilities. Go 1.27.3 comes with this builder image.
+# Move these versions by hand: Dependabot does not read them; the image scan fails on a new finding.
+FROM caddy:2-builder-alpine@sha256:95a5e7e2692b5eb9545aadc5b90a39f6f509bee59c9508a493f83ee902eaef63 AS caddy-build
 
-# The caddy binary in this image may bind ports 80 and 443 without root (it carries the
-# NET_BIND_SERVICE file capability), so it runs as a plain user that owns only Caddy's own state.
-RUN addgroup -S -g 10001 web \
+RUN xcaddy build v2.11.7 \
+    --with github.com/go-jose/go-jose/v4@v4.1.6 \
+    --replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+    --output /usr/bin/caddy
+
+
+FROM caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
+
+# curl is not used (the health check is BusyBox wget); removing it also removes libcurl and
+# brotli-libs. setcap lets the new binary bind ports 80 and 443 without root (a file capability
+# does not survive COPY), so it runs as a plain user that owns only Caddy's own state.
+COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
+RUN apk del --no-cache curl \
+    && setcap cap_net_bind_service=+ep /usr/bin/caddy \
+    && addgroup -S -g 10001 web \
     && adduser -S -D -H -u 10001 -G web -s /sbin/nologin web \
     && chown -R 10001:10001 /data /config
 

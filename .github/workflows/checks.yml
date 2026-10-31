@@ -62,12 +62,56 @@ jobs:
       - name: Tests (pytest + coverage >= 70%)
         run: pytest
 
-      # The tests use pyproject.toml, not the lock, so this is what looks at a lock bump.
+  # The job above installs the newest versions pyproject.toml allows; this one runs the tests on
+  # the versions the API image ships, so a lock bump is tested for what it changes.
+  lock-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/app_test
+      TEST_DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/app_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: deploy/api/.python-version
+          cache: pip
+
       - name: Lock installs and is complete (pip check)
         run: |
           python -m venv "$RUNNER_TEMP/lock"
           "$RUNNER_TEMP/lock/bin/pip" install --require-hashes --no-deps -r deploy/api/requirements.txt
           "$RUNNER_TEMP/lock/bin/pip" check
+
+      # The lock has no test tools. pip cannot take the hashed lock as a constraint for an editable
+      # install, so a plain list of what was just installed keeps every locked version in place.
+      - name: Add the test tools without moving a locked version
+        run: |
+          "$RUNNER_TEMP/lock/bin/pip" freeze --all > "$RUNNER_TEMP/locked.txt"
+          "$RUNNER_TEMP/lock/bin/pip" install -e ".[dev]" -c "$RUNNER_TEMP/locked.txt"
+
+      - name: Tests on the locked versions (pytest + coverage >= 70%)
+        run: '"$RUNNER_TEMP/lock/bin/pytest"'
 
   frontend:
     runs-on: ubuntu-latest

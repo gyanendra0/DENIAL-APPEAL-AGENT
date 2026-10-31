@@ -112,12 +112,14 @@ jobs:
         run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'
 
   # What actually ships: the operating system packages and libraries inside each built image.
-  # Nothing is pushed, and this job holds no secrets. Build for one platform only (amd64).
+  # Nothing is pushed, and this job holds no stored secrets; only the upload steps use its token.
+  # Build for one platform only (amd64).
   image-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,6 +137,38 @@ jobs:
 
       - name: Build the web image
         run: docker build -f deploy/web/Dockerfile -t denial-appeal-agent-web .
+
+      # Before the gates, so a blocked image still shows its findings; these runs block nothing.
+      - name: Scan the API image for the Security tab
+        run: >-
+          "$RUNNER_TEMP/trivy" image --scanners vuln
+          --format sarif --output "$RUNNER_TEMP/trivy-image-api.sarif" denial-appeal-agent-api
+
+      - name: Scan the web image for the Security tab
+        run: >-
+          "$RUNNER_TEMP/trivy" image --scanners vuln
+          --format sarif --output "$RUNNER_TEMP/trivy-image-web.sarif" denial-appeal-agent-web
+
+      # Dependabot and fork pull requests get a read-only token, which cannot upload.
+      - name: Upload the API image results to the Security tab
+        if: >-
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]')
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/trivy-image-api.sarif
+          category: trivy-image-api
+
+      - name: Upload the web image results to the Security tab
+        if: >-
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]')
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/trivy-image-web.sarif
+          category: trivy-image-web
 
       - name: Block on a HIGH or CRITICAL finding with a fix in the API image
         run: >-

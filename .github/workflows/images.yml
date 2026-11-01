@@ -273,7 +273,7 @@ jobs:
           fi
 
       # A person turned auto-merge off: closing that pull request would undo the pause, and the
-      # same bad code would deploy with the next merge. To go on, they close it.
+      # same bad code would deploy with the next merge. To go on, see the README.
       - name: Stop if deploys are paused
         id: pause
         if: steps.digests.outputs.changed == 'true'
@@ -324,5 +324,5 @@ jobs:
             -f branch="$branch" -f message="$title" -f sha="$(git rev-parse "HEAD:${KUSTOMIZATION}")" \
             -f content="$(base64 --wrap=0 "$KUSTOMIZATION")" > /dev/null
           url="$(gh pr create --base main --head "$branch" --title "$title" \
-            --body "Images built from ${GITHUB_SHA}. To pause deploys, turn auto-merge off here; to go on, close this pull request.")"
+            --body "Images built from ${GITHUB_SHA}. To pause deploys, turn auto-merge off here. To go on, close this pull request, then see the README.")"
           gh pr merge "$url" --auto --squash

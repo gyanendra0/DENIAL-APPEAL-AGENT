@@ -6045,7 +6045,9 @@ be different versions.
   identity. The first deploy pull request replaces them.
 - **Re-run only the newest run.** A re-run reads its own commit's digests and writes them on the
   latest `main`, and `concurrency` stops only runs in progress. Re-running an older run opens a
-  deploy pull request that moves production back with no review.
+  deploy pull request that moves production back with no review. Never re-run after a rollback, or
+  to resume from a build paused because it is bad: a revert starts no run, so the newest run is
+  still that build. Merge the fix instead. A rollback lasts only until the next merge that builds.
 - **`verify` has never been seen failing.** No unsigned image or wrong identity was tried, and its
   pin to `main` has not run: the first merge is the first check of it.
 - **The pause and the re-run clean-up are unproven** for the same reason as `deploy-pr`. A run

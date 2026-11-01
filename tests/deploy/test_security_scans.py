@@ -128,6 +128,15 @@ def test_the_manifest_gates_come_after_the_render_and_only_read_the_repository()
     assert all(render < gate for gate in gates)
 
 
+def test_every_rendered_production_image_must_carry_a_digest() -> None:
+    commands = _manifests_commands()
+    gate = next(c for c in commands if "@sha256:" in c)
+    assert 'rendered/prod.yaml"' in gate
+    assert "exit 1" in gate
+    render = next(i for i, c in enumerate(commands) if '/kustomize" build' in c)
+    assert render < commands.index(gate)
+
+
 def test_every_manifest_tool_is_pinned_and_its_checksum_verified() -> None:
     job = _manifests_job()
     for tool in ("KUSTOMIZE", "KUBECONFORM"):

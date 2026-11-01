@@ -159,6 +159,14 @@ jobs:
               > "$RUNNER_TEMP/rendered/${overlay}.yaml"
           done
 
+      # The server runs what `prod` renders, so that output is what has to be pinned. `local` uses a
+      # plain tag on purpose.
+      - name: Block on a production image without a digest
+        run: |
+          images="$(grep -E '^[[:space:]]*(- )?image:' "$RUNNER_TEMP/rendered/prod.yaml")"
+          echo "$images"
+          if echo "$images" | grep -vE '@sha256:[0-9a-f]{64}"?$'; then exit 1; fi
+
       # Strict: a misspelled field fails. A kind with no schema fails too, so a new custom kind
       # has to be dealt with on purpose.
       - name: Block on a manifest Kubernetes would refuse

@@ -9,11 +9,13 @@ from typing import Any
 import yaml
 
 from pipelines.set_image_digests import set_digests
+from src.config.settings import ApiSettings, LlmGatewaySettings, Settings
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / "deploy" / "k8s" / "base"
 PROD_KUSTOMIZATION = ROOT / "deploy" / "k8s" / "overlays" / "prod" / "kustomization.yaml"
 COMPOSE_FILE = ROOT / "deploy" / "prod" / "compose.yml"
+CADDYFILE = ROOT / "deploy" / "web" / "Caddyfile"
 API_IMAGE = "ghcr.io/gyanendra0/denial-appeal-agent/api"
 WAVE = "argocd.argoproj.io/sync-wave"
 
@@ -57,6 +59,16 @@ def _migrate_container() -> dict[str, Any]:
     return container
 
 
+def _pod(name: str) -> dict[str, Any]:
+    pod: dict[str, Any] = _object("Deployment", name)["spec"]["template"]["spec"]
+    return pod
+
+
+def _container(name: str) -> dict[str, Any]:
+    container: dict[str, Any] = _pod(name)["containers"][0]
+    return container
+
+
 def test_the_base_lists_every_file_in_its_folder() -> None:
     kustomization = yaml.safe_load((BASE / "kustomization.yaml").read_text())
     on_disk = {path.name for path in BASE.glob("*.yaml")} - {"kustomization.yaml"}
@@ -67,6 +79,27 @@ def test_the_sync_runs_the_namespace_then_the_database_then_the_migration() -> N
     namespace = _wave("Namespace", "denial-appeal-agent")
     assert namespace < _wave("StatefulSet", "db") < _wave("Job", "migrate")
     assert _wave("Service", "db") == _wave("StatefulSet", "db")
+
+
+def test_the_settings_exist_before_anything_reads_them() -> None:
+    assert _wave("ConfigMap", "app-config") == _wave("Namespace", "denial-appeal-agent")
+
+
+def test_the_api_and_web_start_after_the_migration() -> None:
+    migrate = _wave("Job", "migrate")
+    for kind, name in (
+        ("Deployment", "api"),
+        ("Service", "api"),
+        ("Deployment", "web"),
+        ("Service", "web"),
+    ):
+        assert _wave(kind, name) > migrate
+
+
+def test_the_certificate_volume_is_in_the_same_wave_as_its_pod() -> None:
+    # local-path makes the volume only once a pod needs it, so in an earlier wave Argo CD would wait
+    # forever on a claim that the pod of a later wave has to start.
+    assert _wave("PersistentVolumeClaim", "caddy-data") == _wave("Deployment", "web")
 
 
 def test_the_migration_is_a_sync_hook_so_it_can_run_after_the_database() -> None:
@@ -94,10 +127,19 @@ def test_the_migration_runs_the_api_image_and_alembic() -> None:
     assert migrate["command"] == ["alembic", "upgrade", "head"]
 
 
+def test_the_api_and_the_migration_are_the_same_image_and_database() -> None:
+    def url(container: dict[str, Any]) -> str:
+        return str(next(e["value"] for e in container["env"] if e["name"] == "DATABASE_URL"))
+
+    assert _container("api")["image"] == _migrate_container()["image"] == API_IMAGE
+    assert url(_container("api")) == url(_migrate_container())
+
+
 def test_the_password_is_listed_before_the_url_that_uses_it() -> None:
     # Kubernetes leaves `$(NAME)` as plain text when NAME comes later in the list.
-    names = [entry["name"] for entry in _migrate_container()["env"]]
-    assert names.index("POSTGRES_PASSWORD") < names.index("DATABASE_URL")
+    for container in (_migrate_container(), _container("api")):
+        names = [entry["name"] for entry in container["env"]]
+        assert names.index("POSTGRES_PASSWORD") < names.index("DATABASE_URL")
 
 
 def test_the_migration_gets_no_secret_but_the_database_password() -> None:
@@ -153,6 +195,117 @@ def test_every_database_probe_asks_over_tcp() -> None:
         assert command[:3] == ["pg_isready", "-h", "127.0.0.1"]
 
 
+def test_there_is_only_one_api_and_a_new_one_starts_after_the_old_one_stops() -> None:
+    # A second process would mark the first one's running jobs as interrupted.
+    spec = _object("Deployment", "api")["spec"]
+    assert spec["replicas"] == 1
+    assert spec["strategy"] == {"type": "Recreate"}
+
+
+def test_the_api_service_has_the_name_the_caddyfile_uses_and_stays_inside_the_cluster() -> None:
+    assert "reverse_proxy api:8000" in CADDYFILE.read_text()
+    service = _object("Service", "api")["spec"]
+    assert "type" not in service
+    assert [port["port"] for port in service["ports"]] == [8000]
+
+
+def test_the_api_reads_the_settings_and_the_secrets() -> None:
+    assert _container("api")["envFrom"] == [
+        {"configMapRef": {"name": "app-config"}},
+        {"secretRef": {"name": "app-secrets"}},
+    ]
+
+
+def test_the_api_is_ready_only_when_the_database_answers() -> None:
+    api = _container("api")
+    assert api["startupProbe"]["httpGet"]["path"] == "/health"
+    assert api["readinessProbe"]["httpGet"]["path"] == "/health"
+
+
+def test_a_database_outage_does_not_restart_the_api() -> None:
+    # /health checks the database, and a restart would kill the running jobs.
+    assert set(_container("api")["livenessProbe"]) & {"httpGet", "exec"} == set()
+    assert "tcpSocket" in _container("api")["livenessProbe"]
+
+
+def test_the_api_writes_only_to_its_temporary_folder_and_reads_the_model() -> None:
+    mounts = {mount["mountPath"]: mount for mount in _container("api")["volumeMounts"]}
+    assert set(mounts) == {"/tmp", "/app/models"}  # noqa: S108  (a mount path, not a temp file)
+    assert mounts["/app/models"]["readOnly"] is True
+    volumes = {volume["name"]: volume for volume in _pod("api")["volumes"]}
+    assert volumes[mounts["/app/models"]["name"]]["configMap"]["name"] == "win-model"
+
+
+def test_the_web_writes_only_to_its_certificates_and_its_config() -> None:
+    mounts = {mount["mountPath"]: mount["name"] for mount in _container("web")["volumeMounts"]}
+    assert set(mounts) == {"/data", "/config"}
+    volumes = {volume["name"]: volume for volume in _pod("web")["volumes"]}
+    assert volumes[mounts["/data"]]["persistentVolumeClaim"]["claimName"] == "caddy-data"
+    assert "emptyDir" in volumes[mounts["/config"]]
+
+
+def test_the_web_keeps_the_visitors_address() -> None:
+    service = _object("Service", "web")["spec"]
+    assert service["type"] == "LoadBalancer"
+    assert service["externalTrafficPolicy"] == "Local"
+
+
+def test_the_web_service_publishes_the_ports_of_the_compose_file() -> None:
+    published = {
+        f"{port['port']}/{port.get('protocol', 'TCP').lower()}"
+        for port in _object("Service", "web")["spec"]["ports"]
+    }
+    compose = yaml.safe_load(COMPOSE_FILE.read_text())["services"]["web"]["ports"]
+    expected = {
+        f"{entry.split(':')[1]}/tcp" if "/" not in entry else entry.split(":")[1]
+        for entry in compose
+    }
+    assert published == expected
+
+
+def test_every_service_port_names_a_port_of_its_container() -> None:
+    for name in ("api", "web"):
+        container_ports = {port["name"] for port in _container(name)["ports"]}
+        for port in _object("Service", name)["spec"]["ports"]:
+            assert port["targetPort"] in container_ports
+
+
+def test_the_web_gets_its_address_and_no_other_setting() -> None:
+    web = _container("web")
+    assert "envFrom" not in web
+    assert [entry["name"] for entry in web["env"]] == ["SITE_ADDRESS"]
+    reference = web["env"][0]["valueFrom"]["configMapKeyRef"]
+    # Not optional: Caddy's own default is `localhost`, which would start and serve the wrong site.
+    assert reference == {"name": "app-config", "key": "SITE_ADDRESS"}
+
+
+def test_the_web_probes_run_inside_the_container() -> None:
+    # Caddy's admin address does not answer from outside it.
+    for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+        assert "127.0.0.1:2019/config/" in " ".join(_container("web")[probe]["exec"]["command"])
+
+
+def test_every_plain_setting_is_a_real_setting_and_none_is_a_secret() -> None:
+    known = {
+        field.upper()
+        for model in (Settings, ApiSettings, LlmGatewaySettings)
+        for field in model.model_fields
+    }
+    keys = set(_object("ConfigMap", "app-config")["data"])
+    assert keys <= known
+    assert not {key for key in keys if re.search("PASSWORD|SECRET|API_KEY|EMAILS", key)}
+
+
+def test_individual_sign_up_stays_off() -> None:
+    assert _object("ConfigMap", "app-config")["data"]["INDIVIDUAL_SIGNUP_ENABLED"] == "false"
+
+
+def test_every_plain_setting_is_a_string() -> None:
+    # Kubernetes refuses a ConfigMap whose value YAML reads as a number or a boolean.
+    for value in _object("ConfigMap", "app-config")["data"].values():
+        assert isinstance(value, str)
+
+
 def test_every_pod_runs_as_non_root_with_no_token_and_the_default_seccomp() -> None:
     pods = _pod_specs()
     assert pods
@@ -170,7 +323,17 @@ def test_every_container_is_locked_down() -> None:
         security = container["securityContext"]
         assert security["allowPrivilegeEscalation"] is False
         assert security["readOnlyRootFilesystem"] is True
-        assert security["capabilities"] == {"drop": ["ALL"]}
+        assert security["capabilities"]["drop"] == ["ALL"]
+
+
+def test_only_the_web_adds_a_capability_and_only_the_one_it_needs() -> None:
+    # Its binary carries NET_BIND_SERVICE, so without it Caddy does not start.
+    added = {
+        container["name"]: container["securityContext"]["capabilities"]["add"]
+        for container in _all_containers()
+        if "add" in container["securityContext"]["capabilities"]
+    }
+    assert added == {"web": ["NET_BIND_SERVICE"]}
 
 
 def test_every_container_has_requests_and_limits() -> None:

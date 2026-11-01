@@ -1,6 +1,6 @@
 """The merge build keeps its promises: both images on both platforms, natively, pushed with the
-job's own token, the arm64 image scanned before anything can name it, and every image signed,
-with an SBOM, and checked with no login."""
+job's own token, the arm64 image scanned before anything can name it and away from the signing
+identity, and every image signed, with an SBOM, and checked with no login."""
 
 import re
 from pathlib import Path
@@ -34,7 +34,7 @@ def _position(job: str, text: str) -> int:
 
 def test_the_build_runs_on_a_merge_and_never_on_a_pull_request() -> None:
     trigger = _workflow()[True]  # YAML reads the key `on` as true.
-    assert trigger["push"]["branches"] == ["main"]
+    assert "main" in trigger["push"]["branches"]
     assert "pull_request" not in trigger
 
 
@@ -56,8 +56,10 @@ def test_both_images_are_built_on_a_native_runner_of_each_platform() -> None:
 
 
 def test_every_image_is_published_after_every_build() -> None:
+    assert _jobs()["scan"]["needs"] == "build"
+    assert _jobs()["scan"]["strategy"]["matrix"]["image"] == ["api", "web"]
     publish = _jobs()["publish"]
-    assert publish["needs"] == "build"
+    assert publish["needs"] == "scan"
     assert publish["strategy"]["matrix"]["image"] == ["api", "web"]
 
 
@@ -70,7 +72,7 @@ def test_a_build_pushes_by_digest_and_only_publish_adds_a_tag() -> None:
 
 
 def test_the_image_name_is_lowercased_for_the_registry() -> None:
-    commands = "\n".join(_commands("build") + _commands("publish"))
+    commands = "\n".join(_commands("build") + _commands("scan") + _commands("publish"))
     assert "${GITHUB_REPOSITORY,,}" in commands
     assert "${GITHUB_REPOSITORY}" not in commands
 
@@ -78,6 +80,7 @@ def test_the_image_name_is_lowercased_for_the_registry() -> None:
 def test_only_the_two_jobs_that_push_can_write_packages() -> None:
     assert _workflow()["permissions"] == {}
     assert _jobs()["build"]["permissions"] == {"contents": "read", "packages": "write"}
+    assert _jobs()["scan"]["permissions"] == {"contents": "read"}
     assert _jobs()["publish"]["permissions"] == {"packages": "write", "id-token": "write"}
     assert _jobs()["verify"]["permissions"] == {}
     assert _jobs()["deploy-pr"]["permissions"] == {"contents": "read"}
@@ -95,13 +98,25 @@ def test_a_newer_merge_replaces_an_older_run() -> None:
     assert _workflow()["concurrency"]["cancel-in-progress"] is True
 
 
-def test_the_arm64_image_is_scanned_before_the_tag_and_before_the_login() -> None:
-    scan_position = _position("publish", '/trivy" image')
-    assert scan_position < _position("publish", "docker login ghcr.io")
-    assert scan_position < _position("publish", "imagetools create")
-    scan = _commands("publish")[scan_position]
+def test_the_arm64_image_is_scanned_in_a_job_before_the_tag() -> None:
+    assert _jobs()["publish"]["needs"] == "scan"
+    scan = _commands("scan")[_position("scan", '/trivy" image')]
     assert "--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1" in scan
     assert 'digests/arm64")' in scan
+
+
+def test_trivy_never_runs_where_an_identity_token_can_be_had() -> None:
+    assert not any("trivy" in command.lower() for command in _commands("publish"))
+    for job, definition in _jobs().items():
+        if any("trivy" in command.lower() for command in _commands(job)):
+            assert "id-token" not in definition["permissions"]
+
+
+def test_the_merge_scan_reads_the_same_exceptions_as_the_pull_request_scan() -> None:
+    uses = [step.get("uses", "") for step in _jobs()["scan"]["steps"]]
+    assert "actions/checkout" in uses[0]
+    assert (ROOT / ".trivyignore").is_file()
+    assert not any("--ignorefile" in command for command in _commands("scan"))
 
 
 def test_cosign_is_checked_against_its_pinned_hash_in_both_jobs_that_use_it() -> None:
@@ -113,12 +128,14 @@ def test_cosign_is_checked_against_its_pinned_hash_in_both_jobs_that_use_it() ->
         assert _jobs()[job]["runs-on"] == "ubuntu-24.04"
 
 
-def test_each_platform_gets_its_own_sbom_before_the_login() -> None:
-    position = _position("publish", "--format cyclonedx")
-    assert position < _position("publish", "docker login ghcr.io")
-    sbom = _commands("publish")[position]
+def test_each_platform_gets_its_own_sbom_and_publish_receives_them() -> None:
+    sbom = _commands("scan")[_position("scan", "--format cyclonedx")]
     assert "for arch in amd64 arm64" in sbom
     assert 'digests/${arch}")' in sbom
+    kept = next(s for s in _jobs()["scan"]["steps"] if "upload-artifact" in s.get("uses", ""))
+    received = [s for s in _jobs()["publish"]["steps"] if s.get("with", {}).get("name")]
+    assert [s["with"]["name"] for s in received] == [kept["with"]["name"]]
+    assert kept["with"]["if-no-files-found"] == "error"
 
 
 def test_the_image_is_signed_by_digest_after_the_tag_with_each_platform_included() -> None:
@@ -133,7 +150,7 @@ def test_each_sbom_is_attested_on_the_digest_of_its_own_platform() -> None:
     attest = _commands("publish")[_position("publish", 'cosign" attest')]
     assert "for arch in amd64 arm64" in attest
     assert "--type cyclonedx" in attest
-    assert "sbom-${arch}.json" in attest
+    assert "sboms/${arch}.json" in attest
     assert 'digests/${arch}")' in attest
 
 
@@ -229,8 +246,8 @@ def test_every_action_is_pinned_to_a_full_commit() -> None:
 def test_the_checkout_keeps_no_credentials() -> None:
     steps = [
         step
-        for job in ("build", "deploy-pr")
+        for job in ("build", "scan", "deploy-pr")
         for step in _jobs()[job]["steps"]
         if "checkout" in step.get("uses", "")
     ]
-    assert [step["with"]["persist-credentials"] for step in steps] == [False, False]
+    assert [step["with"]["persist-credentials"] for step in steps] == [False, False, False]

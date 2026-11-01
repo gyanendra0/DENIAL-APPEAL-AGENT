@@ -5967,7 +5967,7 @@ yet. Built in `chore/image-pipeline` (Stage 6). No migration, no model call, no 
 
 | File | What it does |
 |---|---|
-| `.github/workflows/images.yml` | Jobs `build`, `publish`, `verify` and `deploy-pr`, on a push to `main` |
+| `.github/workflows/images.yml` | Jobs `build`, `scan`, `publish`, `verify` and `deploy-pr`, on a push to `main` |
 | `pipelines/set_image_digests.py` | Writes the new digests into the Kustomize file; only the `digest:` lines change, and every image in the file must be given |
 | `deploy/k8s/overlays/prod/kustomization.yaml` | The one record of which images production should run, by digest |
 | `tests/deploy/test_image_build.py` | Reads the workflow: triggers, permissions, the order of the steps, the signer identity |
@@ -5980,7 +5980,8 @@ The tests read the files and run no workflow. The real runs below are what show 
 | Job | What it does | Permissions |
 |---|---|---|
 | `build` (4 runs) | `api` and `web`, each on a runner of its own platform (`ubuntu-24.04`, `ubuntu-24.04-arm`) with no emulation. Pushes by digest with no tag, so nothing can pull an image by mistake | `contents: read`, `packages: write` |
-| `publish` (2 runs) | Blocks on a HIGH or CRITICAL finding with a fix in the arm64 image. Makes one SBOM (a list of what is inside) per platform. Tags both platforms as one image, `sha-<commit>`. Signs that image and both platforms. Attaches each SBOM as a signed attestation | `packages: write`, `id-token: write` |
+| `scan` (2 runs) | Blocks on a HIGH or CRITICAL finding with a fix in the arm64 image, honouring `.trivyignore`. Makes one SBOM (a list of what is inside) per platform | `contents: read` |
+| `publish` (2 runs) | Tags both platforms as one image, `sha-<commit>`. Signs that image and both platforms. Attaches each SBOM as a signed attestation | `packages: write`, `id-token: write` |
 | `verify` (2 runs) | With no login and no token, reads the digests from the tag and checks the signatures and attestations, with the signer identity and issuer pinned | none |
 | `deploy-pr` | Reads both digests, writes them with `set_image_digests.py`, closes older `deploy/sha-*` pull requests, opens a new one with squash auto-merge. Opens nothing if the digests did not change | `contents: read`, plus a token from the GitHub App |
 
@@ -5993,8 +5994,12 @@ be different versions.
   packages are free and can be pulled anonymously, so the cluster needs no registry password.
   AWS ECR Public was the first choice; AWS account verification blocked it.
 - **The arm64 scan is here, not on the pull request.** The server is arm64 and `image-scan` builds
-  amd64 only, so this is the one scan of what really runs. It comes before the login, so Trivy
-  never gets a credential; the image is public and needs none.
+  amd64 only, so this is the one scan of what really runs. It reads `.trivyignore` too, so an
+  exception that passes the pull request does not stop the merge.
+- **Trivy runs in its own job.** In a job with `id-token: write` every step can ask for the
+  identity token, so a bad Trivy release could sign its own image as this workflow. `scan` has
+  `contents: read` only and passes the SBOMs on as artifacts. A bad Trivy could still write a
+  wrong SBOM or pass a bad image; it cannot sign anything or push.
 - **Keyless signing.** cosign takes a short-lived certificate from GitHub's identity token, so
   there is no signing key to store or lose. The signature says which workflow on which branch
   built the image. It signs by digest, because a tag can move.

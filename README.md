@@ -247,7 +247,9 @@ let the next merge that builds deploy. To roll back, revert a merged one.
 Re-run only the newest `images` run: an older one opens a deploy pull request that moves production
 back, and it merges by itself. Never re-run after a rollback, or to resume from a build you paused
 because it is bad: merge the fix and let that build deploy. A rollback lasts only until the next
-merge that builds, so the fix has to be that merge.
+merge that builds, so the fix has to be that merge. A rollback past a database migration needs
+`alembic downgrade` from the newer image first: the older image does not know that revision, so its
+migration should fail and the deploy stop.
 
 Anyone can check an image with no login (the capitals in the repository name matter):
 ```

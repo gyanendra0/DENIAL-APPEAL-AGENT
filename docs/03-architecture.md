@@ -6093,6 +6093,7 @@ a real small cluster. Nothing runs on a server yet: `feat/cluster` does that. Bu
 | `deploy/k8s/overlays/prod/kustomization.yaml` | The image digests, written by the deploy pull request (3.25) |
 | `deploy/k8s/overlays/prod/app-secrets.example.yaml` | The secret key names with no values; not rendered |
 | `deploy/k8s/argocd/application.yaml` | Tells Argo CD to follow `prod` on `main`; applied once by hand |
+| `deploy/k8s/smoke/` | The probe pod and its rules, for the smoke test only; Argo CD never sees them |
 | `pipelines/make_smoke_model.py` | Trains a tiny made-up model for the smoke test |
 | `tests/deploy/test_k8s_base.py`, `test_k8s_overlays.py`, `test_k8s_smoke.py` | Read the manifests and the workflows, and pin the rules on this page |
 
@@ -6109,7 +6110,8 @@ Argo CD applies one wave at a time, lowest first:
 
 A `PreSync` hook was the first plan. It runs before everything else, so on the very first sync the
 migration would start with no database. During a migration the old API keeps running. The Job is
-never retried (`backoffLimit: 0`) and stops after 10 minutes.
+not retried (`backoffLimit: 0`) and stops after 10 minutes. A new commit starts a new sync, and so
+a new migration Job, which a failure stops in the same way.
 
 ### What each container may do
 
@@ -6202,8 +6204,14 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 - **`manifests`, run locally:** 30 resources valid, 0 HIGH or CRITICAL, so `.trivyignore` is still
   empty. Not blocking: 10 MEDIUM KSV-0125 (trusted registries), 4 MEDIUM KSV-0022 and KSV-0117
   (`web`'s capability), 4 LOW KSV-0020 and KSV-0021 (user and group ids of 10000 or below).
-- **`manifests` failed on purpose three times:** a misspelled field, an unknown kind, a privileged
-  container.
+- **`manifests` failed on purpose four times:** a misspelled field, an unknown kind, a privileged
+  container, and a production image with a tag in place of its digest.
+- **A pod other than `web` is refused by `api` in `kind`** (same local run). Under a temporary rule
+  the probe connected; with that rule gone it timed out. With the `api` rule opened to every pod,
+  the step failed. A broken probe failing the step was not seen.
+- **uvicorn 0.54.0 reads the pod range.** A test gives the overlay's value to its real middleware:
+  a pod of the range is believed, an outside address is not. `lock-tests` runs it on the locked
+  version.
 
 ### Known limits
 
@@ -6213,13 +6221,19 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
   deploy pull request then also builds both images, about 10 minutes more on each deploy.
 - **The sync order is unproven.** The smoke test uses `kubectl apply`, not Argo CD, so it proves the
   manifests and not the waves. No sentence in the Argo CD docs says a failed `Sync` hook stops later
-  waves. `feat/cluster` must see one failing migration leave the API alone, or this choice comes
-  back.
+  waves. The source says it does, read on `master` and not on the installed version. `feat/cluster`
+  must see one failing migration leave the API alone, or this choice comes back.
+- **A rollback past a migration is blocked.** The revert brings back an older image, its migration
+  Job runs `alembic upgrade head`, and that image does not know the newer revision. This was not
+  run; it is how alembic behaves. The Job should fail, wave 1 is not applied, and the bad API keeps
+  running. First run `alembic downgrade` from the newer image, then revert. `feat/cluster` must try
+  this once.
 - **`kind` is not k3s.** A different network plugin enforces the policies, so they are unproven on
   the server. The k3s pod range `10.42.0.0/16` is from memory: read it there before the first
   sign-in.
-- **No test tries a forged address.** The rule "only `web` reaches `api`" is in the files and pinned
-  by a test, but no pod was seen being refused by `api` itself; the failure seen was at `db`.
+- **No test sends a forged address end to end.** `smoke` shows the refusal and a test shows what
+  uvicorn believes, but no run sends a forged header through a real cluster. The refusal also has
+  to be seen once on k3s.
 - **Without valid model files the API crashes at startup.** A missing ConfigMap makes the pod wait,
   with the reason in `kubectl describe pod`. A ConfigMap with missing or bad files gives a crash
   loop.

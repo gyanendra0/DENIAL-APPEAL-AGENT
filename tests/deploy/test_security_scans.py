@@ -1,5 +1,6 @@
-"""The Trivy gates keep their promises: the default secret skips stay off in every scan, and
-every pull request builds and scans both images, and their findings reach the Security tab."""
+"""The Trivy gates keep their promises: the default secret skips stay off in every scan, every
+pull request builds and scans both images, their findings reach the Security tab, and both
+Kubernetes overlays are rendered, validated and scanned."""
 
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,15 @@ def _image_scan_steps() -> list[dict[str, Any]]:
 
 def _image_uploads() -> list[dict[str, Any]]:
     return [step for step in _image_scan_steps() if "upload-sarif" in step.get("uses", "")]
+
+
+def _manifests_job() -> dict[str, Any]:
+    job: dict[str, Any] = yaml.safe_load(WORKFLOW.read_text())["jobs"]["manifests"]
+    return job
+
+
+def _manifests_commands() -> list[str]:
+    return [step.get("run", "") for step in _manifests_job()["steps"]]
 
 
 def test_the_secret_gate_also_reads_tests_markdown_and_examples() -> None:
@@ -82,3 +92,47 @@ def test_the_image_scans_for_the_security_tab_block_nothing() -> None:
     scans = [command for command in commands if "--format sarif" in command]
     assert len(scans) == 2
     assert not any("--exit-code" in command for command in scans)
+
+
+def test_every_pull_request_renders_both_overlays_into_the_scanned_folder() -> None:
+    assert "pull_request" in yaml.safe_load(WORKFLOW.read_text())[True]
+    assert all((ROOT / "deploy" / "k8s" / "overlays" / name).is_dir() for name in ("local", "prod"))
+    render = next(c for c in _manifests_commands() if '/kustomize" build' in c)
+    assert "for overlay in local prod; do" in render
+    assert '"$RUNNER_TEMP/rendered/${overlay}.yaml"' in render
+
+
+def test_kubeconform_refuses_unknown_fields_and_kinds_for_the_planned_kubernetes() -> None:
+    gate = next(c for c in _manifests_commands() if '/kubeconform" ' in c)
+    assert "-strict" in gate
+    assert "-ignore-missing-schemas" not in gate
+    assert "-skip" not in gate
+    assert '-kubernetes-version "$KUBERNETES_VERSION"' in gate
+    assert gate.endswith('"$RUNNER_TEMP/rendered"')
+
+
+def test_trivy_blocks_on_high_or_critical_in_the_rendered_manifests() -> None:
+    gate = next(c for c in _manifests_commands() if '/trivy" config' in c)
+    assert "--severity HIGH,CRITICAL --exit-code 1" in gate
+    assert gate.endswith('"$RUNNER_TEMP/rendered"')
+
+
+def test_the_manifest_gates_come_after_the_render_and_only_read_the_repository() -> None:
+    job = _manifests_job()
+    assert job["permissions"] == {"contents": "read"}
+    assert not any("GH_TOKEN" in step.get("env", {}) for step in job["steps"])
+    commands = _manifests_commands()
+    render = next(i for i, c in enumerate(commands) if '/kustomize" build' in c)
+    gates = [i for i, c in enumerate(commands) if '/kubeconform" ' in c or '/trivy" config' in c]
+    assert len(gates) == 2
+    assert all(render < gate for gate in gates)
+
+
+def test_every_manifest_tool_is_pinned_and_its_checksum_verified() -> None:
+    job = _manifests_job()
+    for tool in ("KUSTOMIZE", "KUBECONFORM"):
+        assert len(job["env"][f"{tool}_SHA256"]) == 64
+        assert job["env"][f"{tool}_VERSION"]
+    installs = [c for c in _manifests_commands() if "curl " in c]
+    assert len(installs) == 3
+    assert all("sha256sum -c -" in command for command in installs)

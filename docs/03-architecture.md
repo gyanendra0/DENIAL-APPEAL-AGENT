@@ -5847,8 +5847,8 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 
 | File | What it does |
 |---|---|
-| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock) and job `frontend` (ESLint, Prettier, `tsc`, Vitest) |
-| `.github/workflows/security.yml` | Job `zizmor` (workflow files), job `trivy` (libraries, secrets, Dockerfiles) and job `image-scan` (both built images) |
+| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock), job `frontend` (ESLint, Prettier, `tsc`, Vitest) and job `smoke` (the manifests in a throwaway cluster, 3.26) |
+| `.github/workflows/security.yml` | Job `zizmor` (workflow files), job `trivy` (libraries, secrets, Dockerfiles), job `image-scan` (both built images) and job `manifests` (the rendered Kubernetes files, 3.26) |
 | `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
 | `.trivyignore` | Findings Trivy may skip; empty today |
 | `trivy-secret.yaml` | Turns off Trivy's default secret skips for tests, Markdown and examples |
@@ -5864,6 +5864,8 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `trivy` | A HIGH or CRITICAL misconfiguration |
 | `image-scan` | A HIGH or CRITICAL problem with a fix in the API or web image (amd64) |
 | `lock-tests` | A locked package that needs one the lock lacks, or a test that fails on the locked versions |
+| `manifests` | A rendered manifest Kubernetes would refuse, or a HIGH or CRITICAL misconfiguration in one |
+| `smoke` | The app not starting from the `local` overlay in a throwaway cluster |
 
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
@@ -6033,28 +6035,29 @@ be different versions.
   `docker pull`, `cosign verify` and `cosign verify-attestation` passed logged out. cosign keeps
   each signature under a `sha256-<digest>` tag beside the image, because GHCR's referrers API
   answers `MANIFEST_UNKNOWN`.
+- **First run on `main`** (run 41303129944 on b1a647e): all 11 jobs passed. `verify` passed with the
+  signer pinned to `main`, and `deploy-pr` opened PR #98 with the App's token.
+- **First deploy pull request** (PR #98, bcc9175): every required check started with no approval
+  and passed, it merged by itself, and it started no new build. The ruleset's
+  `require_extra_approval_for_unattributed_changes` did not hold it back. It replaced the digests
+  from the branch run.
 
 ### Known limits
 
-- **`deploy-pr` has never run.** `deploy-bot` allows `main` only, so its first run is the first
-  merge. That run also shows the App's permissions, and whether the ruleset's
-  `require_extra_approval_for_unattributed_changes` holds the bot's pull request back.
-- **The `main` signer identity is unproven.** The real runs signed as this branch. The first merge
-  signs as `.../images.yml@refs/heads/main`.
-- **The first digests in `kustomization.yaml` are from the branch run**, signed with the branch
-  identity. The first deploy pull request replaces them.
 - **Re-run only the newest run.** A re-run reads its own commit's digests and writes them on the
   latest `main`, and `concurrency` stops only runs in progress. Re-running an older run opens a
   deploy pull request that moves production back with no review. Never re-run after a rollback, or
   to resume from a build paused because it is bad: a revert starts no run, so the newest run is
   still that build. Merge the fix instead. A rollback lasts only until the next merge that builds.
-- **`verify` has never been seen failing.** No unsigned image or wrong identity was tried, and its
-  pin to `main` has not run: the first merge is the first check of it.
-- **The pause and the re-run clean-up are unproven** for the same reason as `deploy-pr`. A run
-  stopped between opening a pull request and turning auto-merge on leaves one that reads as
-  paused: nothing deploys until a person closes it. The run says so in a warning.
-- **The published images have not been started.** The local checks of `/health` and of the
-  Caddyfile were on images built on the Mac (arm64), not on the ones in GHCR.
+- **`verify` has never been seen failing.** No unsigned image or wrong identity was tried. It has
+  only run inside the workflow, not from a machine outside it.
+- **The pause and the re-run clean-up are unproven.** No run has yet met a paused pull request or
+  an older one to close. A run stopped between opening a pull request and turning auto-merge on
+  leaves one that reads as paused: nothing deploys until a person closes it. The run says so in a
+  warning.
+- **The published images have not been fully started.** Docker on arm64 ran the published `web` and
+  loaded the app from the published `api` (design check, 2026-11-01), but nothing has answered
+  `/health` from a published image. The smoke test (3.26) builds its own images.
 - **A finding only on arm64 shows up after the merge.** `image-scan` cannot see it; the merge stands
   and `scan` fails, so `publish` never starts and nothing deploys until it is fixed.
 - **Every merge builds and deploys, docs included.** Only the Kustomize folder is ignored.
@@ -6065,3 +6068,171 @@ be different versions.
 - **`app-id` is deprecated** in `actions/create-github-app-token`. It works and warns.
 - **Settings outside the repository.** The environment, the App and auto-merge are set by hand; the
   steps are in the README.
+
+## 3.26 Running on Kubernetes
+
+The whole app, described as Kubernetes files that Argo CD will keep the server equal to. One base
+holds what every environment shares, and two overlays hold what differs: `local` for a throwaway
+cluster, `prod` for the server. Every pull request renders both, checks them, and starts `local` in
+a real small cluster. Nothing runs on a server yet: `feat/cluster` does that. Built in
+`feat/k8s-manifests` (Stage 6). No migration, no model call.
+
+### The code
+
+| File | What it does |
+|---|---|
+| `deploy/k8s/base/namespace.yaml` | The namespace `denial-appeal-agent` |
+| `deploy/k8s/base/config.yaml` | ConfigMap `app-config`: the plain settings every environment shares |
+| `deploy/k8s/base/network-policies.yaml` | Deny everything, then one rule per component |
+| `deploy/k8s/base/db.yaml` | Postgres with pgvector: StatefulSet, volume and a Service with no outside port |
+| `deploy/k8s/base/migrate.yaml` | The Job that runs `alembic upgrade head`, once per sync |
+| `deploy/k8s/base/api.yaml` | The API: one replica, reachable only inside the cluster |
+| `deploy/k8s/base/web.yaml` | Caddy, the one front door: LoadBalancer Service, certificate volume |
+| `deploy/k8s/overlays/local/` | Made-up settings and a plain `local` image tag |
+| `deploy/k8s/overlays/prod/config.yaml` | The real settings that are not secret |
+| `deploy/k8s/overlays/prod/kustomization.yaml` | The image digests, written by the deploy pull request (3.25) |
+| `deploy/k8s/overlays/prod/app-secrets.example.yaml` | The secret key names with no values; not rendered |
+| `deploy/k8s/argocd/application.yaml` | Tells Argo CD to follow `prod` on `main`; applied once by hand |
+| `pipelines/make_smoke_model.py` | Trains a tiny made-up model for the smoke test |
+| `tests/deploy/test_k8s_base.py`, `test_k8s_overlays.py`, `test_k8s_smoke.py` | Read the manifests and the workflows, and pin the rules on this page |
+
+### Order of a sync
+
+Argo CD applies one wave at a time, lowest first:
+
+| Wave | What |
+|---|---|
+| -2 | Namespace, `app-config`, NetworkPolicies, and later the Sealed Secret |
+| -1 | The database and its Service |
+| 0 | The migration, as a `Sync` hook. An init container waits for the database first |
+| 1 | The API, web and Caddy's volume |
+
+A `PreSync` hook was the first plan. It runs before everything else, so on the very first sync the
+migration would start with no database. During a migration the old API keeps running. The Job is
+never retried (`backoffLimit: 0`) and stops after 10 minutes.
+
+### What each container may do
+
+Every container runs as a non-root user with a read-only filesystem, all capabilities dropped, no
+privilege escalation, the `RuntimeDefault` seccomp profile, no service account token, and set CPU
+and memory requests and limits.
+
+| Container | User | Added capability | Can write to | Memory limit |
+|---|---|---|---|---|
+| `web` | 10001 | `NET_BIND_SERVICE` | `/data` (volume), `/config` | 128 MiB |
+| `api` | 10001 | none | `/tmp` | 1 GiB |
+| `migrate` | 10001 | none | `/tmp` | 512 MiB |
+| `db` | 999 | none | The data volume, `/var/run/postgresql`, `/tmp` | 512 MiB |
+
+The `web` image's Caddy binary carries `NET_BIND_SERVICE`, so with all capabilities dropped it does
+not start at all, and the low-ports sysctl does not help. Docker's `HEALTHCHECK` means nothing to
+Kubernetes, so each workload has its own probes. The API's liveness probe is TCP only: `/health`
+checks the database, so a short database outage would otherwise restart the API and kill its
+running jobs.
+
+### Network rules
+
+Nothing talks to anything unless a rule allows it:
+
+| From | To |
+|---|---|
+| Anyone | `web` on 80, 443 and UDP 443 |
+| `web` | `api` on 8000, DNS, the internet on 80 and 443 (Let's Encrypt) |
+| `api` | `db` on 5432, DNS, the internet on 443 (model providers, Google) and 587 (mail) |
+| `migrate` | `db` on 5432, DNS |
+| `db` | Nothing |
+
+The internet rules leave out the private ranges, so they cannot reach another pod, and
+169.254.0.0/16, so they cannot reach the cloud metadata address. There is no IPv6 rule, so no IPv6
+traffic leaves.
+
+**The login limit depends on these rules.** Pods get new addresses, so the API cannot trust one
+fixed Caddy address. `FORWARDED_ALLOW_IPS` is the whole pod range instead, and any pod in that range
+could claim to be any visitor. "Only `web` reaches `api`" is what makes that trust safe, so removing
+the rule weakens the login limit too.
+
+### Secrets and settings
+
+| Where | What |
+|---|---|
+| Secret `app-secrets` (sealed in `feat/cluster`) | `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` |
+| ConfigMap `app-config` | Everything else: model names, URLs, prices, budget, site name, pod range |
+| ConfigMap `win-model` (made by hand) | `win_model.joblib`, `win_model.json` |
+
+The repository is public, so personal email addresses count as secret. `DATABASE_URL` is not a key
+of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefore be URL-safe.
+
+### Why it is built this way
+
+- **`prod` by digest, `local` by tag.** The smoke test runs images built from the pull request,
+  which have no published digest. A digest cannot be moved; a tag can.
+- **One API replica, replaced with `Recreate`.** Upload jobs run inside the process, and a second
+  process would mark the first one's running jobs as interrupted.
+- **The model is a ConfigMap, not a volume.** It is 72 KB and the limit is about 1 MiB, so this
+  needs no storage. The file is a pickle, so anyone who can write this ConfigMap can run code in
+  the API: the same trust as a cluster admin.
+- **Migrate gets only `DATABASE_URL`.** It needs nothing else, so it holds no other secret.
+- **`web` is a LoadBalancer with `externalTrafficPolicy: Local`**, which keeps the visitor's real
+  address for the login limit.
+- **The Argo CD `Application` has no finalizer**, so deleting it leaves the app and its data
+  running. The database volume outlives the StatefulSet too.
+- **`manifests` refuses a kind it has no schema for**, so a new custom kind is dealt with on
+  purpose.
+- **Tools are plain downloads, checked by sha256**, as in 3.24.
+
+### Changing things on a running cluster
+
+- **A change to `app-config` or `app-secrets` needs a restart.** Pods read them once, at start,
+  and a sync does not restart them:
+  `kubectl -n denial-appeal-agent rollout restart deployment/api` (or `deployment/web` for
+  `SITE_ADDRESS`).
+- **A new model needs the same.** Replace the `win-model` ConfigMap, then restart the API.
+- **A new NetworkPolicy does not cut open connections.** The API keeps a pool of them to the
+  database, so restart the pods to see a rule take effect.
+
+### Measured
+
+- **Local smoke run** (2026-11-01, Mac, arm64, a fresh cluster, the job's own step text): the
+  migration took 46 s and `/health` answered `{"status":"ok"}` through Caddy. The API restarted 3
+  times before the migration ended, as expected.
+- **`smoke` failed on purpose twice.** A bad migration revision failed the step after 300 s. With
+  the `db` rule removed and the API restarted, the rollout timed out.
+- **The policies are enforced in `kind`.** Without the rule a new connection timed out, but an open
+  one kept working, so `/health` stayed 200 until the restart.
+- **`manifests`, run locally:** 30 resources valid, 0 HIGH or CRITICAL, so `.trivyignore` is still
+  empty. Not blocking: 10 MEDIUM KSV-0125 (trusted registries), 4 MEDIUM KSV-0022 and KSV-0117
+  (`web`'s capability), 4 LOW KSV-0020 and KSV-0021 (user and group ids of 10000 or below).
+- **`manifests` failed on purpose three times:** a misspelled field, an unknown kind, a privileged
+  container.
+
+### Known limits
+
+- **Neither new job has run in CI.** The Linux downloads and zizmor's reading of the jobs are
+  unseen. The local smoke run used kubectl 1.36.1, not the job's 1.37.1.
+- **Neither job is required yet.** Both go in the ruleset by hand after a first green run. A bot
+  deploy pull request then also builds both images, about 10 minutes more on each deploy.
+- **The sync order is unproven.** The smoke test uses `kubectl apply`, not Argo CD, so it proves the
+  manifests and not the waves. No sentence in the Argo CD docs says a failed `Sync` hook stops later
+  waves. `feat/cluster` must see one failing migration leave the API alone, or this choice comes
+  back.
+- **`kind` is not k3s.** A different network plugin enforces the policies, so they are unproven on
+  the server. The k3s pod range `10.42.0.0/16` is from memory: read it there before the first
+  sign-in.
+- **No test tries a forged address.** The rule "only `web` reaches `api`" is in the files and pinned
+  by a test, but no pod was seen being refused by `api` itself; the failure seen was at `db`.
+- **Without valid model files the API crashes at startup.** A missing ConfigMap makes the pod wait,
+  with the reason in `kubectl describe pod`. A ConfigMap with missing or bad files gives a crash
+  loop.
+- **The model ConfigMap is outside git.** A rebuilt cluster needs it made again, and Argo CD neither
+  checks nor restores it. A model near 1 MiB needs another way.
+- **The API crash-loops during a first migration on `kubectl apply`.** Argo CD's waves should
+  prevent this, which is the unproven part above.
+- **The first `SealedSecret` fails `manifests`.** It has no schema, and `feat/cluster` must give it
+  one or skip that one kind by name.
+- **`prod` cannot start yet.** `app-secrets` is not in its resources until `feat/cluster` seals it.
+- **`web` keeps one added capability.**
+- **Hand-kept pins.** The kind, kubectl, kustomize and kubeconform versions and hashes, the node
+  image and the Kubernetes version are changed by hand. Dependabot does not read `deploy/k8s/`, so
+  a test keeps the `db` image equal to the one in `deploy/prod/compose.yml`, which it does read.
+- **Compose stays as the fallback.** `deploy/prod/compose.yml` and the images did not change, so a
+  setting added to one must be added to the other by hand.

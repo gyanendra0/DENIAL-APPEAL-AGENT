@@ -109,7 +109,8 @@ spec:
           emptyDir:
             sizeLimit: 64Mi
         # Made by hand, not in these files: `kubectl create configmap win-model --from-file=models/`.
-        # Without it the pod waits, and says why in `kubectl describe pod`.
+        # Without it the pod waits, and says why in `kubectl describe pod`. With missing or bad files
+        # in it the API crashes at startup, because it loads the model there.
         - name: win-model
           configMap:
             name: win-model

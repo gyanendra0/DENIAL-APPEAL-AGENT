@@ -1,0 +1,26 @@
+# The production settings that are not secret. This repository is public, so no personal email
+# address goes here: those are in `app-secrets`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  SITE_ADDRESS: denial-appeal.duckdns.org
+  APP_PUBLIC_URL: https://denial-appeal.duckdns.org
+  # The k3s default pod range. Read it on the server before the first real sign-in.
+  FORWARDED_ALLOW_IPS: 10.42.0.0/16
+  SHARED_ACCOUNT_NAME: Nothing Old Clinic
+  MAIL_SMTP_HOST: smtp-relay.brevo.com
+  GOOGLE_CLIENT_ID: 593332106433-uu4sban6v0bo4shsvk98ibssnr54ud3r.apps.googleusercontent.com
+  LLM_MONTHLY_BUDGET_USD: "3.00"
+  LLM_TIMEOUT_SECONDS: "60"
+  LLM_PRIMARY_BASE_URL: https://api.openai.com/v1
+  LLM_PRIMARY_MODEL: gpt-4o-mini
+  LLM_PRIMARY_INPUT_USD_PER_MTOK: "0.15"
+  LLM_PRIMARY_OUTPUT_USD_PER_MTOK: "0.60"
+  LLM_FALLBACK_BASE_URL: https://api.groq.com/openai/v1
+  LLM_FALLBACK_MODEL: openai/gpt-oss-20b
+  LLM_FALLBACK_INPUT_USD_PER_MTOK: "0.075"
+  LLM_FALLBACK_OUTPUT_USD_PER_MTOK: "0.30"
+  LLM_EMBEDDING_MODEL: text-embedding-3-small
+  LLM_EMBEDDING_USD_PER_MTOK: "0.02"

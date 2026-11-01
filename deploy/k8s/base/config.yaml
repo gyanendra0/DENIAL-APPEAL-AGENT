@@ -1,0 +1,14 @@
+# The plain settings every environment shares. An overlay adds the ones that differ, such as
+# SITE_ADDRESS and the model names. Secrets are in `app-secrets`, never here. A running pod does not
+# see a change to this file until it restarts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  APP_ENV: production
+  MAIL_BACKEND: smtp
+  # Stays false until the backups run.
+  INDIVIDUAL_SIGNUP_ENABLED: "false"

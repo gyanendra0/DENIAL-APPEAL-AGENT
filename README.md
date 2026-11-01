@@ -197,7 +197,8 @@ there, change it here too.
 ## Security checks
 
 Every pull request runs zizmor (workflow files), Trivy (libraries, secrets, Dockerfiles), a Trivy
-scan of both built images, and the tests on the locked versions. What blocks and why: architecture
+scan of both built images, the tests on the locked versions, and checks of the Kubernetes files.
+What blocks and why: architecture
 [3.24](docs/03-architecture.md#324-checks-on-every-pull-request).
 
 To run them locally before pushing, install the versions set in
@@ -223,6 +224,9 @@ Three things are set by hand in GitHub, once:
    run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
    `deploy/api/.python-version` and stays on Python 3.11, and that it reads
    `deploy/prod/compose.yml`.
+4. **After the first green run of `manifests` and `smoke`:** add both to the required checks in the
+   same way. A bot deploy pull request then also builds both images, about 10 minutes more on
+   each deploy.
 
 ## Publishing the images
 
@@ -243,7 +247,9 @@ let the next merge that builds deploy. To roll back, revert a merged one.
 Re-run only the newest `images` run: an older one opens a deploy pull request that moves production
 back, and it merges by itself. Never re-run after a rollback, or to resume from a build you paused
 because it is bad: merge the fix and let that build deploy. A rollback lasts only until the next
-merge that builds, so the fix has to be that merge.
+merge that builds, so the fix has to be that merge. A rollback past a database migration needs
+`alembic downgrade` from the newer image first: the older image does not know that revision, so its
+migration should fail and the deploy stop.
 
 Anyone can check an image with no login (the capitals in the repository name matter):
 ```
@@ -252,8 +258,33 @@ cosign verify ghcr.io/gyanendra0/denial-appeal-agent/api@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-After the first merge, check on its deploy pull request that it opens, that its checks start
-without a person approving them, and that it merges by itself.
+## Running it on Kubernetes
+
+`deploy/k8s/` describes the whole app: `base/` plus the overlays `local` (a throwaway cluster,
+made-up values) and `prod` (the server, by image digest). How and why: architecture
+[3.26](docs/03-architecture.md#326-running-on-kubernetes).
+
+To see what an overlay produces, without a cluster:
+```
+kubectl kustomize deploy/k8s/overlays/local
+kubectl kustomize deploy/k8s/overlays/prod
+```
+
+To start `local` in a cluster on your own machine, follow the steps of the job `smoke` in
+`.github/workflows/checks.yml`, with [kind](https://kind.sigs.k8s.io/) installed. They are the
+tested version, so they are not copied here.
+
+Two things are not in these files, and the API does not start without them: the Secret
+`app-secrets` (keys in `deploy/k8s/overlays/prod/app-secrets.example.yaml`) and the model:
+```
+kubectl -n denial-appeal-agent create configmap win-model --from-file=models/
+```
+
+A pod reads its settings and the model once, at start, so after changing `app-config`,
+`app-secrets` or `win-model`, restart it:
+```
+kubectl -n denial-appeal-agent rollout restart deployment/api
+```
 
 ## How work is split across machines
 

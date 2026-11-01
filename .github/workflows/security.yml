@@ -111,6 +111,74 @@ jobs:
       - name: Block on a HIGH or CRITICAL misconfiguration
         run: '"$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1 .'
 
+  # The finished manifests, not the source files: in the source an overlay is only a patch. No token
+  # reaches a tool here, and the job can only read the repository.
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      KUSTOMIZE_VERSION: "5.8.3"
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      KUBECONFORM_VERSION: "0.8.0"
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      # The k3s version planned for the server.
+      KUBERNETES_VERSION: "1.37.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kustomize (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  $RUNNER_TEMP/kustomize.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+
+      - name: Install kubeconform (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
+
+      - name: Install Trivy (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+
+      - name: Render both overlays
+        run: |
+          mkdir "$RUNNER_TEMP/rendered"
+          for overlay in local prod; do
+            "$RUNNER_TEMP/kustomize" build "deploy/k8s/overlays/${overlay}" \
+              > "$RUNNER_TEMP/rendered/${overlay}.yaml"
+          done
+
+      # The server runs what `prod` renders, so that output is what has to be pinned. `local` uses a
+      # plain tag on purpose.
+      - name: Block on a production image without a digest
+        run: |
+          images="$(grep -E '^[[:space:]]*(- )?image:' "$RUNNER_TEMP/rendered/prod.yaml")"
+          echo "$images"
+          if echo "$images" | grep -vE '@sha256:[0-9a-f]{64}"?$'; then exit 1; fi
+
+      # Strict: a misspelled field fails. A kind with no schema fails too, so a new custom kind
+      # has to be dealt with on purpose.
+      - name: Block on a manifest Kubernetes would refuse
+        run: >-
+          "$RUNNER_TEMP/kubeconform" -strict -summary
+          -kubernetes-version "$KUBERNETES_VERSION" "$RUNNER_TEMP/rendered"
+
+      - name: Block on a HIGH or CRITICAL misconfiguration in the rendered manifests
+        run: >-
+          "$RUNNER_TEMP/trivy" config --severity HIGH,CRITICAL --exit-code 1
+          "$RUNNER_TEMP/rendered"
+
   # What actually ships: the operating system packages and libraries inside each built image.
   # Nothing is pushed, and this job holds no stored secrets; only the upload steps use its token.
   # Build for one platform only (amd64).

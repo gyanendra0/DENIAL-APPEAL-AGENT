@@ -146,3 +146,151 @@ jobs:
 
       - name: Tests (Vitest + coverage >= 70%)
         run: npm test
+
+  # The manifests in a real, throwaway cluster, with the images of this pull request and the
+  # NetworkPolicies on. There is no Argo CD here, so everything is applied at once: the API may
+  # restart until the migration is done, and the sync order is not what this proves. Made-up values
+  # only: no stored secret reaches this job, and nothing is pushed.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      KIND_VERSION: "0.33.0"
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+      # The node image this kind release names for the newest Kubernetes; the server runs 1.37.1.
+      KIND_NODE_IMAGE: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+      KUBECTL_VERSION: "1.37.1"
+      KUBECTL_SHA256: 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+      KUSTOMIZE_VERSION: "5.8.3"
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      API_IMAGE: ghcr.io/gyanendra0/denial-appeal-agent/api:local
+      WEB_IMAGE: ghcr.io/gyanendra0/denial-appeal-agent/web:local
+      NAMESPACE: denial-appeal-agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kind (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kind"
+
+      - name: Install kubectl (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" \
+            "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $RUNNER_TEMP/kubectl" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kubectl"
+
+      - name: Install kustomize (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  $RUNNER_TEMP/kustomize.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+
+      - name: Build the API image
+        run: docker build -f deploy/api/Dockerfile -t "$API_IMAGE" .
+
+      - name: Build the web image
+        run: docker build -f deploy/web/Dockerfile -t "$WEB_IMAGE" .
+
+      - name: Create the cluster
+        run: '"$RUNNER_TEMP/kind" create cluster --image "$KIND_NODE_IMAGE" --wait 120s'
+
+      - name: Load the images into the cluster
+        run: '"$RUNNER_TEMP/kind" load docker-image "$API_IMAGE" "$WEB_IMAGE"'
+
+      # What production gets from the Sealed Secret and by hand. The API loads its model when it
+      # starts, so a tiny made-up one is trained inside the API image, for its scikit-learn version.
+      - name: Create the made-up secret and model
+        run: |
+          mkdir -p "$RUNNER_TEMP/model"
+          docker run --rm --user "$(id -u)" --volume "$RUNNER_TEMP/model:/out" \
+            --volume "$PWD/pipelines:/app/pipelines:ro" "$API_IMAGE" \
+            python -m pipelines.make_smoke_model --out /out
+          "$RUNNER_TEMP/kubectl" apply -f deploy/k8s/base/namespace.yaml
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" create secret generic app-secrets \
+            --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
+            --from-literal=AUTH_TOKEN_SECRET="$(openssl rand -hex 32)" \
+            --from-literal=LLM_PRIMARY_API_KEY=made-up \
+            --from-literal=LLM_FALLBACK_API_KEY=made-up \
+            --from-literal=MAIL_SMTP_USERNAME=made-up \
+            --from-literal=MAIL_SMTP_PASSWORD=made-up \
+            --from-literal=MAIL_FROM=made-up@example.test \
+            --from-literal=GOOGLE_CLIENT_SECRET=made-up \
+            --from-literal=ADMIN_EMAILS=made-up@example.test \
+            --from-literal=SIGNUP_ALLOWED_EMAILS=made-up@example.test
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" create configmap win-model \
+            --from-file="$RUNNER_TEMP/model"
+
+      - name: Apply the local overlay
+        run: |
+          "$RUNNER_TEMP/kustomize" build deploy/k8s/overlays/local > "$RUNNER_TEMP/local.yaml"
+          "$RUNNER_TEMP/kubectl" apply -f "$RUNNER_TEMP/local.yaml"
+
+      - name: The migration finishes
+        run: >-
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" wait
+          --for=condition=complete job/migrate --timeout=300s
+
+      - name: The database, API and web become ready
+        run: |
+          for workload in statefulset/db deployment/api deployment/web; do
+            "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" rollout status "$workload" --timeout=180s
+          done
+
+      # Through Caddy, so a pass means `web` reaches `api` and `api` reaches `db` under the policies.
+      - name: "/health answers 200 through the front door"
+        run: |
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" port-forward service/web 8080:80 &
+          trap 'kill $!' EXIT
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors --max-time 5 \
+            http://127.0.0.1:8080/health
+
+      # `api` believes the client address any pod in the range tells it, so this rule is what keeps
+      # the login limit safe. Exit 3 is a timeout, what a dropped connection gives; any other failure
+      # stops the step, so a broken probe cannot pass as a refusal. Rules take a moment to apply.
+      - name: A pod other than web is refused by the API
+        run: |
+          probe() {
+            "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" exec probe -- python -c '
+          import socket, sys
+          try:
+              socket.create_connection(("api", 8000), timeout=3).close()
+          except TimeoutError:
+              sys.exit(3)
+          '
+          }
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" apply -f deploy/k8s/smoke/probe.yaml
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" wait --for=condition=ready pod/probe --timeout=60s
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" apply -f deploy/k8s/smoke/probe-allowed.yaml
+          reached=no
+          for attempt in $(seq 1 10); do
+            result=0; probe || result=$?
+            if [ "$result" -eq 0 ]; then reached=yes; break; fi
+            if [ "$result" -ne 3 ]; then exit "$result"; fi
+          done
+          test "$reached" = yes
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" delete -f deploy/k8s/smoke/probe-allowed.yaml
+          refused=no
+          for attempt in $(seq 1 10); do
+            result=0; probe || result=$?
+            if [ "$result" -eq 3 ]; then refused=yes; break; fi
+            if [ "$result" -ne 0 ]; then exit "$result"; fi
+            sleep 2
+          done
+          test "$refused" = yes
+
+      - name: Show what went wrong
+        if: failure()
+        run: |
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" get pods,jobs,events -o wide
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" describe pods
+          "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" logs --selector app.kubernetes.io/name \
+            --all-containers --prefix --ignore-errors --max-log-requests 10 --tail 100

@@ -1,6 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+resources:
+  - ../../base
+
 # Written by the deploy pull request (pipelines/set_image_digests.py). A rollback reverts that
 # pull request.
 images:

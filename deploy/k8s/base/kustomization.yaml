@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Argo CD applies these in the order of their sync-wave annotations, not the order of this list:
+# -2 namespace, -1 database, 0 migration, 1 API and web. A PreSync hook would run before the
+# database exists on the very first sync.
+namespace: denial-appeal-agent
+
+resources:
+  - namespace.yaml
+  - db.yaml
+  - migrate.yaml

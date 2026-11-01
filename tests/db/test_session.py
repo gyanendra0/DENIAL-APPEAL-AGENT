@@ -1,9 +1,11 @@
 import pytest
 from sqlalchemy import Engine, event, func, select
+from sqlalchemy.exc import OperationalError
 
 from src.db.models import Account
 from src.db.session import (
     DB_CONNECT_TIMEOUT_SECONDS,
+    check_database,
     create_db_engine,
     create_session_factory,
     session_scope,
@@ -61,3 +63,37 @@ def test_opening_a_connection_gives_up_after_the_connect_timeout() -> None:
 
 class _StopConnectError(Exception):
     pass
+
+
+def test_check_database_passes_on_a_new_connection_and_leaves_the_pool_alone(
+    engine: Engine,
+) -> None:
+    factory = create_session_factory(engine)
+    pool = engine.pool
+    before = pool.status()
+    check_database(factory, statement_timeout_ms=2000)
+    assert pool.status() == before
+
+
+def test_check_database_sends_its_timeout_with_the_connection(test_database_url: str) -> None:
+    seen: dict[str, object] = {}
+
+    def record(dialect: object, record_: object, cargs: object, cparams: dict[str, object]) -> None:
+        seen.update(cparams)
+
+    event.listen(Engine, "do_connect", record)
+    try:
+        check_database(
+            create_session_factory(create_db_engine(test_database_url)),
+            statement_timeout_ms=1234,
+        )
+    finally:
+        event.remove(Engine, "do_connect", record)
+    assert seen["connect_timeout"] == DB_CONNECT_TIMEOUT_SECONDS
+    assert seen["options"] == "-c statement_timeout=1234"
+
+
+def test_check_database_raises_when_nothing_listens() -> None:
+    factory = create_session_factory(create_db_engine("postgresql+psycopg://made@127.0.0.1:1/none"))
+    with pytest.raises(OperationalError):
+        check_database(factory, statement_timeout_ms=2000)

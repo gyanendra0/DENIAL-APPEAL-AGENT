@@ -5,12 +5,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.dependencies import get_session_factory
-from src.db.session import session_scope
+from src.db.session import check_database
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +31,12 @@ def health(
 ) -> Health:
     """Answer 200 `ok` when the database answers, else 503 `unavailable`.
 
-    The session is opened here, not through `DbSession`, so a failed check is answered instead
-    of failing again on the commit. The error's text is never sent, only its class is logged.
+    The check uses its own new connection, not `DbSession`, so a frozen pooled connection cannot
+    hold it and a failed check is answered instead of failing again on the commit. It can take
+    the database connect timeout. The error's text is never sent, only its class is logged.
     """
     try:
-        with session_scope(factory) as session:
-            session.execute(text(f"SET LOCAL statement_timeout = {DB_CHECK_TIMEOUT_MS}"))
-            session.execute(text("SELECT 1"))
+        check_database(factory, statement_timeout_ms=DB_CHECK_TIMEOUT_MS)
     except SQLAlchemyError as error:
         logger.warning("health: database unavailable (%s)", type(error).__name__)
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

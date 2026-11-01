@@ -32,7 +32,7 @@ def _position(job: str, text: str) -> int:
 
 def test_the_build_runs_on_a_merge_and_never_on_a_pull_request() -> None:
     trigger = _workflow()[True]  # YAML reads the key `on` as true.
-    assert "main" in trigger["push"]["branches"]
+    assert trigger["push"]["branches"] == ["main"]
     assert "pull_request" not in trigger
 
 

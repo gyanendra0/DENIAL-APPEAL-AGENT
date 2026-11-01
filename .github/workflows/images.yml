@@ -2,7 +2,7 @@ name: images
 
 on:
   push:
-    branches: [main, chore/image-pipeline]
+    branches: [main]
 
 permissions: {}
 

@@ -1,0 +1,21 @@
+# Tells Argo CD to keep the cluster equal to the `prod` overlay on `main`. Applied once by hand, so it
+# sits outside the overlay Argo CD watches. It has no deletion finalizer, so deleting this object
+# leaves the app and its data running.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: denial-appeal-agent
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gyanendra0/DENIAL-APPEAL-AGENT
+    targetRevision: main
+    path: deploy/k8s/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: denial-appeal-agent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

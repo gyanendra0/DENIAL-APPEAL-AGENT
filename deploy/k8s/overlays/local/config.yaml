@@ -1,0 +1,25 @@
+# Made-up settings for a throwaway cluster. Nothing here reaches a real provider or mail server.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Plain HTTP on port 80, so no certificate is asked for.
+  SITE_ADDRESS: ":80"
+  APP_PUBLIC_URL: http://localhost:8080
+  # The pod range of a `kind` cluster.
+  FORWARDED_ALLOW_IPS: 10.244.0.0/16
+  SHARED_ACCOUNT_NAME: Made Up Clinic
+  MAIL_SMTP_HOST: mail.invalid
+  # The same secret keys as production, so the keys they go with are set here too.
+  GOOGLE_CLIENT_ID: made-up.apps.googleusercontent.invalid
+  LLM_FALLBACK_BASE_URL: https://llm-fallback.invalid/v1
+  LLM_FALLBACK_MODEL: made-up-fallback-model
+  LLM_MONTHLY_BUDGET_USD: "1.00"
+  LLM_TIMEOUT_SECONDS: "5"
+  LLM_PRIMARY_BASE_URL: https://llm.invalid/v1
+  LLM_PRIMARY_MODEL: made-up-model
+  LLM_PRIMARY_INPUT_USD_PER_MTOK: "0.01"
+  LLM_PRIMARY_OUTPUT_USD_PER_MTOK: "0.01"
+  LLM_EMBEDDING_MODEL: made-up-embedding-model
+  LLM_EMBEDDING_USD_PER_MTOK: "0.01"

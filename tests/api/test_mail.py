@@ -137,6 +137,21 @@ def test_a_failed_send_is_logged_by_its_class_without_the_address(
     assert "123456" not in caplog.text
 
 
+def test_a_failed_send_logs_the_smtp_code_but_not_the_server_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    error = smtplib.SMTPAuthenticationError(525, b"5.7.1 Unauthorized IP for ann@x.org")
+    send_quietly(_BrokenSender(error), MESSAGE)
+    assert caplog.messages == ["email failed: SMTPAuthenticationError (code 525)"]
+
+
+def test_a_failed_send_with_no_smtp_code_logs_the_class_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    send_quietly(_BrokenSender(ConnectionRefusedError("made up")), MESSAGE)
+    assert caplog.messages == ["email failed: ConnectionRefusedError"]
+
+
 def test_another_error_is_not_swallowed() -> None:
     with pytest.raises(RuntimeError):
         send_quietly(_BrokenSender(RuntimeError("a bug")), MESSAGE)

@@ -222,6 +222,11 @@ def test_a_pod_with_no_rule_can_do_nothing() -> None:
     assert deny == {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
 
 
+def test_no_rule_exists_beyond_the_ones_tested_here() -> None:
+    # Rules add up, and one with an empty selector would open every pod.
+    assert set(_policies()) == {"default-deny", "web", "api", "migrate", "db"}
+
+
 def test_every_app_has_a_rule_that_limits_both_directions() -> None:
     policies = _policies()
     for name in ("web", "api", "migrate", "db"):

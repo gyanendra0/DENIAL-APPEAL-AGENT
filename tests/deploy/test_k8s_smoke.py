@@ -182,8 +182,11 @@ def test_the_moment_of_allowance_opens_the_api_to_the_probe_only() -> None:
 
 
 def test_argo_cd_never_applies_the_probe() -> None:
-    base = yaml.safe_load((ROOT / "deploy/k8s/base/kustomization.yaml").read_text())
-    assert not [resource for resource in base["resources"] if "smoke" in resource]
+    for folder in ("base", "overlays/prod"):
+        kustomization = yaml.safe_load(
+            (ROOT / "deploy/k8s" / folder / "kustomization.yaml").read_text()
+        )
+        assert not [resource for resource in kustomization["resources"] if "smoke" in resource]
 
 
 def test_the_diagnostics_run_only_after_a_failure_and_come_last() -> None:

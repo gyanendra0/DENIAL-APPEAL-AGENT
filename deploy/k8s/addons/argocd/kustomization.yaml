@@ -1,0 +1,19 @@
+# Argo CD v3.5.6, applied once by hand with `kubectl apply --server-side -k`. Its custom resources are
+# too large for a plain apply. `install.yaml` is not committed; download it next to this file first:
+#   https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.6/manifests/install.yaml
+#   sha256:846c644bc81ce5557dd9048757a9c7353378f25c5eb811c77d32a9e907823599
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - install.yaml
+
+images:
+  - name: quay.io/argoproj/argocd
+    digest: sha256:8e5cc5bb008df8a09dba439462e58c94c55b7735888d3ebde0c25fc05e4e5335
+  - name: ghcr.io/dexidp/dex
+    digest: sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+  - name: public.ecr.aws/docker/library/redis
+    digest: sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba

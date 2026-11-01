@@ -76,6 +76,10 @@ NOTES.md
 scratch/
 docs/repo-rules.md
 
+# ---------- Upstream manifests (downloaded on the server, checked by checksum) ----------
+deploy/k8s/addons/argocd/install.yaml
+deploy/k8s/addons/sealed-secrets/controller.yaml
+
 # ---------- Editors ----------
 .vscode/
 .idea/

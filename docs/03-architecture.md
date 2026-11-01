@@ -6007,7 +6007,7 @@ be different versions.
 - **Deploying is a commit.** Argo CD will read this folder, and the cluster never writes to git.
   To roll back, revert the deploy pull request. To pause, turn off auto-merge on the open deploy
   pull request: while it stays open, later builds publish images but open nothing. To go on, close
-  it; the next merge deploys.
+  it, then re-run `deploy-pr` of the newest run, or let the next merge that builds deploy.
 - **`verify` names `main` itself**, not the ref the run started from, so it proves "signed from
   `main`" and not only "signed by this run". A run on any other branch fails it.
 - **Both digests in one pull request**, so the web and API images always move together.
@@ -6043,6 +6043,9 @@ be different versions.
   signs as `.../images.yml@refs/heads/main`.
 - **The first digests in `kustomization.yaml` are from the branch run**, signed with the branch
   identity. The first deploy pull request replaces them.
+- **Re-run only the newest run.** A re-run reads its own commit's digests and writes them on the
+  latest `main`, and `concurrency` stops only runs in progress. Re-running an older run opens a
+  deploy pull request that moves production back with no review.
 - **`verify` has never been seen failing.** No unsigned image or wrong identity was tried, and its
   pin to `main` has not run: the first merge is the first check of it.
 - **The pause and the re-run clean-up are unproven** for the same reason as `deploy-pr`. A run
@@ -6051,7 +6054,7 @@ be different versions.
 - **The published images have not been started.** The local checks of `/health` and of the
   Caddyfile were on images built on the Mac (arm64), not on the ones in GHCR.
 - **A finding only on arm64 shows up after the merge.** `image-scan` cannot see it; the merge stands
-  and `publish` stops before the tag, so nothing deploys until it is fixed.
+  and `scan` fails, so `publish` never starts and nothing deploys until it is fixed.
 - **Every merge builds and deploys, docs included.** Only the Kustomize folder is ignored.
 - **Nothing checks the signature at deploy time yet.** `verify` runs in the workflow, not in the
   cluster.

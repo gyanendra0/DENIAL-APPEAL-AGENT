@@ -237,8 +237,11 @@ Set by hand in GitHub, once:
 3. **Settings > General:** allow auto-merge.
 
 To pause deploys, turn off auto-merge on the open deploy pull request; later builds then open
-nothing. To go on, close that pull request, and the next merge deploys. To roll back, revert a
-merged one.
+nothing. To go on, close that pull request, then re-run `deploy-pr` of the newest `images` run, or
+let the next merge that builds deploy. To roll back, revert a merged one.
+
+Re-run only the newest `images` run: an older one opens a deploy pull request that moves production
+back, and it merges by itself.
 
 Anyone can check an image with no login (the capitals in the repository name matter):
 ```

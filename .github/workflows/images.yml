@@ -294,6 +294,7 @@ jobs:
       # never deploy.
       - name: Close older deploy pull requests
         if: steps.pause.outputs.go == 'true'
+        shell: bash # Adds pipefail, so a failed list stops the step.
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
@@ -314,6 +315,8 @@ jobs:
           branch="deploy/sha-${GITHUB_SHA}"
           title="chore(deploy): deploy ${GITHUB_SHA::7}"
           # A run stopped before its pull request leaves the branch behind; a re-run starts clean.
+          # Normally there is no branch: the 404 in the log is expected, and if a delete really
+          # fails, creating the branch below fails too.
           gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}" || true
           gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
             -f ref="refs/heads/${branch}" -f sha="$(git rev-parse HEAD)" > /dev/null

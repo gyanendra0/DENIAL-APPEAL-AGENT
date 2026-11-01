@@ -223,6 +223,8 @@ def test_a_paused_deploy_is_neither_closed_nor_replaced() -> None:
     pause = _commands("deploy-pr")[pause_position]
     assert 'startswith("deploy/sha-")' in pause
     assert 'echo "go=false"' in pause
+    assert 'echo "go=true"' in pause
+    assert _jobs()["deploy-pr"]["steps"][pause_position]["id"] == "pause"
 
 
 def test_a_branch_left_by_a_stopped_run_is_removed_before_it_is_made_again() -> None:
@@ -235,6 +237,7 @@ def test_older_deploy_pull_requests_are_closed_before_the_new_one_opens() -> Non
     close = _position("deploy-pr", "gh pr close")
     assert close < _position("deploy-pr", "gh pr create")
     assert 'startswith("deploy/sha-")' in _commands("deploy-pr")[close]
+    assert _jobs()["deploy-pr"]["steps"][close]["shell"] == "bash"
 
 
 def test_the_deploy_pull_request_uses_the_app_token_and_squash_auto_merge() -> None:

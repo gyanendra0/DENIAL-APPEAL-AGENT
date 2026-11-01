@@ -5864,8 +5864,8 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `trivy` | A HIGH or CRITICAL misconfiguration |
 | `image-scan` | A HIGH or CRITICAL problem with a fix in the API or web image (amd64) |
 | `lock-tests` | A locked package that needs one the lock lacks, or a test that fails on the locked versions |
-| `manifests` | A rendered manifest Kubernetes would refuse, or a HIGH or CRITICAL misconfiguration in one |
-| `smoke` | The app not starting from the `local` overlay in a throwaway cluster |
+| `manifests` | A rendered manifest Kubernetes would refuse, a HIGH or CRITICAL misconfiguration in one, or a production image without a digest |
+| `smoke` | The app not starting from the `local` overlay in a throwaway cluster, or a pod other than `web` reaching `api` |
 
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
@@ -6197,8 +6197,9 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 - **Local smoke run** (2026-11-01, Mac, arm64, a fresh cluster, the job's own step text): the
   migration took 46 s and `/health` answered `{"status":"ok"}` through Caddy. The API restarted 3
   times before the migration ended, as expected.
-- **`smoke` failed on purpose twice.** A bad migration revision failed the step after 300 s. With
-  the `db` rule removed and the API restarted, the rollout timed out.
+- **`smoke` failed on purpose three times.** A bad migration revision failed the step after 300 s.
+  With the `db` rule removed and the API restarted, the rollout timed out. With the `api` rule opened
+  to every pod, the refusal step failed.
 - **The policies are enforced in `kind`.** Without the rule a new connection timed out, but an open
   one kept working, so `/health` stayed 200 until the restart.
 - **`manifests`, run locally:** 30 resources valid, 0 HIGH or CRITICAL, so `.trivyignore` is still
@@ -6207,8 +6208,8 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 - **`manifests` failed on purpose four times:** a misspelled field, an unknown kind, a privileged
   container, and a production image with a tag in place of its digest.
 - **A pod other than `web` is refused by `api` in `kind`** (same local run). Under a temporary rule
-  the probe connected; with that rule gone it timed out. With the `api` rule opened to every pod,
-  the step failed. A broken probe failing the step was not seen.
+  the probe connected; with that rule gone it timed out. A broken probe failing the step was not
+  seen.
 - **uvicorn 0.54.0 reads the pod range.** A test gives the overlay's value to its real middleware:
   a pod of the range is believed, an outside address is not. `lock-tests` runs it on the locked
   version.

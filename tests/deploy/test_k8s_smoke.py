@@ -1,6 +1,7 @@
 """The `kind` smoke test keeps its promises: it runs on every pull request with no stored secret,
 every tool is pinned and checked, and it applies the `local` overlay in the order that proves
-something: images loaded first, then the migration, then `/health` through the front door."""
+something: images loaded first, then the migration, then `/health` through the front door, then a
+pod other than `web` refused by `api`."""
 
 import re
 from pathlib import Path
@@ -11,6 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "checks.yml"
 SECRET_EXAMPLE = ROOT / "deploy" / "k8s" / "overlays" / "prod" / "app-secrets.example.yaml"
+SMOKE = ROOT / "deploy" / "k8s" / "smoke"
 
 
 def _workflow() -> dict[Any, Any]:
@@ -125,6 +127,63 @@ def test_health_is_asked_through_the_front_door_and_a_bad_answer_fails_the_step(
     assert re.search(r"curl -\w*f\w*", check)
     assert "--retry-all-errors" in check
     assert "http://127.0.0.1:8080/health" in check
+
+
+def test_the_refusal_is_tried_after_health_with_a_working_probe_first() -> None:
+    check = _commands()[_index_of("deploy/k8s/smoke/probe.yaml")]
+    assert _index_of("/health") < _index_of("deploy/k8s/smoke/probe.yaml")
+    order = [
+        check.index("apply -f deploy/k8s/smoke/probe.yaml"),
+        check.index("apply -f deploy/k8s/smoke/probe-allowed.yaml"),
+        check.index('test "$reached" = yes'),
+        check.index("delete -f deploy/k8s/smoke/probe-allowed.yaml"),
+        check.index('test "$refused" = yes'),
+    ]
+    assert order == sorted(order)
+
+
+def test_only_a_timeout_counts_as_a_refusal() -> None:
+    check = _commands()[_index_of("deploy/k8s/smoke/probe.yaml")]
+    assert "except TimeoutError:" in check
+    assert "sys.exit(3)" in check
+    assert 'if [ "$result" -eq 3 ]; then refused=yes' in check
+    assert 'if [ "$result" -ne 0 ]; then exit "$result"' in check
+    assert 'if [ "$result" -ne 3 ]; then exit "$result"' in check
+
+
+def test_the_probe_is_not_web_and_only_default_deny_of_its_own_is_lifted() -> None:
+    probe = {d["kind"]: d for d in yaml.safe_load_all((SMOKE / "probe.yaml").read_text())}
+    labels = probe["Pod"]["metadata"]["labels"]
+    assert labels == {"app.kubernetes.io/name": "probe"}
+    assert probe["NetworkPolicy"]["spec"]["podSelector"]["matchLabels"] == labels
+    assert probe["NetworkPolicy"]["spec"]["policyTypes"] == ["Egress"]
+    to_api = probe["NetworkPolicy"]["spec"]["egress"][0]
+    assert to_api["to"] == [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "api"}}}]
+    assert to_api["ports"] == [{"port": 8000}]
+
+
+def test_the_probe_runs_the_image_the_job_loaded() -> None:
+    documents = yaml.safe_load_all((SMOKE / "probe.yaml").read_text())
+    pod = next(d for d in documents if d["kind"] == "Pod")
+    container = pod["spec"]["containers"][0]
+    assert container["image"] == _job()["env"]["API_IMAGE"]
+    assert container["imagePullPolicy"] == "Never"
+
+
+def test_the_moment_of_allowance_opens_the_api_to_the_probe_only() -> None:
+    allowed = yaml.safe_load((SMOKE / "probe-allowed.yaml").read_text())
+    assert allowed["spec"]["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "api"}
+    assert allowed["spec"]["ingress"] == [
+        {
+            "from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "probe"}}}],
+            "ports": [{"port": 8000}],
+        }
+    ]
+
+
+def test_argo_cd_never_applies_the_probe() -> None:
+    base = yaml.safe_load((ROOT / "deploy/k8s/base/kustomization.yaml").read_text())
+    assert not [resource for resource in base["resources"] if "smoke" in resource]
 
 
 def test_the_diagnostics_run_only_after_a_failure_and_come_last() -> None:

@@ -8,8 +8,10 @@ from typing import Any
 
 import yaml
 
-WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = ROOT / ".github" / "workflows"
 WORKFLOW = WORKFLOWS / "images.yml"
+KUSTOMIZATION = ROOT / "deploy" / "k8s" / "overlays" / "prod" / "kustomization.yaml"
 
 
 def _workflow() -> dict[Any, Any]:
@@ -34,6 +36,12 @@ def test_the_build_runs_on_a_merge_and_never_on_a_pull_request() -> None:
     trigger = _workflow()[True]  # YAML reads the key `on` as true.
     assert trigger["push"]["branches"] == ["main"]
     assert "pull_request" not in trigger
+
+
+def test_a_merged_deploy_pull_request_starts_no_new_build() -> None:
+    ignored = _workflow()[True]["push"]["paths-ignore"]
+    assert ignored == ["deploy/k8s/overlays/prod/**"]
+    assert KUSTOMIZATION.parent.relative_to(ROOT).as_posix() == ignored[0].removesuffix("/**")
 
 
 def test_both_images_are_built_on_a_native_runner_of_each_platform() -> None:
@@ -72,10 +80,11 @@ def test_only_the_two_jobs_that_push_can_write_packages() -> None:
     assert _jobs()["build"]["permissions"] == {"contents": "read", "packages": "write"}
     assert _jobs()["publish"]["permissions"] == {"packages": "write", "id-token": "write"}
     assert _jobs()["verify"]["permissions"] == {}
+    assert _jobs()["deploy-pr"]["permissions"] == {"contents": "read"}
 
 
 def test_the_login_uses_the_jobs_token_and_no_stored_secret() -> None:
-    assert "secrets." not in WORKFLOW.read_text()
+    assert WORKFLOW.read_text().count("secrets.") == 1  # the deploy-pr App key only
     for job in ("build", "publish"):
         login = _jobs()[job]["steps"][_position(job, "docker login ghcr.io")]
         assert login["env"] == {"GH_TOKEN": "${{ github.token }}"}
@@ -145,6 +154,66 @@ def test_verify_pins_the_signer_and_covers_the_index_and_each_platform() -> None
     assert "certificate-identity-regexp" not in check
 
 
+def test_the_deploy_pull_request_comes_only_after_verify_in_the_main_only_environment() -> None:
+    deploy = _jobs()["deploy-pr"]
+    assert deploy["needs"] == "verify"
+    assert deploy["environment"] == "deploy-bot"
+
+
+def test_the_app_token_is_limited_to_what_the_pull_request_needs() -> None:
+    step = next(s for s in _jobs()["deploy-pr"]["steps"] if s.get("id") == "app-token")
+    assert step["with"] == {
+        "app-id": "${{ vars.DEPLOY_BOT_APP_ID }}",
+        "private-key": "${{ secrets.DEPLOY_BOT_PRIVATE_KEY }}",
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+    }
+
+
+def test_the_deploy_digests_are_read_from_this_commits_tag_with_no_login() -> None:
+    write = _commands("deploy-pr")[_position("deploy-pr", "set_image_digests")]
+    assert "for image in api web" in write
+    assert ':sha-${GITHUB_SHA}"' in write
+    assert not any("docker login" in command for command in _commands("deploy-pr"))
+
+
+def test_the_workflow_writes_the_file_named_in_the_job() -> None:
+    assert (
+        _jobs()["deploy-pr"]["env"]["KUSTOMIZATION"] == KUSTOMIZATION.relative_to(ROOT).as_posix()
+    )
+
+
+def test_the_kustomization_names_exactly_the_images_the_build_publishes() -> None:
+    images = yaml.safe_load(KUSTOMIZATION.read_text())["images"]
+    repository = "ghcr.io/gyanendra0/denial-appeal-agent"
+    assert [image["name"] for image in images] == [f"{repository}/api", f"{repository}/web"]
+    assert all(re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"]) for image in images)
+
+
+def test_no_pull_request_is_opened_when_the_digests_did_not_change() -> None:
+    steps = _jobs()["deploy-pr"]["steps"]
+    guarded = [s for s in steps if "gh pr" in s.get("run", "")]
+    assert len(guarded) == 2
+    assert {s["if"] for s in guarded} == {"steps.digests.outputs.changed == 'true'"}
+
+
+def test_older_deploy_pull_requests_are_closed_before_the_new_one_opens() -> None:
+    close = _position("deploy-pr", "gh pr close")
+    assert close < _position("deploy-pr", "gh pr create")
+    assert 'startswith("deploy/sha-")' in _commands("deploy-pr")[close]
+
+
+def test_the_deploy_pull_request_uses_the_app_token_and_squash_auto_merge() -> None:
+    position = _position("deploy-pr", "gh pr create")
+    step = _jobs()["deploy-pr"]["steps"][position]
+    assert step["env"] == {
+        "GH_TOKEN": "${{ steps.app-token.outputs.token }}",
+        "GH_REPO": "${{ github.repository }}",
+    }
+    assert 'gh pr merge "$url" --auto --squash' in step["run"]
+    assert "git push" not in step["run"]
+
+
 def test_the_trivy_pin_is_the_same_as_in_the_pull_request_scan() -> None:
     security: dict[Any, Any] = yaml.safe_load((WORKFLOWS / "security.yml").read_text())
     for key in ("TRIVY_VERSION", "TRIVY_SHA256"):
@@ -158,5 +227,10 @@ def test_every_action_is_pinned_to_a_full_commit() -> None:
 
 
 def test_the_checkout_keeps_no_credentials() -> None:
-    steps = [step for step in _jobs()["build"]["steps"] if "checkout" in step.get("uses", "")]
-    assert [step["with"]["persist-credentials"] for step in steps] == [False]
+    steps = [
+        step
+        for job in ("build", "deploy-pr")
+        for step in _jobs()[job]["steps"]
+        if "checkout" in step.get("uses", "")
+    ]
+    assert [step["with"]["persist-credentials"] for step in steps] == [False, False]

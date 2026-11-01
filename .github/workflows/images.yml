@@ -3,6 +3,9 @@ name: images
 on:
   push:
     branches: [main]
+    # A merged deploy pull request changes only this folder and must not start another build.
+    paths-ignore:
+      - deploy/k8s/overlays/prod/**
 
 permissions: {}
 
@@ -184,3 +187,80 @@ jobs:
             "$RUNNER_TEMP/cosign" verify-attestation --type cyclonedx "${identity[@]}" \
               "${repository}@${digest}" > /dev/null
           done
+
+  # Both digests in one pull request, only after they are verified. The token comes from the
+  # GitHub App: a pull request opened with the job's own token waits for a person to approve its
+  # checks. Argo CD deploys what this merges; the cluster never writes to git.
+  deploy-pr:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: deploy-bot
+    permissions:
+      contents: read
+    env:
+      KUSTOMIZATION: deploy/k8s/overlays/prod/kustomization.yaml
+    steps:
+      - name: Get a short-lived token from the GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DEPLOY_BOT_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The latest main, not the merge: a human change to the file since then must be kept.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Write the new digests
+        id: digests
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          images=()
+          for image in api web; do
+            digest="$(docker buildx imagetools inspect "${repository}/${image}:sha-${GITHUB_SHA}" \
+              --format '{{.Manifest.Digest}}')"
+            images+=(--image "${repository}/${image}=${digest}")
+          done
+          python3 -m pipelines.set_image_digests --file "$KUSTOMIZATION" "${images[@]}"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Otherwise an older pull request could merge first, and this one would then conflict and
+      # never deploy.
+      - name: Close older deploy pull requests
+        if: steps.digests.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh pr list --state open --limit 100 --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("deploy/sha-")) | .number' |
+            while read -r number; do
+              gh pr close "$number" --delete-branch --comment "Replaced by a newer build."
+            done
+
+      # Through the API and not git push: no credentials on disk, and the commit is the bot's own.
+      - name: Open the deploy pull request with auto-merge on
+        if: steps.digests.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          branch="deploy/sha-${GITHUB_SHA}"
+          title="chore(deploy): deploy ${GITHUB_SHA::7}"
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/heads/${branch}" -f sha="$(git rev-parse HEAD)" > /dev/null
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${KUSTOMIZATION}" \
+            -f branch="$branch" -f message="$title" -f sha="$(git rev-parse "HEAD:${KUSTOMIZATION}")" \
+            -f content="$(base64 --wrap=0 "$KUSTOMIZATION")" > /dev/null
+          url="$(gh pr create --base main --head "$branch" --title "$title" \
+            --body "Images built from ${GITHUB_SHA}. To pause this deploy, turn auto-merge off.")"
+          gh pr merge "$url" --auto --squash

@@ -10,6 +10,8 @@ env:
   TRIVY_VERSION: "0.76.1"
   TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
   TRIVY_NO_PROGRESS: "true"
+  COSIGN_VERSION: "3.1.4"
+  COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 
 # A newer merge replaces an older run, so an older build cannot finish last and ship stale code.
 concurrency:
@@ -77,6 +79,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       packages: write
+      id-token: write
     env:
       IMAGE: ${{ matrix.image }}
     steps:
@@ -93,6 +96,13 @@ jobs:
           echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
 
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
       # The server is arm64 and the pull request gate builds amd64 only, so this is the one scan
       # of what really runs. Before the login: the image is public and Trivy gets no credentials.
       - name: Block on a HIGH or CRITICAL finding with a fix in the arm64 image
@@ -100,6 +110,15 @@ jobs:
           "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln
           --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
           "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/arm64")"
+
+      # One SBOM per platform: they hold different packages. Before the login, as the scan above.
+      - name: Make an SBOM of each platform
+        run: |
+          for arch in amd64 arm64; do
+            "$RUNNER_TEMP/trivy" image --image-src remote --format cyclonedx \
+              --output "$RUNNER_TEMP/sbom-${arch}.json" \
+              "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/${arch}")"
+          done
 
       - name: Log in to GHCR
         env:
@@ -113,4 +132,55 @@ jobs:
             "${repository}@$(cat "$RUNNER_TEMP/digests/amd64")" \
             "${repository}@$(cat "$RUNNER_TEMP/digests/arm64")"
           docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" \
-            --format '{{.Manifest.Digest}}' | tee -a "$GITHUB_STEP_SUMMARY"
+            --format '{{.Manifest.Digest}}' | tee "$RUNNER_TEMP/index-digest" >> "$GITHUB_STEP_SUMMARY"
+
+      # By digest, because a tag can move. Recursive, so each platform image is signed too.
+      - name: Sign keyless
+        run: |
+          "$RUNNER_TEMP/cosign" sign --yes --recursive \
+            "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/index-digest")"
+
+      - name: Attach each SBOM to its platform as a signed attestation
+        run: |
+          for arch in amd64 arm64; do
+            "$RUNNER_TEMP/cosign" attest --yes --type cyclonedx \
+              --predicate "$RUNNER_TEMP/sbom-${arch}.json" \
+              "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/${arch}")"
+          done
+
+  # No login and no token: this is what the cluster sees.
+  verify:
+    needs: publish
+    strategy:
+      matrix:
+        image: [api, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
+      - name: Verify the signatures and the SBOM attestations
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}"
+          identity=(
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}"
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          )
+          docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" --raw > "$RUNNER_TEMP/index.json"
+          index="$(docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" --format '{{.Manifest.Digest}}')"
+          "$RUNNER_TEMP/cosign" verify "${identity[@]}" "${repository}@${index}" > /dev/null
+          for arch in amd64 arm64; do
+            digest="$(jq --exit-status --raw-output --arg arch "$arch" \
+              '.manifests[] | select(.platform.architecture == $arch) | .digest' "$RUNNER_TEMP/index.json")"
+            "$RUNNER_TEMP/cosign" verify "${identity[@]}" "${repository}@${digest}" > /dev/null
+            "$RUNNER_TEMP/cosign" verify-attestation --type cyclonedx "${identity[@]}" \
+              "${repository}@${digest}" > /dev/null
+          done

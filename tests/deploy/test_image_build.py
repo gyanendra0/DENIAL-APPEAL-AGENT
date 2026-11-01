@@ -1,5 +1,6 @@
 """The merge build keeps its promises: both images on both platforms, natively, pushed with the
-job's own token, and the arm64 image scanned before anything can name it."""
+job's own token, the arm64 image scanned before anything can name it, and every image signed,
+with an SBOM, and checked with no login."""
 
 import re
 from pathlib import Path
@@ -69,7 +70,8 @@ def test_the_image_name_is_lowercased_for_the_registry() -> None:
 def test_only_the_two_jobs_that_push_can_write_packages() -> None:
     assert _workflow()["permissions"] == {}
     assert _jobs()["build"]["permissions"] == {"contents": "read", "packages": "write"}
-    assert _jobs()["publish"]["permissions"] == {"packages": "write"}
+    assert _jobs()["publish"]["permissions"] == {"packages": "write", "id-token": "write"}
+    assert _jobs()["verify"]["permissions"] == {}
 
 
 def test_the_login_uses_the_jobs_token_and_no_stored_secret() -> None:
@@ -91,6 +93,56 @@ def test_the_arm64_image_is_scanned_before_the_tag_and_before_the_login() -> Non
     scan = _commands("publish")[scan_position]
     assert "--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1" in scan
     assert 'digests/arm64")' in scan
+
+
+def test_cosign_is_checked_against_its_pinned_hash_in_both_jobs_that_use_it() -> None:
+    assert re.fullmatch(r"[0-9a-f]{64}", _workflow()["env"]["COSIGN_SHA256"])
+    for job in ("publish", "verify"):
+        install = _commands(job)[_position(job, "sigstore/cosign/releases")]
+        assert "v${COSIGN_VERSION}/cosign-linux-amd64" in install
+        assert "sha256sum -c -" in install
+        assert _jobs()[job]["runs-on"] == "ubuntu-24.04"
+
+
+def test_each_platform_gets_its_own_sbom_before_the_login() -> None:
+    position = _position("publish", "--format cyclonedx")
+    assert position < _position("publish", "docker login ghcr.io")
+    sbom = _commands("publish")[position]
+    assert "for arch in amd64 arm64" in sbom
+    assert 'digests/${arch}")' in sbom
+
+
+def test_the_image_is_signed_by_digest_after_the_tag_with_each_platform_included() -> None:
+    position = _position("publish", 'cosign" sign')
+    assert _position("publish", "imagetools create") < position
+    sign = _commands("publish")[position]
+    assert "--recursive" in sign
+    assert '@$(cat "$RUNNER_TEMP/index-digest")' in sign
+
+
+def test_each_sbom_is_attested_on_the_digest_of_its_own_platform() -> None:
+    attest = _commands("publish")[_position("publish", 'cosign" attest')]
+    assert "for arch in amd64 arm64" in attest
+    assert "--type cyclonedx" in attest
+    assert "sbom-${arch}.json" in attest
+    assert 'digests/${arch}")' in attest
+
+
+def test_verify_runs_after_publish_for_both_images_with_no_login() -> None:
+    verify = _jobs()["verify"]
+    assert verify["needs"] == "publish"
+    assert verify["strategy"]["matrix"]["image"] == ["api", "web"]
+    assert not any("docker login" in command for command in _commands("verify"))
+
+
+def test_verify_pins_the_signer_and_covers_the_index_and_each_platform() -> None:
+    check = _commands("verify")[_position("verify", 'cosign" verify')]
+    assert '--certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}"' in check
+    assert "--certificate-oidc-issuer https://token.actions.githubusercontent.com" in check
+    assert '"${repository}@${index}"' in check
+    assert check.count('"${repository}@${digest}"') == 2
+    assert "verify-attestation --type cyclonedx" in check
+    assert "certificate-identity-regexp" not in check
 
 
 def test_the_trivy_pin_is_the_same_as_in_the_pull_request_scan() -> None:

@@ -1,0 +1,328 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+    # A merged deploy pull request changes only this folder and must not start another build.
+    paths-ignore:
+      - deploy/k8s/overlays/prod/**
+
+permissions: {}
+
+env:
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+  TRIVY_NO_PROGRESS: "true"
+  COSIGN_VERSION: "3.1.4"
+  COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+
+# A newer merge replaces an older run, so an older build cannot finish last and ship stale code.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Each image is built on a runner of its own platform, with no emulation, and pushed with no
+  # tag: until publish names it, nothing can pull it by mistake. No stored key: the job's token.
+  build:
+    strategy:
+      matrix:
+        image: [api, web]
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # The default builder cannot push by digest.
+      - name: Start a buildx builder
+        run: docker buildx create --use
+
+      # GHCR accepts only lowercase names and the repository's name has capitals.
+      - name: Build and push by digest
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.platform.arch }}
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}"
+          docker buildx build -f "deploy/${IMAGE}/Dockerfile" --platform "linux/${ARCH}" \
+            --provenance=false --metadata-file "$RUNNER_TEMP/metadata.json" \
+            --output "type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" .
+          mkdir "$RUNNER_TEMP/digests"
+          jq --exit-status --raw-output '."containerimage.digest"' "$RUNNER_TEMP/metadata.json" \
+            > "$RUNNER_TEMP/digests/${ARCH}"
+
+      - name: Keep the digest for publish
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests
+          retention-days: 1
+          if-no-files-found: error
+
+  # Trivy gets a job of its own. In a job with `id-token: write` every step can ask for the identity
+  # token, so a bad Trivy release could sign its own image as this workflow.
+  scan:
+    needs: build
+    strategy:
+      matrix:
+        image: [api, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      # Only for `.trivyignore`, so an exception counts here as it does on the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Install Trivy (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+
+      # The server is arm64 and the pull request gate builds amd64 only, so this is the one scan
+      # of what really runs. The image is public, so Trivy needs no credentials.
+      - name: Block on a HIGH or CRITICAL finding with a fix in the arm64 image
+        run: >-
+          "$RUNNER_TEMP/trivy" image --image-src remote --scanners vuln
+          --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/arm64")"
+
+      # One SBOM per platform: they hold different packages.
+      - name: Make an SBOM of each platform
+        run: |
+          mkdir "$RUNNER_TEMP/sboms"
+          for arch in amd64 arm64; do
+            "$RUNNER_TEMP/trivy" image --image-src remote --format cyclonedx \
+              --output "$RUNNER_TEMP/sboms/${arch}.json" \
+              "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/${arch}")"
+          done
+
+      - name: Keep the SBOMs for publish
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ matrix.image }}
+          path: ${{ runner.temp }}/sboms
+          retention-days: 1
+          if-no-files-found: error
+
+  # Joins an image's two platforms under one digest, the one a deployment points at.
+  publish:
+    needs: scan
+    strategy:
+      matrix:
+        image: [api, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+      id-token: write
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom-${{ matrix.image }}
+          path: ${{ runner.temp }}/sboms
+
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Tag both platforms as one image
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}"
+          docker buildx imagetools create --tag "${repository}:sha-${GITHUB_SHA}" \
+            "${repository}@$(cat "$RUNNER_TEMP/digests/amd64")" \
+            "${repository}@$(cat "$RUNNER_TEMP/digests/arm64")"
+          docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" \
+            --format '{{.Manifest.Digest}}' | tee "$RUNNER_TEMP/index-digest" >> "$GITHUB_STEP_SUMMARY"
+
+      # By digest, because a tag can move. Recursive, so each platform image is signed too.
+      - name: Sign keyless
+        run: |
+          "$RUNNER_TEMP/cosign" sign --yes --recursive \
+            "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/index-digest")"
+
+      - name: Attach each SBOM to its platform as a signed attestation
+        run: |
+          for arch in amd64 arm64; do
+            "$RUNNER_TEMP/cosign" attest --yes --type cyclonedx \
+              --predicate "$RUNNER_TEMP/sboms/${arch}.json" \
+              "ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}@$(cat "$RUNNER_TEMP/digests/${arch}")"
+          done
+
+  # No login and no token: this is what the cluster sees.
+  verify:
+    needs: publish
+    strategy:
+      matrix:
+        image: [api, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - name: Install cosign (pinned, checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosign"
+
+      - name: Verify the signatures and the SBOM attestations
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}"
+          identity=(
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/images.yml@refs/heads/main"
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          )
+          docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" --raw > "$RUNNER_TEMP/index.json"
+          index="$(docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" --format '{{.Manifest.Digest}}')"
+          "$RUNNER_TEMP/cosign" verify "${identity[@]}" "${repository}@${index}" > /dev/null
+          for arch in amd64 arm64; do
+            digest="$(jq --exit-status --raw-output --arg arch "$arch" \
+              '.manifests[] | select(.platform.architecture == $arch) | .digest' "$RUNNER_TEMP/index.json")"
+            "$RUNNER_TEMP/cosign" verify "${identity[@]}" "${repository}@${digest}" > /dev/null
+            "$RUNNER_TEMP/cosign" verify-attestation --type cyclonedx "${identity[@]}" \
+              "${repository}@${digest}" > /dev/null
+          done
+
+  # Both digests in one pull request, only after they are verified. The token comes from the
+  # GitHub App: a pull request opened with the job's own token waits for a person to approve its
+  # checks. Argo CD deploys what this merges; the cluster never writes to git.
+  deploy-pr:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: deploy-bot
+    permissions:
+      contents: read
+    env:
+      KUSTOMIZATION: deploy/k8s/overlays/prod/kustomization.yaml
+    steps:
+      - name: Get a short-lived token from the GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DEPLOY_BOT_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The latest main, not the merge: a human change to the file since then must be kept.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Write the new digests
+        id: digests
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          images=()
+          for image in api web; do
+            digest="$(docker buildx imagetools inspect "${repository}/${image}:sha-${GITHUB_SHA}" \
+              --format '{{.Manifest.Digest}}')"
+            images+=(--image "${repository}/${image}=${digest}")
+          done
+          python3 -m pipelines.set_image_digests --file "$KUSTOMIZATION" "${images[@]}"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A person turned auto-merge off: closing that pull request would undo the pause, and the
+      # same bad code would deploy with the next merge. To go on, see the README.
+      - name: Stop if deploys are paused
+        id: pause
+        if: steps.digests.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          paused="$(gh pr list --state open --limit 100 --json number,headRefName,autoMergeRequest \
+            --jq '[.[] | select((.headRefName | startswith("deploy/sha-")) and .autoMergeRequest == null) | .number] | join(" ")')"
+          if [ -n "$paused" ]; then
+            echo "::warning::Deploys are paused by pull request ${paused}; no new one was opened."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Otherwise an older pull request could merge first, and this one would then conflict and
+      # never deploy.
+      - name: Close older deploy pull requests
+        if: steps.pause.outputs.go == 'true'
+        shell: bash # Adds pipefail, so a failed list stops the step.
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh pr list --state open --limit 100 --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("deploy/sha-")) | .number' |
+            while read -r number; do
+              gh pr close "$number" --delete-branch --comment "Replaced by a newer build."
+            done
+
+      # Through the API and not git push: no credentials on disk, and the commit is the bot's own.
+      - name: Open the deploy pull request with auto-merge on
+        if: steps.pause.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          branch="deploy/sha-${GITHUB_SHA}"
+          title="chore(deploy): deploy ${GITHUB_SHA::7}"
+          # A run stopped before its pull request leaves the branch behind; a re-run starts clean.
+          # Normally there is no branch: the 404 in the log is expected, and if a delete really
+          # fails, creating the branch below fails too.
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}" || true
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/heads/${branch}" -f sha="$(git rev-parse HEAD)" > /dev/null
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${KUSTOMIZATION}" \
+            -f branch="$branch" -f message="$title" -f sha="$(git rev-parse "HEAD:${KUSTOMIZATION}")" \
+            -f content="$(base64 --wrap=0 "$KUSTOMIZATION")" > /dev/null
+          url="$(gh pr create --base main --head "$branch" --title "$title" \
+            --body "Images built from ${GITHUB_SHA}. To pause deploys, turn auto-merge off here. To go on, close this pull request, then see the README.")"
+          gh pr merge "$url" --auto --squash

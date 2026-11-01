@@ -39,8 +39,24 @@ def _caddy_api_paths() -> list[str]:
 
 def test_every_base_image_is_pinned_by_digest() -> None:
     bases = _instructions("FROM")
-    assert len(bases) == 2
+    assert len(bases) == 3
     assert all(re.search(r"@sha256:[0-9a-f]{64}\b", base) for base in bases)
+
+
+def test_caddy_is_compiled_with_the_fixed_module_versions() -> None:
+    runs = " ".join(_instructions("RUN"))
+    assert "xcaddy build v2.11.7 " in runs
+    assert "github.com/go-jose/go-jose/v4@v4.1.6" in runs
+    assert "golang.org/x/net=golang.org/x/net@v0.60.0" in runs
+    assert "--from=caddy-build /usr/bin/caddy /usr/bin/caddy" in _instructions("COPY")[-3]
+
+
+def test_the_compiled_caddy_may_bind_low_ports_without_root() -> None:
+    assert "setcap cap_net_bind_service=+ep /usr/bin/caddy" in " ".join(_instructions("RUN"))
+
+
+def test_curl_is_removed_from_the_final_image() -> None:
+    assert "apk del --no-cache curl" in " ".join(_instructions("RUN"))
 
 
 def test_the_image_runs_as_a_non_root_user() -> None:

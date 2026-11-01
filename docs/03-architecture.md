@@ -5662,16 +5662,17 @@ numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API nu
 
 The whole app runs from one compose file, `deploy/prod/compose.yml`: the database, a one-off
 migration step, the API and a web container that is the only door from outside. The same file
-runs locally and, in the next branch, on the production machine. Built in `feat/containers`
+runs locally and stays the fallback for the production machine, where Kubernetes is the plan
+(3.25). Built in `feat/containers`
 (Stage 6, branch 1). No migration, no model call in the code.
 
 ### The code
 
 | File | What it does |
 |---|---|
-| `deploy/api/Dockerfile` | The API image: two stages on `python:3.11-slim` by digest; a virtual environment from the lock file, then the code; runs as uid 10001 |
+| `deploy/api/Dockerfile` | The API image: two stages on `python:3.11-slim` by digest; a virtual environment from the lock file, then the code; `setuptools` and `wheel` removed (nothing uses them at run time and they bundle old packages); runs as uid 10001 |
 | `deploy/api/requirements.txt` | Every Python package with its exact version and hash, made by `pip-compile` inside the same base image (the command is at the top of the Dockerfile) |
-| `deploy/web/Dockerfile` | The web image: `node:26-slim` builds the screens (`npm ci`, `npm run build`), `caddy:2-alpine` serves them; both by multi-arch digest (amd64 + arm64); runs as uid 10001 |
+| `deploy/web/Dockerfile` | The web image: `node:26-slim` builds the screens (`npm ci`, `npm run build`), `caddy:2-builder-alpine` compiles Caddy with a fixed Go and two fixed modules, `caddy:2-alpine` serves the screens with that binary and with `curl` removed; all by multi-arch digest (amd64 + arm64); runs as uid 10001 |
 | `deploy/web/Caddyfile` | What the web container answers: API paths to the API, screens, assets, headers |
 | `deploy/prod/compose.yml` | The four services, one network, three volumes |
 | `.dockerignore` | An allow-list: everything is left out, then `alembic.ini`, `config/prompts/`, the lock file, the Caddyfile, `frontend/` and `src/` are let back in. So `.env*`, `data/`, `models/`, `tests/` and `docs/` never reach an image |
@@ -5846,8 +5847,8 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 
 | File | What it does |
 |---|---|
-| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest) and job `frontend` (ESLint, Prettier, `tsc`, Vitest) |
-| `.github/workflows/security.yml` | Job `zizmor` (workflow files) and job `trivy` (libraries, secrets, Dockerfiles) |
+| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock) and job `frontend` (ESLint, Prettier, `tsc`, Vitest) |
+| `.github/workflows/security.yml` | Job `zizmor` (workflow files), job `trivy` (libraries, secrets, Dockerfiles) and job `image-scan` (both built images) |
 | `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
 | `.trivyignore` | Findings Trivy may skip; empty today |
 | `trivy-secret.yaml` | Turns off Trivy's default secret skips for tests, Markdown and examples |
@@ -5861,6 +5862,8 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `trivy` | A HIGH or CRITICAL library problem that has a fix |
 | `trivy` | Any secret |
 | `trivy` | A HIGH or CRITICAL misconfiguration |
+| `image-scan` | A HIGH or CRITICAL problem with a fix in the API or web image (amd64) |
+| `lock-tests` | A locked package that needs one the lock lacks, or a test that fails on the locked versions |
 
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
@@ -5872,6 +5875,16 @@ into a test, a doc or an example file blocks too.
 
 The first run on this branch found nothing at any severity, so there is no exception. zizmor had
 no findings; it hid 6 pedantic style notes.
+
+`image-scan` builds both images and pushes nothing. Its results reach the Security tab under
+`trivy-image-api` and `trivy-image-web`. It exists because `trivy` reads the lock and the
+Dockerfiles, not what ends up in an image: the first scans found old packages bundled in
+`setuptools`, and in the web image Alpine packages and the Caddy binary. Those fixes are in 3.23.
+
+`checks` installs the newest versions `pyproject.toml` allows; `lock-tests` runs the same tests on
+what the API image really installs. The lock has no test tools, so they are added with a plain
+`pip freeze` list as a constraint: pip rejects the hashed lock itself alongside an editable
+install.
 
 ### Why it is built this way
 
@@ -5925,14 +5938,15 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
   `deploy/api/.python-version` and stay on Python 3.11, and does it read the name `compose.yml`.
 - **A lock bump changes versions only.** With no `.in` file, Dependabot rewrites the lines already
   in the lock and resolves nothing, so a new version that needs a package the lock lacks is not
-  added. The tests install from `pyproject.toml` and never see this. The `pip check` step in the
-  `checks` job and in `deploy/api/Dockerfile` fails such a bump; the fix is to refresh the lock by
+  added. The `checks` job installs from `pyproject.toml` and never sees this. The `pip check` step in the
+  `lock-tests` job and in `deploy/api/Dockerfile` fails such a bump; the fix is to refresh the lock by
   hand (the command is in the README).
-- **`pip check` proves dependencies, not behaviour.** No test runs on the locked versions.
 - **Hand-kept pins.** The `pgvector` digest in `checks.yml` is changed by hand. So are the Trivy
   and zizmor versions and hashes in `security.yml`: Dependabot cannot see them, so the scanners
   age until someone updates them. The Python digest also appears in `README.md` and in a comment
-  in `deploy/api/Dockerfile`; both go stale after a digest pull request.
+  in `deploy/api/Dockerfile`; both go stale after a digest pull request. The Caddy, `go-jose` and
+  `x/net` versions in `deploy/web/Dockerfile` are changed by hand too; `image-scan` fails when one
+  gets a new finding.
 - **zizmor holds a token that can write.** The job token carries `security-events: write`, so a
   compromised zizmor release could change code-scanning data, though not the code. The checksum
   pin limits this; moving the upload to its own job would end it.
@@ -5941,3 +5955,113 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
 - **Trivy's cosign signature is not verified.** The download is checked by sha256 only.
 - **GitHub settings are outside the repository.** Secret scanning, push protection and required
   checks are set by hand; the steps are in the README.
+
+## 3.25 Publishing the images
+
+A merge to `main` builds both images for both platforms, scans the arm64 ones, publishes them to
+GitHub's registry (GHCR), signs them, checks the signatures the way the cluster would, and opens a
+pull request that names the new images. The server is not involved: nothing pulls these images
+yet. Built in `chore/image-pipeline` (Stage 6). No migration, no model call, no server.
+
+### The code
+
+| File | What it does |
+|---|---|
+| `.github/workflows/images.yml` | Jobs `build`, `scan`, `publish`, `verify` and `deploy-pr`, on a push to `main` |
+| `pipelines/set_image_digests.py` | Writes the new digests into the Kustomize file; only the `digest:` lines change, and every image in the file must be given |
+| `deploy/k8s/overlays/prod/kustomization.yaml` | The one record of which images production should run, by digest |
+| `tests/deploy/test_image_build.py` | Reads the workflow: triggers, permissions, the order of the steps, the signer identity |
+| `tests/pipelines/test_set_image_digests.py` | The digest writer, on tiny made-up files |
+
+The tests read the files and run no workflow. The real runs below are what show it works.
+
+### One merge, step by step
+
+| Job | What it does | Permissions |
+|---|---|---|
+| `build` (4 runs) | `api` and `web`, each on a runner of its own platform (`ubuntu-24.04`, `ubuntu-24.04-arm`) with no emulation. Pushes by digest with no tag, so nothing can pull an image by mistake | `contents: read`, `packages: write` |
+| `scan` (2 runs) | Blocks on a HIGH or CRITICAL finding with a fix in the arm64 image, honouring `.trivyignore`. Makes one SBOM (a list of what is inside) per platform | `contents: read` |
+| `publish` (2 runs) | Tags both platforms as one image, `sha-<commit>`. Signs that image and both platforms. Attaches each SBOM as a signed attestation | `packages: write`, `id-token: write` |
+| `verify` (2 runs) | With no login and no token, reads the digests from the tag and checks the signatures and attestations, with the signer pinned to `images.yml` on `main`, and the issuer | none |
+| `deploy-pr` | Reads both digests, writes them with `set_image_digests.py`, stops if a deploy is paused, closes older `deploy/sha-*` pull requests, opens a new one with squash auto-merge. Opens nothing if the digests did not change | `contents: read`, plus a token from the GitHub App |
+
+There is no third image: migration is the `api` image with another command, so the two can never
+be different versions.
+
+### Why it is built this way
+
+- **GHCR, with no stored key.** The job logs in with its own short-lived `GITHUB_TOKEN`. Public
+  packages are free and can be pulled anonymously, so the cluster needs no registry password.
+  AWS ECR Public was the first choice; AWS account verification blocked it.
+- **The arm64 scan is here, not on the pull request.** The server is arm64 and `image-scan` builds
+  amd64 only, so this is the one scan of what really runs. It reads `.trivyignore` too, so an
+  exception that passes the pull request does not stop the merge.
+- **Trivy runs in its own job.** In a job with `id-token: write` every step can ask for the
+  identity token, so a bad Trivy release could sign its own image as this workflow. `scan` has
+  `contents: read` only and passes the SBOMs on as artifacts. A bad Trivy could still write a
+  wrong SBOM or pass a bad image; it cannot sign anything or push.
+- **Keyless signing.** cosign takes a short-lived certificate from GitHub's identity token, so
+  there is no signing key to store or lose. The signature says which workflow on which branch
+  built the image. It signs by digest, because a tag can move.
+- **`verify` runs with nothing.** It has no token, so it sees exactly what the cluster will see.
+- **Deploying is a commit.** Argo CD will read this folder, and the cluster never writes to git.
+  To roll back, revert the deploy pull request. To pause, turn off auto-merge on the open deploy
+  pull request: while it stays open, later builds publish images but open nothing. To go on, close
+  it, then re-run `deploy-pr` of the newest run, or let the next merge that builds deploy.
+- **`verify` names `main` itself**, not the ref the run started from, so it proves "signed from
+  `main`" and not only "signed by this run". A run on any other branch fails it.
+- **Both digests in one pull request**, so the web and API images always move together.
+- **A GitHub App opens the pull request.** One opened with the job's own token waits for a person
+  to approve its checks, so it would never auto-merge. The App's token lasts about an hour, is
+  limited to contents and pull requests, and its key is usable only by a run on `main` (environment
+  `deploy-bot`).
+- **The commit goes through GitHub's API**, not `git push`: no credential sits on the disk, and
+  every checkout keeps `persist-credentials: false`.
+- **A merged deploy pull request starts no build.** `paths-ignore` on
+  `deploy/k8s/overlays/prod/**` stops the loop of build, deploy pull request, build.
+- **A newer merge cancels an older run**, so an older build cannot finish last and ship stale code.
+
+### Measured
+
+- **Build** (run 41247702447 on 2a53b8f, a temporary trigger on the branch): all 6 jobs in about 2
+  minutes, native arm64. `api` 167 MB compressed, `web` 41-43 MB. arm64 Trivy found 0.
+- **Signing** (run 41288715101 on 372e718, the same trigger): all 8 jobs. 3 signatures per image
+  (the joined image and both platforms), both SBOMs attested, `verify` passed with no login.
+- **Scan job** (run 41295684832 on f283893, the same trigger): `build`, `scan`, `publish` and
+  `verify` passed with Trivy out of the job that can sign. `deploy-pr` was refused as expected.
+- **Registry test** (run 41242289319, a throwaway package): the package was public from the start;
+  `docker pull`, `cosign verify` and `cosign verify-attestation` passed logged out. cosign keeps
+  each signature under a `sha256-<digest>` tag beside the image, because GHCR's referrers API
+  answers `MANIFEST_UNKNOWN`.
+
+### Known limits
+
+- **`deploy-pr` has never run.** `deploy-bot` allows `main` only, so its first run is the first
+  merge. That run also shows the App's permissions, and whether the ruleset's
+  `require_extra_approval_for_unattributed_changes` holds the bot's pull request back.
+- **The `main` signer identity is unproven.** The real runs signed as this branch. The first merge
+  signs as `.../images.yml@refs/heads/main`.
+- **The first digests in `kustomization.yaml` are from the branch run**, signed with the branch
+  identity. The first deploy pull request replaces them.
+- **Re-run only the newest run.** A re-run reads its own commit's digests and writes them on the
+  latest `main`, and `concurrency` stops only runs in progress. Re-running an older run opens a
+  deploy pull request that moves production back with no review. Never re-run after a rollback, or
+  to resume from a build paused because it is bad: a revert starts no run, so the newest run is
+  still that build. Merge the fix instead. A rollback lasts only until the next merge that builds.
+- **`verify` has never been seen failing.** No unsigned image or wrong identity was tried, and its
+  pin to `main` has not run: the first merge is the first check of it.
+- **The pause and the re-run clean-up are unproven** for the same reason as `deploy-pr`. A run
+  stopped between opening a pull request and turning auto-merge on leaves one that reads as
+  paused: nothing deploys until a person closes it. The run says so in a warning.
+- **The published images have not been started.** The local checks of `/health` and of the
+  Caddyfile were on images built on the Mac (arm64), not on the ones in GHCR.
+- **A finding only on arm64 shows up after the merge.** `image-scan` cannot see it; the merge stands
+  and `scan` fails, so `publish` never starts and nothing deploys until it is fixed.
+- **Every merge builds and deploys, docs included.** Only the Kustomize folder is ignored.
+- **Nothing checks the signature at deploy time yet.** `verify` runs in the workflow, not in the
+  cluster.
+- **Hand-kept pins.** The cosign version and hash in `images.yml` are changed by hand, as the Trivy
+  ones are (3.24). The SBOM sizes were not measured.
+- **`app-id` is deprecated** in `actions/create-github-app-token`. It works and warns.
+- **Settings outside the repository.** The environment, the App and auto-merge are set by hand; the
+  steps are in the README.

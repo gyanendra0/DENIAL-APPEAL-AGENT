@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Written by the deploy pull request (pipelines/set_image_digests.py). A rollback reverts that
+# pull request.
+images:
+  - name: ghcr.io/gyanendra0/denial-appeal-agent/api
+    digest: sha256:11f53a63daf14d132ef64d122289e91929d916783aaba0508066b8cd25ae1862
+  - name: ghcr.io/gyanendra0/denial-appeal-agent/web
+    digest: sha256:f5259896c843760876b0526bf009d3e926a57981786ce05cae4da3f3cc2a0a87

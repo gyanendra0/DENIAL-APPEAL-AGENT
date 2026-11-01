@@ -159,8 +159,8 @@ jobs:
     env:
       KIND_VERSION: "0.33.0"
       KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
-      # The node image this kind release names for the newest Kubernetes; the server runs 1.37.1.
-      KIND_NODE_IMAGE: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+      # The newest 1.36 node image this kind release names; the server runs k3s 1.36.5.
+      KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
       KUBECTL_VERSION: "1.37.1"
       KUBECTL_SHA256: 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
       KUSTOMIZE_VERSION: "5.8.3"

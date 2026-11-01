@@ -124,7 +124,7 @@ jobs:
       KUBECONFORM_VERSION: "0.8.0"
       KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
       # The k3s version planned for the server.
-      KUBERNETES_VERSION: "1.37.1"
+      KUBERNETES_VERSION: "1.36.5"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,10 +168,12 @@ jobs:
           if echo "$images" | grep -vE '@sha256:[0-9a-f]{64}"?$'; then exit 1; fi
 
       # Strict: a misspelled field fails. A kind with no schema fails too, so a new custom kind
-      # has to be dealt with on purpose.
+      # has to be dealt with on purpose. SealedSecret is skipped by its full name: the controller
+      # checks it when it decrypts it.
       - name: Block on a manifest Kubernetes would refuse
         run: >-
           "$RUNNER_TEMP/kubeconform" -strict -summary
+          -skip bitnami.com/v1alpha1/SealedSecret
           -kubernetes-version "$KUBERNETES_VERSION" "$RUNNER_TEMP/rendered"
 
       - name: Block on a HIGH or CRITICAL misconfiguration in the rendered manifests

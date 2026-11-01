@@ -4,3 +4,4 @@ metadata:
   name: denial-appeal-agent
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false

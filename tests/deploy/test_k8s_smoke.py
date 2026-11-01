@@ -61,7 +61,7 @@ def test_every_tool_is_pinned_and_its_checksum_verified() -> None:
 
 def test_the_cluster_uses_the_pinned_node_image() -> None:
     assert re.fullmatch(
-        r"kindest/node:v[\d.]+@sha256:[0-9a-f]{64}", _job()["env"]["KIND_NODE_IMAGE"]
+        r"kindest/node:v1\.36\.\d+@sha256:[0-9a-f]{64}", _job()["env"]["KIND_NODE_IMAGE"]
     )
     assert '--image "$KIND_NODE_IMAGE"' in _commands()[_index_of(" create cluster")]
 

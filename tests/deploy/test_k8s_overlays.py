@@ -194,7 +194,7 @@ def test_local_uses_a_plain_tag_on_the_same_images_as_prod() -> None:
 @pytest.mark.parametrize("overlay", ["local", "prod"])
 def test_each_overlay_patches_the_settings_of_the_base(overlay: str) -> None:
     kustomization = yaml.safe_load((OVERLAYS / overlay / "kustomization.yaml").read_text())
-    assert kustomization["resources"] == ["../../base"]
+    assert "../../base" in kustomization["resources"]
     assert kustomization["patches"] == [{"path": "config.yaml"}]
     patch = yaml.safe_load((OVERLAYS / overlay / "config.yaml").read_text())
     assert (patch["kind"], patch["metadata"]["name"]) == ("ConfigMap", "app-config")

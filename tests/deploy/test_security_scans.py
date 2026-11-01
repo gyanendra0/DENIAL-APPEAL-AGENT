@@ -2,6 +2,7 @@
 pull request builds and scans both images, their findings reach the Security tab, and both
 Kubernetes overlays are rendered, validated and scanned."""
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -106,9 +107,13 @@ def test_kubeconform_refuses_unknown_fields_and_kinds_for_the_planned_kubernetes
     gate = next(c for c in _manifests_commands() if '/kubeconform" ' in c)
     assert "-strict" in gate
     assert "-ignore-missing-schemas" not in gate
-    assert "-skip" not in gate
+    assert re.findall(r"-skip \S+", gate) == ["-skip bitnami.com/v1alpha1/SealedSecret"]
     assert '-kubernetes-version "$KUBERNETES_VERSION"' in gate
     assert gate.endswith('"$RUNNER_TEMP/rendered"')
+
+
+def test_kubeconform_checks_against_the_kubernetes_the_server_runs() -> None:
+    assert _manifests_job()["env"]["KUBERNETES_VERSION"] == "1.36.5"
 
 
 def test_trivy_blocks_on_high_or_critical_in_the_rendered_manifests() -> None:

@@ -5982,8 +5982,8 @@ The tests read the files and run no workflow. The real runs below are what show 
 | `build` (4 runs) | `api` and `web`, each on a runner of its own platform (`ubuntu-24.04`, `ubuntu-24.04-arm`) with no emulation. Pushes by digest with no tag, so nothing can pull an image by mistake | `contents: read`, `packages: write` |
 | `scan` (2 runs) | Blocks on a HIGH or CRITICAL finding with a fix in the arm64 image, honouring `.trivyignore`. Makes one SBOM (a list of what is inside) per platform | `contents: read` |
 | `publish` (2 runs) | Tags both platforms as one image, `sha-<commit>`. Signs that image and both platforms. Attaches each SBOM as a signed attestation | `packages: write`, `id-token: write` |
-| `verify` (2 runs) | With no login and no token, reads the digests from the tag and checks the signatures and attestations, with the signer identity and issuer pinned | none |
-| `deploy-pr` | Reads both digests, writes them with `set_image_digests.py`, closes older `deploy/sha-*` pull requests, opens a new one with squash auto-merge. Opens nothing if the digests did not change | `contents: read`, plus a token from the GitHub App |
+| `verify` (2 runs) | With no login and no token, reads the digests from the tag and checks the signatures and attestations, with the signer pinned to `images.yml` on `main`, and the issuer | none |
+| `deploy-pr` | Reads both digests, writes them with `set_image_digests.py`, stops if a deploy is paused, closes older `deploy/sha-*` pull requests, opens a new one with squash auto-merge. Opens nothing if the digests did not change | `contents: read`, plus a token from the GitHub App |
 
 There is no third image: migration is the `api` image with another command, so the two can never
 be different versions.
@@ -6005,7 +6005,11 @@ be different versions.
   built the image. It signs by digest, because a tag can move.
 - **`verify` runs with nothing.** It has no token, so it sees exactly what the cluster will see.
 - **Deploying is a commit.** Argo CD will read this folder, and the cluster never writes to git.
-  To roll back, revert the deploy pull request. To pause a deploy, turn its auto-merge off.
+  To roll back, revert the deploy pull request. To pause, turn off auto-merge on the open deploy
+  pull request: while it stays open, later builds publish images but open nothing. To go on, close
+  it; the next merge deploys.
+- **`verify` names `main` itself**, not the ref the run started from, so it proves "signed from
+  `main`" and not only "signed by this run". A run on any other branch fails it.
 - **Both digests in one pull request**, so the web and API images always move together.
 - **A GitHub App opens the pull request.** One opened with the job's own token waits for a person
   to approve its checks, so it would never auto-merge. The App's token lasts about an hour, is
@@ -6023,6 +6027,8 @@ be different versions.
   minutes, native arm64. `api` 167 MB compressed, `web` 41-43 MB. arm64 Trivy found 0.
 - **Signing** (run 41288715101 on 372e718, the same trigger): all 8 jobs. 3 signatures per image
   (the joined image and both platforms), both SBOMs attested, `verify` passed with no login.
+- **Scan job** (run 41295684832 on f283893, the same trigger): `build`, `scan`, `publish` and
+  `verify` passed with Trivy out of the job that can sign. `deploy-pr` was refused as expected.
 - **Registry test** (run 41242289319, a throwaway package): the package was public from the start;
   `docker pull`, `cosign verify` and `cosign verify-attestation` passed logged out. cosign keeps
   each signature under a `sha256-<digest>` tag beside the image, because GHCR's referrers API
@@ -6037,7 +6043,11 @@ be different versions.
   signs as `.../images.yml@refs/heads/main`.
 - **The first digests in `kustomization.yaml` are from the branch run**, signed with the branch
   identity. The first deploy pull request replaces them.
-- **`verify` has never been seen failing.** No unsigned image or wrong identity was tried.
+- **`verify` has never been seen failing.** No unsigned image or wrong identity was tried, and its
+  pin to `main` has not run: the first merge is the first check of it.
+- **The pause and the re-run clean-up are unproven** for the same reason as `deploy-pr`. A run
+  stopped between opening a pull request and turning auto-merge on leaves one that reads as
+  paused: nothing deploys until a person closes it. The run says so in a warning.
 - **The published images have not been started.** The local checks of `/health` and of the
   Caddyfile were on images built on the Mac (arm64), not on the ones in GHCR.
 - **A finding only on arm64 shows up after the merge.** `image-scan` cannot see it; the merge stands

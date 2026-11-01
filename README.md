@@ -236,7 +236,9 @@ Set by hand in GitHub, once:
    variable `DEPLOY_BOT_APP_ID` and the secret `DEPLOY_BOT_PRIVATE_KEY`.
 3. **Settings > General:** allow auto-merge.
 
-To stop a deploy, turn off auto-merge on its pull request. To roll back, revert a merged one.
+To pause deploys, turn off auto-merge on the open deploy pull request; later builds then open
+nothing. To go on, close that pull request, and the next merge deploys. To roll back, revert a
+merged one.
 
 Anyone can check an image with no login (the capitals in the repository name matter):
 ```

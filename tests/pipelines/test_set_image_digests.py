@@ -83,5 +83,22 @@ def test_an_image_on_the_last_line_is_refused(tmp_path: Path) -> None:
     assert _run(path, f"{API}={NEW_API}") == EXIT_BAD_INPUT
 
 
+@pytest.mark.parametrize("other", ["before", "after"])
+def test_a_name_line_in_another_block_is_left_alone(tmp_path: Path, other: str) -> None:
+    block = "configMapGenerator:\n  - name: app-settings\n    literals:\n      - A=1\n"
+    images = f"images:\n  - name: {API}\n    digest: {OLD}\n"
+    text = block + images if other == "before" else images + block
+    path = tmp_path / "kustomization.yaml"
+    path.write_text(text)
+    assert _run(path, f"{API}={NEW_API}") == EXIT_OK
+    assert path.read_text() == text.replace(OLD, NEW_API)
+
+
+def test_a_file_with_no_images_block_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "kustomization.yaml"
+    path.write_text(f"patches:\n  - name: {API}\n    digest: {OLD}\n")
+    assert _run(path, f"{API}={NEW_API}") == EXIT_BAD_INPUT
+
+
 def test_a_missing_file_is_refused(tmp_path: Path) -> None:
     assert _run(tmp_path / "missing.yaml", f"{API}={NEW_API}") == EXIT_BAD_INPUT

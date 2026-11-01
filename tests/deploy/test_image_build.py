@@ -34,7 +34,7 @@ def _position(job: str, text: str) -> int:
 
 def test_the_build_runs_on_a_merge_and_never_on_a_pull_request() -> None:
     trigger = _workflow()[True]  # YAML reads the key `on` as true.
-    assert "main" in trigger["push"]["branches"]
+    assert trigger["push"]["branches"] == ["main"]
     assert "pull_request" not in trigger
 
 
@@ -163,7 +163,10 @@ def test_verify_runs_after_publish_for_both_images_with_no_login() -> None:
 
 def test_verify_pins_the_signer_and_covers_the_index_and_each_platform() -> None:
     check = _commands("verify")[_position("verify", 'cosign" verify')]
-    assert '--certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}"' in check
+    assert (
+        '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}'
+        '/.github/workflows/images.yml@refs/heads/main"' in check
+    )
     assert "--certificate-oidc-issuer https://token.actions.githubusercontent.com" in check
     assert '"${repository}@${index}"' in check
     assert check.count('"${repository}@${digest}"') == 2
@@ -209,9 +212,23 @@ def test_the_kustomization_names_exactly_the_images_the_build_publishes() -> Non
 
 def test_no_pull_request_is_opened_when_the_digests_did_not_change() -> None:
     steps = _jobs()["deploy-pr"]["steps"]
-    guarded = [s for s in steps if "gh pr" in s.get("run", "")]
-    assert len(guarded) == 2
-    assert {s["if"] for s in guarded} == {"steps.digests.outputs.changed == 'true'"}
+    pause, close, create = [s for s in steps if "gh pr" in s.get("run", "")]
+    assert pause["if"] == "steps.digests.outputs.changed == 'true'"
+    assert close["if"] == create["if"] == "steps.pause.outputs.go == 'true'"
+
+
+def test_a_paused_deploy_is_neither_closed_nor_replaced() -> None:
+    pause_position = _position("deploy-pr", "autoMergeRequest == null")
+    assert pause_position < _position("deploy-pr", "gh pr close")
+    pause = _commands("deploy-pr")[pause_position]
+    assert 'startswith("deploy/sha-")' in pause
+    assert 'echo "go=false"' in pause
+
+
+def test_a_branch_left_by_a_stopped_run_is_removed_before_it_is_made_again() -> None:
+    create = _commands("deploy-pr")[_position("deploy-pr", "gh pr create")]
+    assert create.index("--method DELETE") < create.index('git/refs" ')
+    assert 'git/refs/heads/${branch}" || true' in create
 
 
 def test_older_deploy_pull_requests_are_closed_before_the_new_one_opens() -> None:

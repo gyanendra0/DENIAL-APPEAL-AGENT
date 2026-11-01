@@ -5,6 +5,7 @@ Usage:
         --image <name>=<sha256:digest> --image <name>=<sha256:digest>
 
 Only the `digest:` line under each named image changes, so every other line and comment stays.
+Only the `images:` block is read: other blocks of the file have `- name:` lines of their own.
 Every image in the file must be given and every image given must be in the file: a deploy moves
 all the images together, so the migration and the API are always the same version.
 
@@ -24,6 +25,7 @@ EXIT_OK = 0
 EXIT_BAD_INPUT = 2
 
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+TOP_LEVEL_KEY_PATTERN = re.compile(r"([A-Za-z]\w*):.*")
 NAME_LINE_PATTERN = re.compile(r"\s*-\s*name:\s*(\S+)\s*")
 DIGEST_LINE_PATTERN = re.compile(r"(\s*)digest:\s*\S+\s*")
 
@@ -46,9 +48,14 @@ def set_digests(text: str, digests: dict[str, str]) -> str:
     """Return the file text with each image's digest line replaced."""
     lines = text.splitlines(keepends=True)
     found: set[str] = set()
+    in_images = False
     for index, line in enumerate(lines):
+        top_level_key = TOP_LEVEL_KEY_PATTERN.fullmatch(line.rstrip("\n"))
+        if top_level_key is not None:
+            in_images = top_level_key.group(1) == "images"
+            continue
         name_line = NAME_LINE_PATTERN.fullmatch(line.rstrip("\n"))
-        if name_line is None:
+        if name_line is None or not in_images:
             continue
         name = name_line.group(1)
         if name not in digests:

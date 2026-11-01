@@ -2,7 +2,7 @@ name: images
 
 on:
   push:
-    branches: [main, chore/image-pipeline]
+    branches: [main]
     # A merged deploy pull request changes only this folder and must not start another build.
     paths-ignore:
       - deploy/k8s/overlays/prod/**
@@ -213,7 +213,7 @@ jobs:
         run: |
           repository="ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE}"
           identity=(
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}"
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/images.yml@refs/heads/main"
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           )
           docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA}" --raw > "$RUNNER_TEMP/index.json"
@@ -272,10 +272,28 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # A person turned auto-merge off: closing that pull request would undo the pause, and the
+      # same bad code would deploy with the next merge. To go on, they close it.
+      - name: Stop if deploys are paused
+        id: pause
+        if: steps.digests.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          paused="$(gh pr list --state open --limit 100 --json number,headRefName,autoMergeRequest \
+            --jq '[.[] | select((.headRefName | startswith("deploy/sha-")) and .autoMergeRequest == null) | .number] | join(" ")')"
+          if [ -n "$paused" ]; then
+            echo "::warning::Deploys are paused by pull request ${paused}; no new one was opened."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Otherwise an older pull request could merge first, and this one would then conflict and
       # never deploy.
       - name: Close older deploy pull requests
-        if: steps.digests.outputs.changed == 'true'
+        if: steps.pause.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
@@ -288,18 +306,20 @@ jobs:
 
       # Through the API and not git push: no credentials on disk, and the commit is the bot's own.
       - name: Open the deploy pull request with auto-merge on
-        if: steps.digests.outputs.changed == 'true'
+        if: steps.pause.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           branch="deploy/sha-${GITHUB_SHA}"
           title="chore(deploy): deploy ${GITHUB_SHA::7}"
+          # A run stopped before its pull request leaves the branch behind; a re-run starts clean.
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}" || true
           gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
             -f ref="refs/heads/${branch}" -f sha="$(git rev-parse HEAD)" > /dev/null
           gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${KUSTOMIZATION}" \
             -f branch="$branch" -f message="$title" -f sha="$(git rev-parse "HEAD:${KUSTOMIZATION}")" \
             -f content="$(base64 --wrap=0 "$KUSTOMIZATION")" > /dev/null
           url="$(gh pr create --base main --head "$branch" --title "$title" \
-            --body "Images built from ${GITHUB_SHA}. To pause this deploy, turn auto-merge off.")"
+            --body "Images built from ${GITHUB_SHA}. To pause deploys, turn auto-merge off here; to go on, close this pull request.")"
           gh pr merge "$url" --auto --squash

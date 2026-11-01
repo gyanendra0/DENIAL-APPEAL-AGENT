@@ -144,8 +144,8 @@ dashboard is built: architecture [3.21](docs/03-architecture.md#321-web-dashboar
 ## Running it in containers
 
 The whole app (database, migrations, API, and a Caddy web server in front that serves the
-screens) also runs from one compose file, the same one the production machine uses. You need
-Docker and the trained model files in `models/`.
+screens) also runs from one compose file, which stays the fallback for the production machine.
+You need Docker and the trained model files in `models/`.
 
 1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
    usual keys (including `SHARED_ACCOUNT_NAME` and `ADMIN_EMAILS`; keep
@@ -196,8 +196,9 @@ there, change it here too.
 
 ## Security checks
 
-Every pull request runs zizmor (workflow files) and Trivy (libraries, secrets, Dockerfiles). What
-blocks and why: architecture [3.24](docs/03-architecture.md#324-checks-on-every-pull-request).
+Every pull request runs zizmor (workflow files), Trivy (libraries, secrets, Dockerfiles), a Trivy
+scan of both built images, and the tests on the locked versions. What blocks and why: architecture
+[3.24](docs/03-architecture.md#324-checks-on-every-pull-request).
 
 To run them locally before pushing, install the versions set in
 `.github/workflows/security.yml`, then from the repository root:
@@ -206,18 +207,46 @@ GH_TOKEN="$(gh auth token)" zizmor .
 trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
 trivy fs --scanners secret --secret-config trivy-secret.yaml --exit-code 1 .
 trivy config --severity HIGH,CRITICAL --exit-code 1 .
+docker build -f deploy/api/Dockerfile -t denial-appeal-agent-api .
+trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 denial-appeal-agent-api
+docker build -f deploy/web/Dockerfile -t denial-appeal-agent-web .
+trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 denial-appeal-agent-web
 ```
 
 Three things are set by hand in GitHub, once:
 1. **Settings > Advanced Security:** turn on secret scanning and push protection.
 2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the status checks
-   `checks`, `frontend`, `zizmor` and `trivy`. Choose **GitHub Actions** as the source of each one:
-   a pull request also shows code-scanning results named `zizmor` and `Trivy`, and those are not
-   the gates.
+   `checks`, `lock-tests`, `frontend`, `zizmor`, `trivy` and `image-scan`. Choose **GitHub Actions**
+   as the source of each one: a pull request also shows code-scanning results named `zizmor` and
+   `Trivy`, and those are not the gates.
 3. **After the first merge:** open **Insights > Dependency graph > Dependabot** and read its first
    run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
    `deploy/api/.python-version` and stays on Python 3.11, and that it reads
    `deploy/prod/compose.yml`.
+
+## Publishing the images
+
+Each merge to `main` builds, scans, signs and publishes both images to GHCR, then opens a pull
+request with the new digests, which merges itself. How and why: architecture
+[3.25](docs/03-architecture.md#325-publishing-the-images).
+
+Set by hand in GitHub, once:
+1. **A GitHub App** on this repository with **Contents** and **Pull requests** set to read and write.
+2. **Settings > Environments:** an environment `deploy-bot`, limited to the branch `main`, with the
+   variable `DEPLOY_BOT_APP_ID` and the secret `DEPLOY_BOT_PRIVATE_KEY`.
+3. **Settings > General:** allow auto-merge.
+
+To stop a deploy, turn off auto-merge on its pull request. To roll back, revert a merged one.
+
+Anyone can check an image with no login (the capitals in the repository name matter):
+```
+cosign verify ghcr.io/gyanendra0/denial-appeal-agent/api@sha256:<digest> \
+  --certificate-identity https://github.com/gyanendra0/DENIAL-APPEAL-AGENT/.github/workflows/images.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+After the first merge, check on its deploy pull request that it opens, that its checks start
+without a person approving them, and that it merges by itself.
 
 ## How work is split across machines
 

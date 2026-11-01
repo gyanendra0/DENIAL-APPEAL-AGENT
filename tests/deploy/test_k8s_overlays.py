@@ -2,6 +2,7 @@
 gives the app every setting it needs, no secret value is in git, nothing talks to anything unless a
 rule allows it, and Argo CD follows the digest-pinned `prod` overlay."""
 
+import asyncio
 import ipaddress
 import re
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 
 import pytest
 import yaml
+from uvicorn import Config
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from src.config.settings import ApiSettings, LlmGatewaySettings, Settings
 
@@ -21,6 +24,7 @@ SECRET_TEMPLATE = OVERLAYS / "prod" / "app-secrets.example.yaml"
 APPLICATION = K8S / "argocd" / "application.yaml"
 METADATA_ADDRESS = ipaddress.ip_address("169.254.169.254")
 POD_RANGES = ("10.42.0.0", "10.244.0.0")
+FORGED_CLIENT = "203.0.113.9"
 WAVE = "argocd.argoproj.io/sync-wave"
 # Shaped to pass the settings' checks; the keys are the ones in the template.
 MADE_UP_SECRETS = {
@@ -55,12 +59,33 @@ def _policies() -> dict[str, dict[str, Any]]:
     return {p["metadata"]["name"]: p for p in yaml.safe_load_all(POLICIES.read_text())}
 
 
-def _pods_named(peers: list[dict[str, Any]]) -> set[str]:
-    return {
-        peer["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
-        for peer in peers
-        if "app.kubernetes.io/name" in peer.get("podSelector", {}).get("matchLabels", {})
+def _pods_named(*names: str) -> list[dict[str, Any]]:
+    return [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": name}}} for name in names]
+
+
+def _policies_selecting(name: str) -> list[str]:
+    return [
+        policy_name
+        for policy_name, policy in _policies().items()
+        if policy["spec"]["podSelector"].get("matchLabels", {}).get("app.kubernetes.io/name")
+        == name
+    ]
+
+
+def _client_seen_by_uvicorn(trusted: str, peer: str) -> str:
+    """What the app sees as the client, when `peer` connects saying it is forwarding for someone."""
+    seen: list[str] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        seen.append(scope["client"][0])
+
+    scope = {
+        "type": "http",
+        "client": (peer, 1234),
+        "headers": [(b"x-forwarded-for", FORGED_CLIENT.encode())],
     }
+    asyncio.run(ProxyHeadersMiddleware(app, trusted_hosts=trusted)(scope, None, None))  # type: ignore[arg-type]
+    return seen[0]
 
 
 def _ip_blocks(policy: dict[str, Any]) -> list[dict[str, Any]]:
@@ -143,6 +168,22 @@ def test_the_api_trusts_only_the_pod_range_of_its_cluster(overlay: str, pod_rang
     assert _overlay_settings(overlay)["FORWARDED_ALLOW_IPS"] == pod_range
 
 
+# The locked uvicorn is what runs in the image, and `lock-tests` runs this on it: if a new version
+# stopped reading a range, every visitor would share the address of `web` for the login limit.
+@pytest.mark.parametrize(
+    ("overlay", "pod"), [("local", "10.244.1.7"), ("prod", "10.42.1.7")], ids=["local", "prod"]
+)
+def test_uvicorn_believes_a_pod_of_the_range_and_nobody_else(
+    overlay: str, pod: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", _overlay_settings(overlay)["FORWARDED_ALLOW_IPS"])
+    trusted = Config(app="made.up:app").forwarded_allow_ips
+    assert isinstance(trusted, str)
+
+    assert _client_seen_by_uvicorn(trusted, pod) == FORGED_CLIENT
+    assert _client_seen_by_uvicorn(trusted, "8.8.8.8") == "8.8.8.8"
+
+
 def test_local_uses_a_plain_tag_on_the_same_images_as_prod() -> None:
     local = yaml.safe_load((OVERLAYS / "local" / "kustomization.yaml").read_text())["images"]
     prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())["images"]
@@ -196,16 +237,14 @@ def test_the_network_rules_exist_before_any_pod_starts() -> None:
 
 def test_only_the_web_reaches_the_api_and_only_on_its_port() -> None:
     rules = _policies()["api"]["spec"]["ingress"]
-    assert len(rules) == 1
-    assert _pods_named(rules[0]["from"]) == {"web"}
-    assert rules[0]["ports"] == [{"port": 8000}]
+    assert rules == [{"from": _pods_named("web"), "ports": [{"port": 8000}]}]
+    assert _policies_selecting("api") == ["api"]
 
 
 def test_only_the_api_and_the_migration_reach_the_database() -> None:
     rules = _policies()["db"]["spec"]["ingress"]
-    assert len(rules) == 1
-    assert _pods_named(rules[0]["from"]) == {"api", "migrate"}
-    assert rules[0]["ports"] == [{"port": 5432}]
+    assert rules == [{"from": _pods_named("api", "migrate"), "ports": [{"port": 5432}]}]
+    assert _policies_selecting("db") == ["db"]
 
 
 def test_the_database_opens_no_connection() -> None:

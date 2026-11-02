@@ -21,6 +21,7 @@ BASE_CONFIG = K8S / "base" / "config.yaml"
 POLICIES = K8S / "base" / "network-policies.yaml"
 OVERLAYS = K8S / "overlays"
 SECRET_TEMPLATE = OVERLAYS / "prod" / "app-secrets.example.yaml"
+SEALED_SECRET = OVERLAYS / "prod" / "app-secrets.sealed.yaml"
 APPLICATION = K8S / "argocd" / "application.yaml"
 METADATA_ADDRESS = ipaddress.ip_address("169.254.169.254")
 POD_RANGES = ("10.42.0.0", "10.244.0.0")
@@ -209,6 +210,35 @@ def test_the_secret_template_holds_no_value() -> None:
 def test_an_empty_secret_can_never_reach_the_cluster() -> None:
     prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
     assert SECRET_TEMPLATE.name not in prod["resources"]
+
+
+def test_production_gets_the_sealed_secret() -> None:
+    prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
+    assert SEALED_SECRET.name in prod["resources"]
+
+
+def test_the_sealed_secret_opens_only_as_app_secrets_in_the_app_namespace() -> None:
+    sealed = yaml.safe_load(SEALED_SECRET.read_text())
+    assert (sealed["apiVersion"], sealed["kind"]) == ("bitnami.com/v1alpha1", "SealedSecret")
+    for metadata in (sealed["metadata"], sealed["spec"]["template"]["metadata"]):
+        assert (metadata["name"], metadata["namespace"]) == ("app-secrets", "denial-appeal-agent")
+    # Any other scope leaves an annotation that lets the secret be opened under another name.
+    assert not [key for key in sealed["metadata"].get("annotations", {}) if "sealedsecrets" in key]
+
+
+def test_the_sealed_secret_exists_with_the_settings_before_any_pod_starts() -> None:
+    sealed = yaml.safe_load(SEALED_SECRET.read_text())
+    assert int(sealed["metadata"]["annotations"][WAVE]) == -2
+
+
+def test_the_sealed_secret_holds_every_key_of_the_template_and_no_plain_value() -> None:
+    sealed = yaml.safe_load(SEALED_SECRET.read_text())
+    assert set(sealed["spec"]["encryptedData"]) == _secret_keys()
+    assert "data" not in sealed["spec"]["template"]
+    assert "stringData" not in sealed["spec"]["template"]
+    # Each kubeseal value starts with the length of its 512-byte encrypted key, two bytes that
+    # encode to "Ag"; a pasted plain value would not.
+    assert all(value.startswith("Ag") for value in sealed["spec"]["encryptedData"].values())
 
 
 def test_the_template_has_every_key_the_pods_read_by_name() -> None:

@@ -5662,8 +5662,8 @@ numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API nu
 
 The whole app runs from one compose file, `deploy/prod/compose.yml`: the database, a one-off
 migration step, the API and a web container that is the only door from outside. The same file
-runs locally and stays the fallback for the production machine, where Kubernetes is the plan
-(3.25). Built in `feat/containers`
+runs locally and stays the fallback for the production machine, which runs Kubernetes
+(3.26, 3.27). Built in `feat/containers`
 (Stage 6, branch 1). No migration, no model call in the code.
 
 ### The code
@@ -5720,9 +5720,13 @@ replaced the development database container and used its volume (see Gotchas).
 - **Health check.** Docker calls `GET /health` every 30 s with Python's `urllib` (the slim image
   has no `curl`). `/health` runs `SELECT 1` with a 2 s `statement_timeout` and answers `200`
   `{"status": "ok"}`, or `503` `{"status": "unavailable"}` without the error's text (only its
-  class is logged). Opening the connection is limited too: `create_db_engine` passes
-  `connect_timeout` 5 s (`DB_CONNECT_TIMEOUT_SECONDS`), so a database that accepts the
-  connection but never answers gives `503` instead of a request that hangs.
+  class is logged). The check opens a new connection of its own, outside the pool
+  (`check_database` in `src/db/session.py`), with `connect_timeout` 5 s
+  (`DB_CONNECT_TIMEOUT_SECONDS`), so a database that accepts the connection but never answers
+  gives `503` within about 5 s instead of a request that hangs. A pooled connection could not be
+  used: its ping runs before any timeout is set, and on a frozen database (`docker pause`) it was
+  still waiting after 12 s. Ordinary requests use the pool, so they can still hang on a frozen
+  database (Known limits).
 
 ### The web image
 
@@ -5816,22 +5820,26 @@ made-up user went through it in a real browser.
 
 ### Known limits
 
-- **Not yet on a public machine.** It ran on the Mac; the machine, its name and its firewall come
-  in `feat/deploy-machine`.
+- **Compose is the fallback, not what is served.** The server runs the same images on
+  Kubernetes (3.26, 3.27). This file ran on the Mac only.
 - **No backup and no alerts yet.** The data is one Docker volume; `feat/backup-and-alerts`
   adds both.
 - **Still one API process.** Jobs run in it, so a restart drops a running job (3.19).
 - **The evidence tables and model files are copied by hand.** Nothing checks they are there
   before the first upload.
-- **Letter text is not encrypted at rest** by the app; the plan is the host's disk encryption.
-- **The images are rebuilt by hand.** No registry and no automatic build; the machine builds
-  them from a checkout.
+- **Letter text is not encrypted at rest by the app.** On the server the disk is encrypted by
+  Oracle with Oracle's keys (3.27): that covers a disk leaving Oracle, not someone on the
+  running machine.
+- **Ordinary requests can hang on a frozen database.** Only `/health` uses a new connection
+  with a time limit; a request that takes a pooled connection waits until the database answers.
 - **Clients that come in through Docker's port forwarding share one address.** The network is
   IPv4 only, so on a Linux host an IPv6 visitor (and, under Docker Desktop on the Mac, every
   visitor) reaches Caddy through Docker's own proxy and is seen as the network's gateway
   (`172.30.0.1`). They then share one login count per address: 20 failures by any of them
   answer `429` to all of them. The measurement above used a test network, not published ports.
-  `feat/deploy-machine` fixes it (IPv6 on the network, or an IPv4-only machine).
+  The server does not have this problem: it is IPv4 only and runs Kubernetes, and the real run
+  saw the browser's own address (3.27). It stays for Compose under Docker Desktop, or on an
+  IPv6 host.
 - **HSTS on `localhost`.** With `SITE_ADDRESS=localhost` the browser keeps using HTTPS for every
   `localhost` port for a year, so the development server must be opened as
   `http://127.0.0.1:5173` (as the README says), not `localhost:5173`.
@@ -6074,8 +6082,8 @@ be different versions.
 The whole app, described as Kubernetes files that Argo CD will keep the server equal to. One base
 holds what every environment shares, and two overlays hold what differs: `local` for a throwaway
 cluster, `prod` for the server. Every pull request renders both, checks them, and starts `local` in
-a real small cluster. Nothing runs on a server yet: `feat/cluster` does that. Built in
-`feat/k8s-manifests` (Stage 6). No migration, no model call.
+a real small cluster. The server that runs `prod` is in 3.27. Built in `feat/k8s-manifests`
+(Stage 6). No migration, no model call.
 
 ### The code
 
@@ -6109,9 +6117,12 @@ Argo CD applies one wave at a time, lowest first:
 | 1 | The API, web and Caddy's volume |
 
 A `PreSync` hook was the first plan. It runs before everything else, so on the very first sync the
-migration would start with no database. During a migration the old API keeps running. The Job is
-not retried (`backoffLimit: 0`) and stops after 10 minutes. A new commit starts a new sync, and so
-a new migration Job, which a failure stops in the same way.
+migration would start with no database. During a migration the old API keeps running. The Job
+itself is not retried (`backoffLimit: 0`) and stops after 10 minutes, but **Argo CD retries the
+whole failed sync** (3.5 does this by default, with no `retry` in our policy), and each retry
+creates a new migration Job. A new commit starts a new sync too. A failure stops each of them in
+the same way, before wave 1. Seen on the server (3.27): 4 retries, the API never moved, and once
+the cause was undone the next retry went through by itself.
 
 ### What each container may do
 
@@ -6157,7 +6168,7 @@ the rule weakens the login limit too.
 
 | Where | What |
 |---|---|
-| Secret `app-secrets` (sealed in `feat/cluster`) | `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` |
+| Secret `app-secrets` (sealed in `overlays/prod/app-secrets.sealed.yaml`, 3.27) | `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` |
 | ConfigMap `app-config` | Everything else: model names, URLs, prices, budget, site name, pod range |
 | ConfigMap `win-model` (made by hand) | `win_model.joblib`, `win_model.json` |
 
@@ -6210,44 +6221,163 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 - **A pod other than `web` is refused by `api` in `kind`** (same local run). Under a temporary rule
   the probe connected; with that rule gone it timed out. A broken probe failing the step was not
   seen.
+- **First CI run of both jobs** (PR #100 on 696256d, runs 41337851595 and 41337851615): `manifests`
+  and `smoke` passed on Linux amd64 with kubectl 1.37.1 and kustomize 5.8.3. `smoke` took 4 minutes
+  and its refusal step passed; zizmor had no findings on the new steps. Since then `smoke` runs on
+  `kindest/node:v1.36.4` and `manifests` checks against 1.36.5, to match the server's k3s (3.27);
+  `smoke` has not run on 1.36 in CI yet.
+- **Trivy on the raw files.** The `trivy` job reads `deploy/k8s/base` as plain files, before an
+  overlay, and found 0 HIGH or CRITICAL. Besides the MEDIUM and LOW ids above it reports KSV-0013
+  (an image with no digest) 3 times and KSV-0110 (the `default` namespace) 5 times. Both are true
+  of the raw base only: the overlays add the digests and Kustomize sets the namespace, and the
+  rendered check (`manifests`) does not report them. They arrive as review threads on a pull
+  request that touches `deploy/k8s`, and the ruleset blocks the merge until they are resolved.
+- **On k3s** (2026-11-02): the sync order, a failing migration, the refusal and the pod range were
+  all seen on the server (3.27).
 - **uvicorn 0.54.0 reads the pod range.** A test gives the overlay's value to its real middleware:
   a pod of the range is believed, an outside address is not. `lock-tests` runs it on the locked
   version.
 
 ### Known limits
 
-- **Neither new job has run in CI.** The Linux downloads and zizmor's reading of the jobs are
-  unseen. The local smoke run used kubectl 1.36.1, not the job's 1.37.1.
-- **Neither job is required yet.** Both go in the ruleset by hand after a first green run. A bot
+- **Neither job is required yet.** Both have passed in CI; they go in the ruleset by hand. A bot
   deploy pull request then also builds both images, about 10 minutes more on each deploy.
-- **The sync order is unproven.** The smoke test uses `kubectl apply`, not Argo CD, so it proves the
-  manifests and not the waves. No sentence in the Argo CD docs says a failed `Sync` hook stops later
-  waves. The source says it does, read on `master` and not on the installed version. `feat/cluster`
-  must see one failing migration leave the API alone, or this choice comes back.
 - **A rollback past a migration is blocked.** The revert brings back an older image, its migration
-  Job runs `alembic upgrade head`, and that image does not know the newer revision. This was not
-  run; it is how alembic behaves. The Job should fail, wave 1 is not applied, and the bad API keeps
-  running. First run `alembic downgrade` from the newer image, then revert. `feat/cluster` must try
-  this once.
-- **`kind` is not k3s.** A different network plugin enforces the policies, so they are unproven on
-  the server. The k3s pod range `10.42.0.0/16` is from memory: read it there before the first
-  sign-in.
+  Job runs `alembic upgrade head`, and that image does not know the newer revision. The Job fails,
+  wave 1 is not applied, and the API keeps running the newer image, while Argo CD retries the sync
+  and fails each time. First run `alembic downgrade` from the newer image, then revert. Seen on the
+  server with a made-up revision, not with a real older image (3.27).
+- **`kind` drops, k3s rejects.** Both enforce the network rules, but with different plugins: a
+  refused connection times out in `kind` and is rejected at once on k3s. The smoke test accepts
+  both.
 - **No test sends a forged address end to end.** `smoke` shows the refusal and a test shows what
-  uvicorn believes, but no run sends a forged header through a real cluster. The refusal also has
-  to be seen once on k3s.
+  uvicorn believes, but no run sends a forged header through a real cluster.
 - **Without valid model files the API crashes at startup.** A missing ConfigMap makes the pod wait,
   with the reason in `kubectl describe pod`. A ConfigMap with missing or bad files gives a crash
   loop.
 - **The model ConfigMap is outside git.** A rebuilt cluster needs it made again, and Argo CD neither
   checks nor restores it. A model near 1 MiB needs another way.
-- **The API crash-loops during a first migration on `kubectl apply`.** Argo CD's waves should
-  prevent this, which is the unproven part above.
-- **The first `SealedSecret` fails `manifests`.** It has no schema, and `feat/cluster` must give it
-  one or skip that one kind by name.
-- **`prod` cannot start yet.** `app-secrets` is not in its resources until `feat/cluster` seals it.
+- **The API crash-loops during a first migration on `kubectl apply`.** Only the smoke test applies
+  this way; Argo CD's waves prevent it on the server.
+- **`manifests` does not check the `SealedSecret`.** kubeconform skips that one kind by name
+  (`bitnami.com/v1alpha1/SealedSecret`), since it has no schema; any other unknown kind still fails.
 - **`web` keeps one added capability.**
 - **Hand-kept pins.** The kind, kubectl, kustomize and kubeconform versions and hashes, the node
   image and the Kubernetes version are changed by hand. Dependabot does not read `deploy/k8s/`, so
   a test keeps the `db` image equal to the one in `deploy/prod/compose.yml`, which it does read.
 - **Compose stays as the fallback.** `deploy/prod/compose.yml` and the images did not change, so a
   setting added to one must be added to the other by hand.
+
+## 3.27 Running on the server
+
+The app is served at `https://denial-appeal.duckdns.org` from one Oracle machine running k3s. Argo
+CD on the same machine keeps it equal to the `prod` overlay (3.26), and Sealed Secrets opens its
+secret. The user ran every command on the server; nothing in the repository logs in to it. Built in
+`feat/cluster` (Stage 6). No migration; the real run made 4 model calls ($0.001617).
+
+### The code
+
+| File | What it does |
+|---|---|
+| `deploy/k8s/addons/argocd/kustomization.yaml` | Argo CD v3.5.6: its three images by digest; the upstream `install.yaml` is downloaded beside it and checked by the sha256 in its comment, not committed |
+| `deploy/k8s/addons/sealed-secrets/kustomization.yaml` | Sealed Secrets 0.40.0, the same way, from the release's `controller.yaml` |
+| `deploy/k8s/overlays/prod/app-secrets.sealed.yaml` | The 10 secret values of 3.26, encrypted for this server's controller only, strict scope (name and namespace fixed), wave -2 |
+| `deploy/k8s/base/namespace.yaml` | Now `Prune=false`, so removing the file from git cannot delete the namespace and the database volume |
+| `src/db/session.py` | `check_database`: `/health` on a new connection of its own (3.23) |
+| `src/config/log_setup.py` | The API's own log lines at `LOG_LEVEL`, everything else at `WARNING`, so `kubectl logs` shows them |
+| `src/api/mail.py` | A failed email logs the SMTP code (`SMTPAuthenticationError (code 525)`), never the server's text |
+| `tests/deploy/test_k8s_addons.py` | Pins the add-on versions, digests and checksums, and that the upstream files stay out of git |
+
+The add-ons are applied once by hand and Argo CD does not manage them, so Argo CD cannot delete
+itself or the key that opens the secret.
+
+### The machine
+
+| | |
+|---|---|
+| Machine | Oracle Always Free `VM.Standard.A1.Flex`, 2 OCPU, 12 GB, home region India West (Mumbai) |
+| System | Ubuntu 24.04 arm64, boot volume 100 GB, security updates on, no automatic reboot |
+| Kubernetes | k3s v1.36.5+k3s1 with `--disable traefik`; pod range 10.42.0.0/24 as seen (inside the overlay's 10.42.0.0/16) |
+| Address | 132.226.190.132, not reserved; DuckDNS points `denial-appeal.duckdns.org` at it |
+| Firewall | The Oracle Security List: in 22 (SSH by key only), 80, 443 and UDP 443. The two iptables `REJECT` lines of Oracle's Ubuntu image are removed, since they broke pod traffic |
+| Disk | Encrypted by Oracle (AES-256) with Oracle's keys |
+| Network | IPv4 only |
+
+### First start, in order
+
+The order matters, and it is not the one first planned: the evidence copy needs the tables that
+`migrate` makes, and the model ConfigMap needs the namespace.
+
+1. Install k3s, then Sealed Secrets and Argo CD from `deploy/k8s/addons/` (Argo CD with
+   `kubectl apply --server-side`: its custom resources are too large for a plain apply).
+2. On the Mac, fetch the controller's certificate over SSH (port 6443 stays closed), fill a copy of
+   `app-secrets.example.yaml` outside the repository and seal it with `kubeseal`. Commit only the
+   sealed file.
+3. Outside the cluster: the public redirect URL in the Google client, the Brevo key and the
+   machine's address authorised in Brevo.
+4. Create the namespace and the `win-model` ConfigMap by hand. Without the ConfigMap the API pod
+   waits.
+5. Apply the `Application`. Argo CD syncs: the secret is opened, `migrate` runs, then the API and
+   web.
+6. Copy the three evidence tables from the development database (`pg_dump --data-only` piped over
+   SSH into `psql` in `db-0`, in one transaction) and check 952 / 2,873 / 2,873 rows.
+
+During this branch the cluster's copy of the `Application` follows `feat/cluster`, because the
+sealed file reaches `main` only at the merge. After the merge it is switched to `main`, the file
+in the repository.
+
+### Why it is built this way
+
+- **k3s 1.36, not 1.37.** Argo CD 3.5 is tested up to Kubernetes 1.36, and 1.36.5 is k3s's own
+  stable channel. The `smoke` and `manifests` jobs moved to 1.36 so CI checks the version that runs.
+- **One small machine with lots of room.** k3s, Argo CD, Sealed Secrets and the app use about 1.8
+  GiB of 12 GB, so there are no swap and no tighter limits.
+- **The add-on files are not committed.** About 1.9 MB of someone else's YAML would raise Trivy
+  review threads that block every merge (3.26). The checksum in each comment proves the download.
+- **Sealed on the Mac.** The real values never enter the repository or a chat; only the encrypted
+  file does. Strict scope means the file opens only as `app-secrets` in this namespace.
+- **No extra disk encryption.** LUKS needs a passphrase at every reboot, so the site would not come
+  back alone. A key in Oracle Vault or k3s secrets encryption adds nothing against someone on the
+  running machine.
+- **The free account.** Pay As You Go only if A1 keeps answering "out of capacity"; then a small
+  Oracle budget alert at once.
+- **Argo CD's sync retry is left at its default.** A retried sync runs `migrate` again, which is
+  harmless (a migration that already ran does nothing), and after the failed migration below it is
+  what brought the site up again with no one touching it.
+
+### Measured (2026-11-02)
+
+| | |
+|---|---|
+| Sync | `Synced Healthy Succeeded`; `app-secrets` opened with 10 keys; `migrate` 50 s; `api`, `web`, `db` 1/1 with 0 restarts |
+| Site | `https://denial-appeal.duckdns.org/health` `200` with a Let's Encrypt certificate |
+| Browser run | Email sign-up (Brevo code arrived), a wrong password then login, upload to draft ready in about 15 s (target under 120 s), approved; Google sign-in worked |
+| Model calls | 4, $0.001617 |
+| Client address | Both `login_failures` rows hold the browser's public address; none hold the `web` pod's or 10.42.0.1. So k3s's ServiceLB with `externalTrafficPolicy: Local` keeps the visitor's address |
+| Network rules | The `probe` pod from `deploy/k8s/smoke/` reached `api` under a temporary rule; without it the connection was **rejected at once** (`ConnectionRefusedError`), where `kind` times out. `web` still reached `api` |
+| Ports from outside | 22, 80, 443 open; 6443 and 10250 no answer (UDP 8472 not testable with `nc`) |
+| Memory | Node 1,783 MiB (14%), CPU 5%; `api` 185 MiB, `db` 66 MiB, Argo CD about 200 MiB |
+| Failed migration | `alembic_version` set to a made-up revision, then a new API digest synced (0f6ec20): `migrate` failed with "Can't locate revision", the API stayed on its pod and old digest, and the site answered `200` throughout. Argo CD retried the sync 4 times. With the row put back, the next retry passed: `migrate` 6 s, new API and web pods on the new digests |
+| Reboot | Back in about 3 minutes with no one touching it: node Ready, all three pods 1/1 (1 restart each), `200`, the certificate kept |
+| Cost | Oracle Cost analysis $0 |
+
+### Known limits
+
+- **No backups and no alerts yet.** The database is one volume on one disk, and the Sealed Secrets
+  key exists only on the server: a lost machine means sealing every value again.
+  `feat/backup-and-alerts` adds both. Until then `INDIVIDUAL_SIGNUP_ENABLED` stays `false`.
+- **Oracle may reclaim an idle machine.** Its rule is CPU, network and memory all under 20% for 7
+  days; memory sits at 14% and CPU at 5%. The uptime check in `feat/backup-and-alerts` would report
+  it; Pay As You Go may avoid it.
+- **The address is not reserved.** A new machine gets a new one, and DuckDNS and Brevo must be
+  changed by hand.
+- **The served images lack this branch's three fixes until the merge.** The server runs the 536c65d
+  images; `/health` on a new connection, the log lines and the SMTP code arrive with the first build
+  after the merge. Recheck `/health` and the API's log lines then.
+- **The add-ons are kept by hand.** Argo CD does not manage them and Dependabot does not read them;
+  new versions are a manual change. Argo CD v3.5.6 was installed at 13 days old, one day under the
+  two-week rule, by the user's choice.
+- **The model ConfigMap and the evidence tables are copied by hand,** as in 3.26.
+- **The failed-migration test used a made-up revision,** not a real older image: no published image
+  is older than a migration.
+- **One person, one network.** The browser run and the port checks came from one place.

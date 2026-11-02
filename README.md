@@ -70,8 +70,9 @@ rules, scoring, evidence and drafting, lets a reviewer edit the draft and an adm
 reject it. Each user sees only the letters they uploaded; an admin sees them all. The web
 dashboard covers all of it in the browser: sign-up, login, the upload, the worklist, the
 denial beside its draft, the review, and an overview. A user can also change or reset a
-password, confirm their email with a 6-digit code, and sign in with Google. See the
-[build plan](docs/05-build-plan.md).
+password, confirm their email with a 6-digit code, and sign in with Google. It is served at
+`https://denial-appeal.duckdns.org` from one small Oracle machine running k3s and Argo CD;
+backups and alerts come next. See the [build plan](docs/05-build-plan.md).
 
 ## Running it locally
 
@@ -285,6 +286,21 @@ A pod reads its settings and the model once, at start, so after changing `app-co
 ```
 kubectl -n denial-appeal-agent rollout restart deployment/api
 ```
+
+### The server
+
+Production is one Oracle A1 machine with k3s, Sealed Secrets and Argo CD, pinned in
+`deploy/k8s/addons/`. Argo CD keeps it equal to `deploy/k8s/overlays/prod` on `main`, so a merged
+deploy pull request (see "Publishing the images") is a deploy. The machine, the first start in
+order, and what was measured are in architecture
+[3.27](docs/03-architecture.md#327-running-on-the-server). The first start has a fixed order:
+namespace and `win-model`, then the sync, then the evidence tables.
+
+- **Secrets** are in `deploy/k8s/overlays/prod/app-secrets.sealed.yaml`, which only this server's
+  controller can open. To change one value, fill a copy of `app-secrets.example.yaml` outside the
+  repository and seal the whole file again with `kubeseal`.
+- **A failed migration** stops the sync before the API is replaced, and Argo CD retries the sync
+  by itself. Fix the cause and the next retry goes through.
 
 ## How work is split across machines
 

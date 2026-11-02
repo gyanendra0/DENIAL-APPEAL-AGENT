@@ -301,6 +301,8 @@ namespace and `win-model`, then the sync, then the evidence tables.
   repository and seal the whole file again with `kubeseal`.
 - **A failed migration** stops the sync before the API is replaced, and Argo CD retries the sync
   by itself. Fix the cause and the next retry goes through.
+- **Argo CD looks at `main` every 3 minutes.** To make it fetch at once:
+  `kubectl -n argocd annotate application denial-appeal-agent argocd.argoproj.io/refresh=normal --overwrite`.
 
 ## How work is split across machines
 

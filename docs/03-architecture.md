@@ -6224,8 +6224,8 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 - **First CI run of both jobs** (PR #100 on 696256d, runs 41337851595 and 41337851615): `manifests`
   and `smoke` passed on Linux amd64 with kubectl 1.37.1 and kustomize 5.8.3. `smoke` took 4 minutes
   and its refusal step passed; zizmor had no findings on the new steps. Since then `smoke` runs on
-  `kindest/node:v1.36.4` and `manifests` checks against 1.36.5, to match the server's k3s (3.27);
-  `smoke` has not run on 1.36 in CI yet.
+  `kindest/node:v1.36.4` and `manifests` checks against 1.36.5, to match the server's k3s (3.27).
+  `smoke` first ran on 1.36 in CI on the f901875 deploy PR (#105) and passed.
 - **Trivy on the raw files.** The `trivy` job reads `deploy/k8s/base` as plain files, before an
   overlay, and found 0 HIGH or CRITICAL. Besides the MEDIUM and LOW ids above it reports KSV-0013
   (an image with no digest) 3 times and KSV-0110 (the `default` namespace) 5 times. Both are true
@@ -6273,7 +6273,8 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 The app is served at `https://denial-appeal.duckdns.org` from one Oracle machine running k3s. Argo
 CD on the same machine keeps it equal to the `prod` overlay (3.26), and Sealed Secrets opens its
 secret. The user ran every command on the server; nothing in the repository logs in to it. Built in
-`feat/cluster` (Stage 6). No migration; the real run made 4 model calls ($0.001617).
+`feat/cluster` (Stage 6) and checked on `main` in `chore/cluster-on-main`. No migration; the real
+run made 4 model calls ($0.001617).
 
 ### The code
 
@@ -6322,9 +6323,9 @@ The order matters, and it is not the one first planned: the evidence copy needs 
 6. Copy the three evidence tables from the development database (`pg_dump --data-only` piped over
    SSH into `psql` in `db-0`, in one transaction) and check 952 / 2,873 / 2,873 rows.
 
-During this branch the cluster's copy of the `Application` follows `feat/cluster`, because the
-sealed file reaches `main` only at the merge. After the merge it is switched to `main`, the file
-in the repository.
+During `feat/cluster` the cluster's copy of the `Application` followed that branch, because the
+sealed file reached `main` only at the merge. Since the merge it follows `main`: the committed file
+already said `main`, so applying it on the server was the only step.
 
 ### Why it is built this way
 
@@ -6360,6 +6361,8 @@ in the repository.
 | Failed migration | `alembic_version` set to a made-up revision, then a new API digest synced (0f6ec20): `migrate` failed with "Can't locate revision", the API stayed on its pod and old digest, and the site answered `200` throughout. Argo CD retried the sync 4 times. With the row put back, the next retry passed: `migrate` 6 s, new API and web pods on the new digests |
 | Reboot | Back in about 3 minutes with no one touching it: node Ready, all three pods 1/1 (1 restart each), `200`, the certificate kept |
 | Cost | Oracle Cost analysis $0 |
+| On `main` | The bot deploy PR #105 for f901875 merged itself as d00e9c0 after all 10 checks passed. Argo CD looks at git every 3 minutes; a `refresh=normal` annotation made it fetch at once: `Synced Healthy` on d00e9c0, a new `migrate` Job, `api` and `web` 1/1 on the new digests with 0 restarts, `/health` `200` |
+| Production log lines | With the server's address removed from Brevo, a password reset wrote `INFO password reset code made` and `INFO password reset asked`, then `ERROR src.api.mail: email failed: SMTPAuthenticationError (code 525)`, with no email address or server text. With the address put back, the email arrived |
 
 ### Known limits
 
@@ -6371,9 +6374,6 @@ in the repository.
   it; Pay As You Go may avoid it.
 - **The address is not reserved.** A new machine gets a new one, and DuckDNS and Brevo must be
   changed by hand.
-- **The served images lack this branch's three fixes until the merge.** The server runs the 536c65d
-  images; `/health` on a new connection, the log lines and the SMTP code arrive with the first build
-  after the merge. Recheck `/health` and the API's log lines then.
 - **The add-ons are kept by hand.** Argo CD does not manage them and Dependabot does not read them;
   new versions are a manual change. Argo CD v3.5.6 was installed at 13 days old, one day under the
   two-week rule, by the user's choice.

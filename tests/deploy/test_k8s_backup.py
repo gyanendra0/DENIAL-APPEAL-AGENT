@@ -1,6 +1,6 @@
-"""The nightly backup keeps its promises: one run a day at 03:00 UTC, never two at once, suspended
-until the real public key is in, a dump that fails leaves no file to upload, and each container
-gets only the secret it needs."""
+"""The nightly backup keeps its promises: one run a day at 03:00 UTC, never two at once, encrypted
+to the real public key, a dump that fails leaves no file to upload, and each container gets only
+the secret it needs."""
 
 import re
 import shutil
@@ -65,9 +65,12 @@ def test_the_backup_runs_once_a_day_at_three_utc_and_never_twice_at_once() -> No
     assert spec["jobTemplate"]["spec"]["activeDeadlineSeconds"] <= 3600
 
 
-def test_the_backup_stays_suspended_while_the_public_key_is_a_placeholder() -> None:
-    if "BEGIN PGP PUBLIC KEY BLOCK" not in PUBLIC_KEY.read_text():
-        assert _cronjob()["spec"]["suspend"] is True
+def test_the_backup_runs_with_a_real_public_key_and_never_a_private_one() -> None:
+    text = PUBLIC_KEY.read_text()
+    assert text.startswith("-----BEGIN PGP PUBLIC KEY BLOCK-----\n")
+    assert text.rstrip().endswith("-----END PGP PUBLIC KEY BLOCK-----")
+    assert "PRIVATE" not in text
+    assert _cronjob()["spec"]["suspend"] is False
 
 
 def test_the_script_and_the_key_are_mounted_from_the_generated_files() -> None:
@@ -105,6 +108,14 @@ def test_the_upload_runs_the_pinned_rclone_with_only_the_bucket_keys() -> None:
     ]
     assert "env" not in upload
     assert upload["args"][:3] == ["copy", "/backup", "oci:$(BACKUP_BUCKET)/app"]
+
+
+def test_the_upload_only_puts_the_file_and_never_reads_the_bucket() -> None:
+    # The bucket keys may create and list objects, not read them: a check of the file before or
+    # after the upload would be refused.
+    args = _upload()["args"]
+    assert "--no-check-dest" in args
+    assert "--s3-no-head" in args
 
 
 def test_the_upload_only_reads_the_dump() -> None:

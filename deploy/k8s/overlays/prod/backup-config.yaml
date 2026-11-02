@@ -1,0 +1,11 @@
+# The production bucket: OCI's S3-compatible endpoint of this tenancy's Object Storage namespace,
+# in the home region (Mumbai). The bucket sits in the root compartment, the one the S3 API is
+# designated to. None of this is secret; the keys are in `backup-secrets.sealed.yaml`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+data:
+  RCLONE_CONFIG_OCI_REGION: ap-mumbai-1
+  RCLONE_CONFIG_OCI_ENDPOINT: https://bm2h2fjggdz0.compat.objectstorage.ap-mumbai-1.oci.customer-oci.com
+  BACKUP_BUCKET: denial-appeal-backups

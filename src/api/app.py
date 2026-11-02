@@ -29,6 +29,7 @@ from src.api.routes import (
     verify_email,
 )
 from src.api.upload_limit import UploadSizeLimit
+from src.config.log_setup import configure_logging
 from src.config.settings import (
     ApiSettings,
     get_settings,
@@ -99,8 +100,11 @@ def create_app(
     missing LLM key, a missing model file or a mail setup that cannot send fails here, at
     startup. A missing `APP_PUBLIC_URL` fails here too, whatever is passed in. When Google
     sign-in is configured, `google_http` makes the calls to Google (by default a new client).
+    Logging is set up only when the settings come from the environment, as in a real start.
     """
     settings = api_settings if api_settings is not None else load_api_settings()
+    if api_settings is None:
+        configure_logging(get_settings().log_level)
     if settings.app_public_url is None:
         raise ValueError("APP_PUBLIC_URL is not set; Google sign-in addresses are built from it")
     sender = mail_sender if mail_sender is not None else build_mail_sender(settings)

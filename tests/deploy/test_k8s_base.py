@@ -81,6 +81,11 @@ def test_the_sync_runs_the_namespace_then_the_database_then_the_migration() -> N
     assert _wave("Service", "db") == _wave("StatefulSet", "db")
 
 
+def test_argo_cd_never_deletes_the_namespace_and_the_database_with_it() -> None:
+    annotations = _object("Namespace", "denial-appeal-agent")["metadata"]["annotations"]
+    assert annotations["argocd.argoproj.io/sync-options"] == "Prune=false"
+
+
 def test_the_settings_exist_before_anything_reads_them() -> None:
     assert _wave("ConfigMap", "app-config") == _wave("Namespace", "denial-appeal-agent")
 
@@ -355,7 +360,7 @@ def test_no_secret_value_is_written_in_the_files() -> None:
 
 def test_prod_uses_the_base_and_pins_every_published_image_by_digest() -> None:
     overlay = yaml.safe_load(PROD_KUSTOMIZATION.read_text())
-    assert overlay["resources"] == ["../../base"]
+    assert "../../base" in overlay["resources"]
     for image in overlay["images"]:
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"])
     pinned = {image["name"] for image in overlay["images"]}
@@ -371,4 +376,4 @@ def test_the_deploy_script_changes_only_the_digests_of_the_overlay() -> None:
     written = yaml.safe_load(set_digests(text, digests))
 
     assert {image["name"]: image["digest"] for image in written["images"]} == digests
-    assert written["resources"] == ["../../base"]
+    assert "../../base" in written["resources"]

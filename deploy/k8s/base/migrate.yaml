@@ -1,7 +1,9 @@
-# Runs `alembic upgrade head` once per sync, after the database and before the API. It is never
+# Runs `alembic upgrade head` once per sync, after the database and before the API. The Job is not
 # retried: a failed migration stops with its error in the logs and the data as the migration left
-# it. Migrations read only DATABASE_URL, so the Job gets no other secret. It is the API image, and
-# a deploy moves both digests together, so the migration and the API are always the same version.
+# it, and the API is not replaced. Argo CD does retry a failed sync, by default, and each retry runs
+# this Job again (harmless: a migration that already ran does nothing). Migrations read only
+# DATABASE_URL, so the Job gets no other secret. It is the API image, and a deploy moves both
+# digests together, so the migration and the API are always the same version.
 apiVersion: batch/v1
 kind: Job
 metadata:

@@ -1,0 +1,13 @@
+# Sealed Secrets 0.40.0, applied once by hand with `kubectl apply -k`. `controller.yaml` is not
+# committed; download it next to this file first:
+#   https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.40.0/controller.yaml
+#   sha256:ac8aabccdd9110430d117501705818115b2ab0993700a9c118d4d42cf4015a17
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - controller.yaml
+
+images:
+  - name: docker.io/bitnami/sealed-secrets-controller
+    digest: sha256:b1ff382e9300dc9e74991f3177b18cafc06ce43b5c21349c86adbdd1d1c177d3

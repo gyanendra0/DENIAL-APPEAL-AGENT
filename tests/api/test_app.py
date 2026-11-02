@@ -2,6 +2,7 @@
 missing LLM key fails at startup, unfinished jobs are failed before the first request."""
 
 import asyncio
+import logging
 import os
 from collections.abc import Iterator
 from datetime import date
@@ -18,12 +19,13 @@ import src.api.app as app_module
 from src.api.app import answer_validation_error, create_app
 from src.api.google_oidc import GoogleOidc
 from src.api.mail import SmtpSender
+from src.config.log_setup import APP_LOGGER_NAME
 from src.config.settings import ApiSettings, get_settings
 from src.db.models import DatasetSplit, Job, JobFailure, JobStatus
 from src.jobs.run import JobContext
 from src.jobs.store import create_upload_job, start_job
 from src.ml.training import SplitFacts, save_win_model, train_win_model
-from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender
+from tests.api.conftest import BASE_URL, PUBLIC_URL, RecordingSender, api_settings
 from tests.api.fake_google import google_settings
 from tests.jobs.helpers import add_member, new_upload
 from tests.ml.made_up_rows import training_rows
@@ -99,6 +101,30 @@ def full_env(no_env_file: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("MODEL_DIR", str(model_dir))
     monkeypatch.setenv("PROMPT_DIR", str(PROMPT_DIR))
+
+
+@pytest.fixture
+def app_logger() -> Iterator[logging.Logger]:
+    """This codebase's parent logger, put back to its level after the test."""
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    level = logger.level
+    yield logger
+    logger.setLevel(level)
+
+
+@pytest.mark.usefixtures("full_env")
+def test_the_log_level_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, app_logger: logging.Logger
+) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "ERROR")
+    create_app()
+    assert app_logger.level == logging.ERROR
+
+
+def test_an_app_given_its_settings_leaves_logging_alone(app_logger: logging.Logger) -> None:
+    app_logger.setLevel(logging.CRITICAL)
+    create_app(api_settings(), sessionmaker(), _no_job, RecordingSender())
+    assert app_logger.level == logging.CRITICAL
 
 
 @pytest.mark.usefixtures("full_env")

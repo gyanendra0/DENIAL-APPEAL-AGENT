@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - app-secrets.sealed.yaml
 
 patches:
   - path: config.yaml

@@ -117,14 +117,17 @@ class SmtpSender:
 
 
 def send_quietly(sender: MailSender, message: MailMessage) -> None:
-    """Send `message`, logging a failure by its error class only (no address, no link).
+    """Send `message`, logging a failure by its error class and SMTP code only.
 
-    Runs after the answer was sent, so nobody is left to hear the error.
+    The server's text is left out: it can repeat the address. Runs after the answer was sent,
+    so nobody is left to hear the error.
     """
     try:
         sender.send(message)
     except (smtplib.SMTPException, OSError) as error:
-        logger.error("email failed: %s", type(error).__name__)
+        code = getattr(error, "smtp_code", None)
+        suffix = "" if code is None else f" (code {code})"
+        logger.error("email failed: %s%s", type(error).__name__, suffix)
 
 
 def build_mail_sender(settings: ApiSettings) -> MailSender:

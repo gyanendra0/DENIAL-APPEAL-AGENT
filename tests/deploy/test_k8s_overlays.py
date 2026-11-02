@@ -21,6 +21,7 @@ BASE_CONFIG = K8S / "base" / "config.yaml"
 POLICIES = K8S / "base" / "network-policies.yaml"
 OVERLAYS = K8S / "overlays"
 SECRET_TEMPLATE = OVERLAYS / "prod" / "app-secrets.example.yaml"
+BACKUP_SECRET_TEMPLATE = OVERLAYS / "prod" / "backup-secrets.example.yaml"
 SEALED_SECRET = OVERLAYS / "prod" / "app-secrets.sealed.yaml"
 APPLICATION = K8S / "argocd" / "application.yaml"
 METADATA_ADDRESS = ipaddress.ip_address("169.254.169.254")
@@ -210,6 +211,21 @@ def test_the_secret_template_holds_no_value() -> None:
 def test_an_empty_secret_can_never_reach_the_cluster() -> None:
     prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
     assert SECRET_TEMPLATE.name not in prod["resources"]
+    assert BACKUP_SECRET_TEMPLATE.name not in prod["resources"]
+
+
+def test_the_backup_keys_have_their_own_template_with_no_value() -> None:
+    template = yaml.safe_load(BACKUP_SECRET_TEMPLATE.read_text())
+    assert (template["metadata"]["name"], template["metadata"]["namespace"]) == (
+        "backup-secrets",
+        "denial-appeal-agent",
+    )
+    assert template["stringData"] == {
+        "RCLONE_CONFIG_OCI_ACCESS_KEY_ID": "",
+        "RCLONE_CONFIG_OCI_SECRET_ACCESS_KEY": "",
+    }
+    # The API reads `app-secrets` whole, so the bucket keys must never be added there.
+    assert not set(template["stringData"]) & _secret_keys()
 
 
 def test_production_gets_the_sealed_secret() -> None:
@@ -242,7 +258,7 @@ def test_the_sealed_secret_holds_every_key_of_the_template_and_no_plain_value() 
 
 
 def test_the_template_has_every_key_the_pods_read_by_name() -> None:
-    for name in ("api.yaml", "migrate.yaml"):
+    for name in ("api.yaml", "migrate.yaml", "backup.yaml"):
         text = (K8S / "base" / name).read_text()
         assert set(re.findall(r"key: ([A-Z_]+)", text)) <= _secret_keys()
 
@@ -254,12 +270,12 @@ def test_a_pod_with_no_rule_can_do_nothing() -> None:
 
 def test_no_rule_exists_beyond_the_ones_tested_here() -> None:
     # Rules add up, and one with an empty selector would open every pod.
-    assert set(_policies()) == {"default-deny", "web", "api", "migrate", "db"}
+    assert set(_policies()) == {"default-deny", "web", "api", "migrate", "backup", "db"}
 
 
 def test_every_app_has_a_rule_that_limits_both_directions() -> None:
     policies = _policies()
-    for name in ("web", "api", "migrate", "db"):
+    for name in ("web", "api", "migrate", "backup", "db"):
         spec = policies[name]["spec"]
         assert spec["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": name}
         assert spec["policyTypes"] == ["Ingress", "Egress"]
@@ -276,9 +292,9 @@ def test_only_the_web_reaches_the_api_and_only_on_its_port() -> None:
     assert _policies_selecting("api") == ["api"]
 
 
-def test_only_the_api_and_the_migration_reach_the_database() -> None:
+def test_only_the_api_the_migration_and_the_backup_reach_the_database() -> None:
     rules = _policies()["db"]["spec"]["ingress"]
-    assert rules == [{"from": _pods_named("api", "migrate"), "ports": [{"port": 5432}]}]
+    assert rules == [{"from": _pods_named("api", "migrate", "backup"), "ports": [{"port": 5432}]}]
     assert _policies_selecting("db") == ["db"]
 
 
@@ -292,6 +308,11 @@ def test_nothing_reaches_the_migration_and_it_has_no_internet() -> None:
     assert not _ip_blocks(migrate)
 
 
+def test_nothing_reaches_the_backup() -> None:
+    assert "ingress" not in _policies()["backup"]["spec"]
+    assert _policies_selecting("backup") == ["backup"]
+
+
 def test_anyone_may_reach_the_web_on_the_ports_of_its_service() -> None:
     rules = _policies()["web"]["spec"]["ingress"]
     assert len(rules) == 1
@@ -300,13 +321,15 @@ def test_anyone_may_reach_the_web_on_the_ports_of_its_service() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "ports"), [("web", {80, 443}), ("api", {443, 587})], ids=["web", "api"]
+    ("name", "ports"),
+    [("web", {80, 443}), ("api", {443, 587}), ("backup", {443})],
+    ids=["web", "api", "backup"],
 )
 def test_the_internet_is_open_only_on_the_ports_each_app_uses(name: str, ports: set[int]) -> None:
     assert _internet_ports(_policies()[name]) == ports
 
 
-@pytest.mark.parametrize("name", ["web", "api"])
+@pytest.mark.parametrize("name", ["web", "api", "backup"])
 def test_the_internet_rule_cannot_reach_the_metadata_address_or_a_pod(name: str) -> None:
     blocks = _ip_blocks(_policies()[name])
     assert blocks

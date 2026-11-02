@@ -11,3 +11,16 @@ resources:
 images:
   - name: docker.io/bitnami/sealed-secrets-controller
     digest: sha256:b1ff382e9300dc9e74991f3177b18cafc06ce43b5c21349c86adbdd1d1c177d3
+
+# The controller makes a new sealing key every 30 days by default, and a saved copy of the key would
+# not open files sealed after that. Renewal off, so the one exported copy stays enough. The
+# release's container has `args: []` (`command: [controller]`), so the list is replaced whole.
+patches:
+  - target:
+      kind: Deployment
+      name: sealed-secrets-controller
+      namespace: kube-system
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value: ["--key-renew-period=0"]

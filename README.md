@@ -71,8 +71,9 @@ reject it. Each user sees only the letters they uploaded; an admin sees them all
 dashboard covers all of it in the browser: sign-up, login, the upload, the worklist, the
 denial beside its draft, the review, and an overview. A user can also change or reset a
 password, confirm their email with a 6-digit code, and sign in with Google. It is served at
-`https://denial-appeal.duckdns.org` from one small Oracle machine running k3s and Argo CD;
-backups and alerts come next. See the [build plan](docs/05-build-plan.md).
+`https://denial-appeal.duckdns.org` from one small Oracle machine running k3s and Argo CD, with a
+nightly encrypted backup off the machine and an uptime alert; a setup guide comes next. See the
+[build plan](docs/05-build-plan.md).
 
 ## Running it locally
 
@@ -150,7 +151,7 @@ You need Docker and the trained model files in `models/`.
 
 1. Make the settings file `deploy/prod/.env` (never committed) from `.env.example`. Beside the
    usual keys (including `SHARED_ACCOUNT_NAME` and `ADMIN_EMAILS`; keep
-   `INDIVIDUAL_SIGNUP_ENABLED=false` until backups run), set `POSTGRES_PASSWORD`
+   `INDIVIDUAL_SIGNUP_ENABLED=false`: Compose has no backups), set `POSTGRES_PASSWORD`
    (URL-safe: `openssl rand -hex 24`), `SITE_ADDRESS=localhost` and
    `APP_PUBLIC_URL=https://localhost`. The site is served over HTTPS, so keep
    `AUTH_COOKIE_SECURE=true` and set `MAIL_BACKEND=smtp` with the `MAIL_SMTP_*` and `MAIL_FROM`
@@ -225,9 +226,9 @@ Three things are set by hand in GitHub, once:
    run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
    `deploy/api/.python-version` and stays on Python 3.11, and that it reads
    `deploy/prod/compose.yml`.
-4. **After the first green run of `manifests` and `smoke`:** add both to the required checks in the
-   same way. A bot deploy pull request then also builds both images, about 10 minutes more on
-   each deploy.
+4. **After the first green run of `manifests`, `smoke` and `backup-restore`:** add all three to the
+   required checks in the same way. A bot deploy pull request then also builds both images, about
+   10 minutes more on each deploy.
 
 ## Publishing the images
 
@@ -303,6 +304,27 @@ namespace and `win-model`, then the sync, then the evidence tables.
   by itself. Fix the cause and the next retry goes through.
 - **Argo CD looks at `main` every 3 minutes.** To make it fetch at once:
   `kubectl -n argocd annotate application denial-appeal-agent argocd.argoproj.io/refresh=normal --overwrite`.
+
+### Backups and alerts
+
+Every night at 03:00 UTC the CronJob `backup` dumps the database, encrypts it to the gpg public key
+in `deploy/k8s/base/backup/` and uploads it to an Oracle Object Storage bucket, which deletes each
+dump after 30 days. The server's bucket key can add a dump but not read, overwrite or delete one,
+and the private key that opens a dump is never on the server. UptimeRobot checks `/health` every
+5 minutes and emails when it fails. How and why, and what was measured: architecture
+[3.28](docs/03-architecture.md#328-backups-and-alerts).
+
+- **Run a backup now** (only if no dump exists yet for that UTC date: a second one is refused as an
+  overwrite, and a hand run before 03:00 UTC makes that night's run fail):
+  `kubectl -n denial-appeal-agent create job --from=cronjob/backup backup-now`.
+- **Last runs:** `kubectl -n denial-appeal-agent get jobs`.
+- **Restore** a downloaded dump into a new database with `deploy/k8s/base/backup/restore.sh`, run
+  in the pinned db image (it has `gpg`) with `docker run -it`, since gpg asks for the key's
+  passphrase on the terminal; it never writes over an existing database. Compare
+  `row-counts.sql` on both sides. The job `backup-restore` in `.github/workflows/checks.yml` is the
+  tested example.
+- **Monthly check** (on the 1st): Oracle Cost analysis, last month's `sum(cost_usd)` in
+  `llm_calls`, and the bucket's size and newest dump.
 
 ## How work is split across machines
 

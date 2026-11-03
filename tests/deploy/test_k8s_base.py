@@ -36,7 +36,9 @@ def _object(kind: str, name: str) -> dict[str, Any]:
 
 
 def _pod_specs() -> list[dict[str, Any]]:
-    return [o["spec"]["template"]["spec"] for o in _objects() if "template" in o.get("spec", {})]
+    pods = [o["spec"]["template"]["spec"] for o in _objects() if "template" in o.get("spec", {})]
+    jobs = [o["spec"]["jobTemplate"]["spec"] for o in _objects() if o["kind"] == "CronJob"]
+    return pods + [job["template"]["spec"] for job in jobs]
 
 
 def _containers(pod: dict[str, Any]) -> list[dict[str, Any]]:
@@ -88,6 +90,7 @@ def test_argo_cd_never_deletes_the_namespace_and_the_database_with_it() -> None:
 
 def test_the_settings_exist_before_anything_reads_them() -> None:
     assert _wave("ConfigMap", "app-config") == _wave("Namespace", "denial-appeal-agent")
+    assert _wave("ConfigMap", "backup-config") == _wave("Namespace", "denial-appeal-agent")
 
 
 def test_the_api_and_web_start_after_the_migration() -> None:
@@ -165,8 +168,10 @@ def test_the_database_image_is_the_one_in_the_compose_file() -> None:
     assert re.search(r"@sha256:[0-9a-f]{64}$", pinned)
     database = _object("StatefulSet", "db")["spec"]["template"]["spec"]["containers"][0]
     wait = _object("Job", "migrate")["spec"]["template"]["spec"]["initContainers"][0]
+    backup = _object("CronJob", "backup")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert database["image"] == pinned
     assert wait["image"] == pinned
+    assert [c["image"] for c in backup["initContainers"]] == [pinned, pinned]
 
 
 def test_the_database_keeps_its_data_in_a_subfolder_of_a_kept_volume() -> None:

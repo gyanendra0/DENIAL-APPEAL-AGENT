@@ -79,5 +79,23 @@ def test_downloaded_addon_file_is_left_out_of_git(
     assert f"deploy/k8s/addons/{folder}/{upstream}" in ignored
 
 
+def test_sealed_secrets_never_renews_its_key_so_one_saved_copy_opens_every_file() -> None:
+    patches = _kustomization("sealed-secrets")["patches"]
+
+    assert len(patches) == 1
+    assert patches[0]["target"] == {
+        "kind": "Deployment",
+        "name": "sealed-secrets-controller",
+        "namespace": "kube-system",
+    }
+    assert yaml.safe_load(patches[0]["patch"]) == [
+        {
+            "op": "replace",
+            "path": "/spec/template/spec/containers/0/args",
+            "value": ["--key-renew-period=0"],
+        }
+    ]
+
+
 def test_argocd_installs_into_its_own_namespace() -> None:
     assert _kustomization("argocd")["namespace"] == "argocd"

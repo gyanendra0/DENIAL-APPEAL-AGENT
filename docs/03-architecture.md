@@ -4590,8 +4590,8 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   names or ids before it is stored and sent to the model. A helper that blacks them out
   would be its own branch, and would still not replace the rule.
 - **Backups keep a deleted account until they expire.** "Delete my account" removes the rows
-  from the database; a backup taken before it (planned in `feat/backup-and-alerts`) still
-  holds them until it is rotated away.
+  from the database; each nightly backup taken before it (3.28) still holds them, encrypted,
+  until the bucket's lifecycle rule deletes it after 30 days.
 - **One individual can use up the daily cap for all.** `INDIVIDUAL_DAILY_UPLOADS` is shared,
   so five throwaway accounts at the monthly cap of 5 (the defaults) refuse every other
   individual until midnight UTC. The email code and the sign-up IP limit slow this down; the
@@ -5781,10 +5781,10 @@ command). No accounts, uploads or `llm_calls` are copied.
 
 **Individuals.** `INDIVIDUAL_SIGNUP_ENABLED`, `INDIVIDUAL_MONTHLY_UPLOADS` and
 `INDIVIDUAL_DAILY_UPLOADS` (3.18) go in the same `.env`. Keep the switch `false` (its default)
-until backups and alerts run (`feat/backup-and-alerts`), and choose the daily cap so that
-daily × 30 × about $0.01 stays under the part of `LLM_MONTHLY_BUDGET_USD` meant for
-individuals. A change needs `docker compose -f deploy/prod/compose.yml up -d` to restart the
-API with it.
+under Compose, which has no backup or alert (only the server has them, 3.28), and choose the
+daily cap so that daily × 30 × about $0.01 stays under the part of `LLM_MONTHLY_BUDGET_USD`
+meant for individuals. A change needs `docker compose -f deploy/prod/compose.yml up -d` to
+restart the API with it.
 
 ### Measured (2026-10-28, local)
 
@@ -5822,8 +5822,8 @@ made-up user went through it in a real browser.
 
 - **Compose is the fallback, not what is served.** The server runs the same images on
   Kubernetes (3.26, 3.27). This file ran on the Mac only.
-- **No backup and no alerts yet.** The data is one Docker volume; `feat/backup-and-alerts`
-  adds both.
+- **No backup and no alerts under Compose.** The data is one Docker volume. The server has
+  both (3.28).
 - **Still one API process.** Jobs run in it, so a restart drops a running job (3.19).
 - **The evidence tables and model files are copied by hand.** Nothing checks they are there
   before the first upload.
@@ -5855,7 +5855,7 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 
 | File | What it does |
 |---|---|
-| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock), job `frontend` (ESLint, Prettier, `tsc`, Vitest) and job `smoke` (the manifests in a throwaway cluster, 3.26) |
+| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock), job `frontend` (ESLint, Prettier, `tsc`, Vitest), job `smoke` (the manifests in a throwaway cluster, 3.26) and job `backup-restore` (dump, encrypt, decrypt and restore, 3.28) |
 | `.github/workflows/security.yml` | Job `zizmor` (workflow files), job `trivy` (libraries, secrets, Dockerfiles), job `image-scan` (both built images) and job `manifests` (the rendered Kubernetes files, 3.26) |
 | `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
 | `.trivyignore` | Findings Trivy may skip; empty today |
@@ -5874,6 +5874,7 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `lock-tests` | A locked package that needs one the lock lacks, or a test that fails on the locked versions |
 | `manifests` | A rendered manifest Kubernetes would refuse, a HIGH or CRITICAL misconfiguration in one, or a production image without a digest |
 | `smoke` | The app not starting from the `local` overlay in a throwaway cluster, or a pod other than `web` reaching `api` |
+| `backup-restore` | A dump that does not restore with the same row counts, or a restore into an existing database that is not refused |
 
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
@@ -6096,7 +6097,8 @@ a real small cluster. The server that runs `prod` is in 3.27. Built in `feat/k8s
 | `deploy/k8s/base/migrate.yaml` | The Job that runs `alembic upgrade head`, once per sync |
 | `deploy/k8s/base/api.yaml` | The API: one replica, reachable only inside the cluster |
 | `deploy/k8s/base/web.yaml` | Caddy, the one front door: LoadBalancer Service, certificate volume |
-| `deploy/k8s/overlays/local/` | Made-up settings and a plain `local` image tag |
+| `deploy/k8s/base/backup.yaml`, `base/backup/` | The nightly encrypted backup to Object Storage (3.28) |
+| `deploy/k8s/overlays/local/` | Made-up settings and a plain `local` image tag; the backup stays suspended |
 | `deploy/k8s/overlays/prod/config.yaml` | The real settings that are not secret |
 | `deploy/k8s/overlays/prod/kustomization.yaml` | The image digests, written by the deploy pull request (3.25) |
 | `deploy/k8s/overlays/prod/app-secrets.example.yaml` | The secret key names with no values; not rendered |
@@ -6153,6 +6155,7 @@ Nothing talks to anything unless a rule allows it:
 | `web` | `api` on 8000, DNS, the internet on 80 and 443 (Let's Encrypt) |
 | `api` | `db` on 5432, DNS, the internet on 443 (model providers, Google) and 587 (mail) |
 | `migrate` | `db` on 5432, DNS |
+| `backup` | `db` on 5432, DNS, the internet on 443 (the bucket, 3.28) |
 | `db` | Nothing |
 
 The internet rules leave out the private ranges, so they cannot reach another pod, and
@@ -6169,7 +6172,9 @@ the rule weakens the login limit too.
 | Where | What |
 |---|---|
 | Secret `app-secrets` (sealed in `overlays/prod/app-secrets.sealed.yaml`, 3.27) | `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` |
+| Secret `backup-secrets` (sealed in `overlays/prod/backup-secrets.sealed.yaml`, 3.28) | `RCLONE_CONFIG_OCI_ACCESS_KEY_ID`, `RCLONE_CONFIG_OCI_SECRET_ACCESS_KEY`; read only by the backup's `upload` container, never by the API |
 | ConfigMap `app-config` | Everything else: model names, URLs, prices, budget, site name, pod range |
+| ConfigMap `backup-config` | The bucket's region, endpoint and name; made-up in the base, real in `overlays/prod/backup-config.yaml` |
 | ConfigMap `win-model` (made by hand) | `win_model.joblib`, `win_model.json` |
 
 The repository is public, so personal email addresses count as secret. `DATABASE_URL` is not a key
@@ -6366,12 +6371,9 @@ already said `main`, so applying it on the server was the only step.
 
 ### Known limits
 
-- **No backups and no alerts yet.** The database is one volume on one disk, and the Sealed Secrets
-  key exists only on the server: a lost machine means sealing every value again.
-  `feat/backup-and-alerts` adds both. Until then `INDIVIDUAL_SIGNUP_ENABLED` stays `false`.
 - **Oracle may reclaim an idle machine.** Its rule is CPU, network and memory all under 20% for 7
-  days; memory sits at 14% and CPU at 5%. The uptime check in `feat/backup-and-alerts` would report
-  it; Pay As You Go may avoid it.
+  days; memory sits at 14% and CPU at 5%. The uptime check (3.28) reports it within about 5 minutes;
+  Pay As You Go may avoid it. Backups and alerts are in 3.28.
 - **The address is not reserved.** A new machine gets a new one, and DuckDNS and Brevo must be
   changed by hand.
 - **The add-ons are kept by hand.** Argo CD does not manage them and Dependabot does not read them;
@@ -6381,3 +6383,125 @@ already said `main`, so applying it on the server was the only step.
 - **The failed-migration test used a made-up revision,** not a real older image: no published image
   is older than a migration.
 - **One person, one network.** The browser run and the port checks came from one place.
+
+## 3.28 Backups and alerts
+
+Every night at 03:00 UTC the server dumps the database, encrypts the dump to a gpg public key and
+uploads it to Oracle Object Storage, where it is kept for 30 days. The private key that opens a
+dump is never on the server. An outside uptime check emails the owner when `/health` stops
+answering. Built in `feat/backup-and-alerts` (Stage 6). No migration, no model call, $0.
+
+### The code
+
+| File | What it does |
+|---|---|
+| `deploy/k8s/base/backup.yaml` | ConfigMap `backup-config` (rclone's remote, made-up bucket) and CronJob `backup`: 03:00 `Etc/UTC`, `Forbid`, `backoffLimit: 1`, at most 30 minutes. Init container `wait-for-db` (`pg_isready` until the database answers, as in the migration), then init container `dump` on the database's own pinned image, container `upload` on `rclone/rclone:1.75.2` by digest, both uid 999, read-only root, no capabilities, 256 MiB limit |
+| `deploy/k8s/base/backup/backup.sh` | `pg_dump --format=custom` piped into `gpg --recipient-file` as `app-<UTC date>.dump.gpg`; written as `.part` and renamed, so a failed dump leaves nothing to upload |
+| `deploy/k8s/base/backup/backup-public-key.asc` | The gpg public key (rsa3072, fingerprint `F470 8FBF 3997 9050 684F C98F 65D8 58E1 9F45 9692`). Not secret |
+| `deploy/k8s/base/backup/restore.sh` | Decrypts a dump into a **new** database; `createdb` refuses an existing name, so it never writes over `app`. Runs on the Mac and in CI, not on the server |
+| `deploy/k8s/base/backup/row-counts.sql` | The exact row count of every table, to compare a restore with its source |
+| `deploy/k8s/base/kustomization.yaml` | `configMapGenerator` `backup-files`: the script and the key, so the CronJob runs the tested file |
+| `deploy/k8s/base/network-policies.yaml` | Rule `backup`: `db` on 5432, DNS, 443 outside the private ranges; `db` accepts `backup` |
+| `deploy/k8s/overlays/prod/backup-config.yaml` | The real region (`ap-mumbai-1`), S3 endpoint and bucket `denial-appeal-backups` |
+| `deploy/k8s/overlays/prod/backup-secrets.sealed.yaml` | The bucket's access key and secret, sealed (strict scope, wave -2). Template: `backup-secrets.example.yaml` |
+| `deploy/k8s/overlays/local/kustomization.yaml` | Keeps the CronJob suspended in `kind`, which has no bucket |
+| `deploy/k8s/addons/sealed-secrets/kustomization.yaml` | `--key-renew-period=0`: the controller never makes a new sealing key, so one exported copy opens every sealed file |
+| `.github/workflows/checks.yml` job `backup-restore` | Two containers of the pinned db image and made-up rows; runs `backup.sh` as uid 999 with a read-only root, then `restore.sh`, and compares the row counts; restoring into `app` must fail |
+| `tests/deploy/test_k8s_backup.py`, `test_backup_restore.py`, `test_k8s_overlays.py` | Pin the schedule, the images, the keys each container gets, the sealed file, the CI job and the scripts |
+
+### Outside the repository
+
+| What | Where |
+|---|---|
+| Bucket | `denial-appeal-backups`, Mumbai, root compartment (the one Oracle's S3-compatible API sees), private, Oracle-managed encryption |
+| Lifecycle rules | Delete `app/` objects after 30 days; delete unfinished multipart uploads after 1 day. Policy: `Allow service objectstorage-ap-mumbai-1 to manage object-family in tenancy` |
+| The server's login | IAM user Backup Writer in group `backup-writers`, only the "Customer secret keys" capability; policy `OBJECT_CREATE` and `OBJECT_INSPECT` on this bucket only. It can add a backup, not read, overwrite or delete one |
+| gpg private key and passphrase | The owner's password manager and `~/denial-appeal-keys` on the Mac |
+| Sealed Secrets key | Exported once (renewal is off); password manager and the Mac |
+| Uptime check | UptimeRobot (free), HTTP(S) on `https://denial-appeal.duckdns.org/health` every 5 minutes, email to the owner. `/health` checks the database, so one monitor covers the machine, Caddy, `api` and `db` |
+
+### Restoring
+
+The server's login cannot read the bucket, so a restore starts in the Oracle console.
+
+1. Download the dump (bucket → `app/` → Download).
+2. Start a throwaway Postgres from the pinned db image on its own Docker network.
+3. Run `restore.sh` in the same image with the dump, the private key file and a new database name,
+   with `docker run -it` (gpg asks for the passphrase on the terminal; without `-it` it cannot
+   decrypt). Nothing decrypted touches the disk.
+4. Compare `row-counts.sql` on the restored copy with production.
+
+Restoring onto a rebuilt server has not been tried yet; the setup guide (`docs/setup-guide`, the
+last Stage 6 branch) covers it.
+
+Without the gpg private key no backup can be opened; without the Sealed Secrets key every value in
+`app-secrets` and `backup-secrets` must be sealed again for a new controller.
+
+### Why it is built this way
+
+- **No image of our own.** The database's pinned image already has `pg_dump` 16.15 and `gpg`, so the
+  dump always matches the server's version; rclone's official image does the upload.
+- **A public key on the server.** A stolen bucket, a stolen bucket key or Oracle itself sees only
+  ciphertext. A symmetric password would sit on the server beside the data.
+- **Create-only keys.** A broken or stolen server cannot wipe the history; only the lifecycle rule
+  deletes. A locked retention rule would also protect it but cannot ever be removed. The upload
+  runs with `--no-check-dest --s3-no-head`, so rclone never reads the bucket.
+- **30 days, about 19 MB a night.** About 0.6 GB of the free 20 GB and about 60 requests of the
+  free 50,000 a month.
+- **Bucket keys apart from `app-secrets`.** The API reads `app-secrets` whole, so it never holds
+  them.
+- **Key renewal off (the owner's choice).** One export lasts; the cost is that one key seals every
+  secret for ever. The recommended monthly re-export was not chosen.
+- **No missed-backup alert and no Oracle budget (the owner's choices).** The monthly check shows the
+  newest backup and the bill. The account is Always Free only, so Oracle cannot charge it.
+- **One script, tested in CI.** The CronJob mounts the same `backup.sh` that the job
+  `backup-restore` runs, so every pull request proves dump → encrypt → decrypt → restore. No bucket
+  in CI: rclone only copies a finished file, and the server run proved that part.
+
+### The monthly check (on the 1st, about 10 minutes)
+
+1. Oracle Cost analysis for last month (expected $0).
+2. Model spend for last month from `llm_calls` (`sum(cost_usd)` by month, through `kubectl exec`
+   on `db-0`); the app's own guard already caps it at `LLM_MONTHLY_BUDGET_USD`.
+3. The bucket's size and the newest backup's date: this is also how a missed backup is noticed.
+
+Each result is one row in the owner's cost log.
+
+### Individuals may now be let in
+
+`INDIVIDUAL_SIGNUP_ENABLED` (3.18) stayed `false` in production until backups ran. It may now be
+turned on: set it to `"true"` in `deploy/k8s/overlays/prod/config.yaml` in a pull request; Argo CD
+restarts nothing by itself for a ConfigMap change, so restart `api` after the sync (as in 3.26).
+It is not changed in this branch.
+
+### Measured (2026-11-02 and 03)
+
+| | |
+|---|---|
+| Key renewal | Controller args `["--key-renew-period=0"]`; one sealing key, made with the cluster |
+| Sync | `Synced Healthy`; `backup-secrets` opened with 2 keys; CronJob not suspended |
+| Hand run | `kubectl create job --from=cronjob/backup`: Complete in 18 s; `app-2026-11-02.dump.gpg` 19,704,056 bytes (18.79 MiB in the bucket); rclone `Copied (new)`, `Checks: 0` |
+| Restore | On the Mac into a throwaway Postgres: 30 tables, every row count the same as production |
+| The server's keys | Add: allowed. Delete, overwrite and read: refused. Oracle answers 404 "does not exist ... or you are not authorized" rather than 403, so a login without rights cannot learn what exists |
+| Sealed Secrets key | `kubeseal --recovery-unseal` with the exported copy opens `app-secrets` (10 key names) and `backup-secrets` (2) on the Mac, without the cluster |
+| First scheduled run (2026-11-03 03:00 UTC) | **Failed**: both tries (03:00:00 and 03:00:10) ended in the second they started with `pg_dump: ... connection to server at "db" (10.42.0.33), port 5432 failed: Connection refused`; no file written or uploaded. `db-0` had not restarted (last restart 21 h before, same address, nothing logged after 02:55). Cause: a new pod's first connections can be refused while k3s applies the network policies to it; the hand run started just as fast and was lucky. Fixed by the `wait-for-db` init container |
+| Run after the fix (2026-11-03) | By hand from the CronJob, the template a scheduled run uses: `wait-for-db` answered at once, Complete in 15 s, `app-2026-11-03.dump.gpg` 19,704,056 bytes, rclone 1 file in 2.1 s. Argo CD `Healthy` again. The scheduler itself had started the failed run at 03:00:00 UTC, on time |
+| First monthly check (2026-11-03) | Oracle Cost analysis $0.00. Model spend (`llm_calls`): October none, November so far $0.001617 (4 calls). Bucket: 2 backups of 18.79 MiB each (about 38 MiB of the free 20 GB), newest 2026-11-03 |
+| Uptime alert | With Argo CD's self-heal off and `web` at 0 replicas, the "down" email came after about 5 minutes; the "up" email came after `web` was back. Self-heal on again: `Synced Healthy` |
+
+### Known limits
+
+- **Up to 24 hours of data lost** if the disk dies just before 03:00; there is no continuous WAL
+  archive.
+- **Same Oracle account and region** as the server; losing the account loses both.
+- **No alert for a missed or failed backup.** Up to a month may pass before the monthly check shows
+  it; between checks, `kubectl get jobs -n denial-appeal-agent` shows the last runs.
+- **No restore drill.** A backup that uploads but holds a broken dump is caught only by a restore.
+- **No Oracle budget alarm;** safe only while the account stays Always Free with no Pay As You Go.
+- **One sealing key for ever.** A leak of it opens every sealed file in the repository, past and
+  future.
+- **A second backup on the same UTC date is refused** (it would be an overwrite), so a hand run
+  before 03:00 UTC makes that night's run fail.
+- **Uptime is checked every 5 minutes from outside,** so a shorter outage may not be seen.
+- **The backup pod's memory was not measured:** the run ended before the first metrics sample. It
+  finished well inside its 256 MiB limit (no `OOMKilled`).

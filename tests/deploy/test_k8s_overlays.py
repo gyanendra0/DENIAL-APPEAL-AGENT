@@ -21,7 +21,10 @@ BASE_CONFIG = K8S / "base" / "config.yaml"
 POLICIES = K8S / "base" / "network-policies.yaml"
 OVERLAYS = K8S / "overlays"
 SECRET_TEMPLATE = OVERLAYS / "prod" / "app-secrets.example.yaml"
+BACKUP_SECRET_TEMPLATE = OVERLAYS / "prod" / "backup-secrets.example.yaml"
 SEALED_SECRET = OVERLAYS / "prod" / "app-secrets.sealed.yaml"
+SEALED_BACKUP_SECRET = OVERLAYS / "prod" / "backup-secrets.sealed.yaml"
+BACKUP_CONFIG = OVERLAYS / "prod" / "backup-config.yaml"
 APPLICATION = K8S / "argocd" / "application.yaml"
 METADATA_ADDRESS = ipaddress.ip_address("169.254.169.254")
 POD_RANGES = ("10.42.0.0", "10.244.0.0")
@@ -52,8 +55,19 @@ def _all_plain_settings(name: str) -> dict[str, str]:
     return base | _overlay_settings(name)
 
 
-def _secret_keys() -> set[str]:
-    return set(yaml.safe_load(SECRET_TEMPLATE.read_text())["stringData"])
+def _secret_keys(template: Path = SECRET_TEMPLATE) -> set[str]:
+    return set(yaml.safe_load(template.read_text())["stringData"])
+
+
+# Each sealed file in prod, with the name it must open as and the template it was made from.
+SEALED_FILES = pytest.mark.parametrize(
+    ("sealed_file", "name", "template"),
+    [
+        (SEALED_SECRET, "app-secrets", SECRET_TEMPLATE),
+        (SEALED_BACKUP_SECRET, "backup-secrets", BACKUP_SECRET_TEMPLATE),
+    ],
+    ids=["app-secrets", "backup-secrets"],
+)
 
 
 def _policies() -> dict[str, dict[str, Any]]:
@@ -196,7 +210,7 @@ def test_local_uses_a_plain_tag_on_the_same_images_as_prod() -> None:
 def test_each_overlay_patches_the_settings_of_the_base(overlay: str) -> None:
     kustomization = yaml.safe_load((OVERLAYS / overlay / "kustomization.yaml").read_text())
     assert "../../base" in kustomization["resources"]
-    assert kustomization["patches"] == [{"path": "config.yaml"}]
+    assert kustomization["patches"][0] == {"path": "config.yaml"}
     patch = yaml.safe_load((OVERLAYS / overlay / "config.yaml").read_text())
     assert (patch["kind"], patch["metadata"]["name"]) == ("ConfigMap", "app-config")
 
@@ -210,30 +224,87 @@ def test_the_secret_template_holds_no_value() -> None:
 def test_an_empty_secret_can_never_reach_the_cluster() -> None:
     prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
     assert SECRET_TEMPLATE.name not in prod["resources"]
+    assert BACKUP_SECRET_TEMPLATE.name not in prod["resources"]
 
 
-def test_production_gets_the_sealed_secret() -> None:
+def test_the_backup_keys_have_their_own_template_with_no_value() -> None:
+    template = yaml.safe_load(BACKUP_SECRET_TEMPLATE.read_text())
+    assert (template["metadata"]["name"], template["metadata"]["namespace"]) == (
+        "backup-secrets",
+        "denial-appeal-agent",
+    )
+    assert template["stringData"] == {
+        "RCLONE_CONFIG_OCI_ACCESS_KEY_ID": "",
+        "RCLONE_CONFIG_OCI_SECRET_ACCESS_KEY": "",
+    }
+    # The API reads `app-secrets` whole, so the bucket keys must never be added there.
+    assert not set(template["stringData"]) & _secret_keys()
+
+
+def test_production_replaces_every_made_up_bucket_setting_of_the_base() -> None:
     prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
-    assert SEALED_SECRET.name in prod["resources"]
+    assert {"path": BACKUP_CONFIG.name} in prod["patches"]
+    patch = yaml.safe_load(BACKUP_CONFIG.read_text())
+    assert (patch["kind"], patch["metadata"]["name"]) == ("ConfigMap", "backup-config")
+    base = next(
+        d
+        for d in yaml.safe_load_all((K8S / "base" / "backup.yaml").read_text())
+        if d["kind"] == "ConfigMap"
+    )["data"]
+    made_up = {key for key, value in base.items() if "made-up" in value or ".invalid" in value}
+    assert set(patch["data"]) == made_up
+    settings = patch["data"]
+    assert not [value for value in settings.values() if "made-up" in value or ".invalid" in value]
+    # OCI's S3-compatible endpoint is per namespace and region, and must be the region set.
+    endpoint = re.fullmatch(
+        r"https://[a-z0-9]+\.compat\.objectstorage\.([a-z0-9-]+)\.oci\.customer-oci\.com",
+        settings["RCLONE_CONFIG_OCI_ENDPOINT"],
+    )
+    assert endpoint is not None
+    assert endpoint.group(1) == settings["RCLONE_CONFIG_OCI_REGION"]
 
 
-def test_the_sealed_secret_opens_only_as_app_secrets_in_the_app_namespace() -> None:
-    sealed = yaml.safe_load(SEALED_SECRET.read_text())
+def test_the_local_cluster_keeps_the_backup_off() -> None:
+    local = yaml.safe_load((OVERLAYS / "local" / "kustomization.yaml").read_text())
+    (patch,) = [p for p in local["patches"] if p.get("target", {}).get("kind") == "CronJob"]
+    assert patch["target"]["name"] == "backup"
+    assert yaml.safe_load(patch["patch"]) == [
+        {"op": "replace", "path": "/spec/suspend", "value": True}
+    ]
+
+
+@SEALED_FILES
+def test_production_gets_the_sealed_secret(sealed_file: Path, name: str, template: Path) -> None:
+    prod = yaml.safe_load((OVERLAYS / "prod" / "kustomization.yaml").read_text())
+    assert sealed_file.name in prod["resources"]
+
+
+@SEALED_FILES
+def test_the_sealed_secret_opens_only_under_its_name_in_the_app_namespace(
+    sealed_file: Path, name: str, template: Path
+) -> None:
+    sealed = yaml.safe_load(sealed_file.read_text())
     assert (sealed["apiVersion"], sealed["kind"]) == ("bitnami.com/v1alpha1", "SealedSecret")
     for metadata in (sealed["metadata"], sealed["spec"]["template"]["metadata"]):
-        assert (metadata["name"], metadata["namespace"]) == ("app-secrets", "denial-appeal-agent")
+        assert (metadata["name"], metadata["namespace"]) == (name, "denial-appeal-agent")
     # Any other scope leaves an annotation that lets the secret be opened under another name.
     assert not [key for key in sealed["metadata"].get("annotations", {}) if "sealedsecrets" in key]
 
 
-def test_the_sealed_secret_exists_with_the_settings_before_any_pod_starts() -> None:
-    sealed = yaml.safe_load(SEALED_SECRET.read_text())
+@SEALED_FILES
+def test_the_sealed_secret_exists_with_the_settings_before_any_pod_starts(
+    sealed_file: Path, name: str, template: Path
+) -> None:
+    sealed = yaml.safe_load(sealed_file.read_text())
     assert int(sealed["metadata"]["annotations"][WAVE]) == -2
 
 
-def test_the_sealed_secret_holds_every_key_of_the_template_and_no_plain_value() -> None:
-    sealed = yaml.safe_load(SEALED_SECRET.read_text())
-    assert set(sealed["spec"]["encryptedData"]) == _secret_keys()
+@SEALED_FILES
+def test_the_sealed_secret_holds_every_key_of_the_template_and_no_plain_value(
+    sealed_file: Path, name: str, template: Path
+) -> None:
+    sealed = yaml.safe_load(sealed_file.read_text())
+    assert set(sealed["spec"]["encryptedData"]) == _secret_keys(template)
     assert "data" not in sealed["spec"]["template"]
     assert "stringData" not in sealed["spec"]["template"]
     # Each kubeseal value starts with the length of its 512-byte encrypted key, two bytes that
@@ -242,7 +313,7 @@ def test_the_sealed_secret_holds_every_key_of_the_template_and_no_plain_value() 
 
 
 def test_the_template_has_every_key_the_pods_read_by_name() -> None:
-    for name in ("api.yaml", "migrate.yaml"):
+    for name in ("api.yaml", "migrate.yaml", "backup.yaml"):
         text = (K8S / "base" / name).read_text()
         assert set(re.findall(r"key: ([A-Z_]+)", text)) <= _secret_keys()
 
@@ -254,12 +325,12 @@ def test_a_pod_with_no_rule_can_do_nothing() -> None:
 
 def test_no_rule_exists_beyond_the_ones_tested_here() -> None:
     # Rules add up, and one with an empty selector would open every pod.
-    assert set(_policies()) == {"default-deny", "web", "api", "migrate", "db"}
+    assert set(_policies()) == {"default-deny", "web", "api", "migrate", "backup", "db"}
 
 
 def test_every_app_has_a_rule_that_limits_both_directions() -> None:
     policies = _policies()
-    for name in ("web", "api", "migrate", "db"):
+    for name in ("web", "api", "migrate", "backup", "db"):
         spec = policies[name]["spec"]
         assert spec["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": name}
         assert spec["policyTypes"] == ["Ingress", "Egress"]
@@ -276,9 +347,9 @@ def test_only_the_web_reaches_the_api_and_only_on_its_port() -> None:
     assert _policies_selecting("api") == ["api"]
 
 
-def test_only_the_api_and_the_migration_reach_the_database() -> None:
+def test_only_the_api_the_migration_and_the_backup_reach_the_database() -> None:
     rules = _policies()["db"]["spec"]["ingress"]
-    assert rules == [{"from": _pods_named("api", "migrate"), "ports": [{"port": 5432}]}]
+    assert rules == [{"from": _pods_named("api", "migrate", "backup"), "ports": [{"port": 5432}]}]
     assert _policies_selecting("db") == ["db"]
 
 
@@ -292,6 +363,11 @@ def test_nothing_reaches_the_migration_and_it_has_no_internet() -> None:
     assert not _ip_blocks(migrate)
 
 
+def test_nothing_reaches_the_backup() -> None:
+    assert "ingress" not in _policies()["backup"]["spec"]
+    assert _policies_selecting("backup") == ["backup"]
+
+
 def test_anyone_may_reach_the_web_on_the_ports_of_its_service() -> None:
     rules = _policies()["web"]["spec"]["ingress"]
     assert len(rules) == 1
@@ -300,13 +376,15 @@ def test_anyone_may_reach_the_web_on_the_ports_of_its_service() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "ports"), [("web", {80, 443}), ("api", {443, 587})], ids=["web", "api"]
+    ("name", "ports"),
+    [("web", {80, 443}), ("api", {443, 587}), ("backup", {443})],
+    ids=["web", "api", "backup"],
 )
 def test_the_internet_is_open_only_on_the_ports_each_app_uses(name: str, ports: set[int]) -> None:
     assert _internet_ports(_policies()[name]) == ports
 
 
-@pytest.mark.parametrize("name", ["web", "api"])
+@pytest.mark.parametrize("name", ["web", "api", "backup"])
 def test_the_internet_rule_cannot_reach_the_metadata_address_or_a_pod(name: str) -> None:
     blocks = _ip_blocks(_policies()[name])
     assert blocks

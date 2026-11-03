@@ -4,9 +4,11 @@ kind: Kustomization
 resources:
   - ../../base
   - app-secrets.sealed.yaml
+  - backup-secrets.sealed.yaml
 
 patches:
   - path: config.yaml
+  - path: backup-config.yaml
 
 # Written by the deploy pull request (pipelines/set_image_digests.py). A rollback reverts that
 # pull request.

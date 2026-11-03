@@ -6,6 +6,14 @@ resources:
 
 patches:
   - path: config.yaml
+  # No bucket and no `backup-secrets` here, so the nightly backup stays off.
+  - target:
+      kind: CronJob
+      name: backup
+    patch: |-
+      - op: replace
+        path: /spec/suspend
+        value: true
 
 # Images built on the spot and loaded with `kind load`, so they have no published digest.
 images:

@@ -1,0 +1,162 @@
+# The nightly backup: `dump` writes an encrypted dump into a shared folder, then `upload` copies it
+# to the bucket. The bucket keeps 30 days (its lifecycle rule) and the server's keys can only add
+# objects, never delete or overwrite one, so a second run on the same UTC date is refused. The keys
+# are in the prod overlay's `backup-secrets.sealed.yaml`. Run one by hand:
+# kubectl create job --from=cronjob/backup backup-now -n denial-appeal-agent
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  # rclone reads the remote `oci` from these, so it needs no config file. OCI's S3-compatible API,
+  # path-style, in the home region. The bucket exists already and the keys may not list buckets.
+  RCLONE_CONFIG_OCI_TYPE: s3
+  RCLONE_CONFIG_OCI_PROVIDER: Other
+  RCLONE_CONFIG_OCI_FORCE_PATH_STYLE: "true"
+  RCLONE_CONFIG_OCI_NO_CHECK_BUCKET: "true"
+  # Placeholders; the prod overlay sets the real ones with the keys.
+  RCLONE_CONFIG_OCI_REGION: made-up-region
+  RCLONE_CONFIG_OCI_ENDPOINT: https://bucket.invalid
+  BACKUP_BUCKET: made-up-bucket
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  labels:
+    app.kubernetes.io/name: backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  suspend: false
+  schedule: "0 3 * * *"
+  timeZone: Etc/UTC
+  # Never two at once; a run missed by more than an hour (node down) waits for the next night.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            # As in the migration. A new pod's first connections can be refused while the network
+            # policies are still being applied to it: the first scheduled run (2026-11-03) failed
+            # that way in the second the pod started. The job's deadline bounds the wait.
+            - name: wait-for-db
+              image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+              command:
+                - sh
+                - -c
+                - until pg_isready -h db -p 5432 -U app -d app; do sleep 2; done
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+            - name: dump
+              # The database's own image, so pg_dump is the server's version; a test keeps them equal.
+              image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+              command: ["bash", "/scripts/backup.sh", "/backup", "/scripts/backup-public-key.asc"]
+              env:
+                - name: PGHOST
+                  value: db
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: app
+                - name: PGDATABASE
+                  value: app
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: app-secrets
+                      key: POSTGRES_PASSWORD
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: upload
+              # Its image sets no user, so the pod's uid 999 applies; it needs no home or config file.
+              # The keys may not read objects, so rclone neither looks for the file before the upload
+              # nor reads it back after: it only puts it.
+              image: rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
+              args:
+                - copy
+                - /backup
+                - oci:$(BACKUP_BUCKET)/app
+                - --no-check-dest
+                - --s3-no-head
+                - --verbose
+              envFrom:
+                - configMapRef:
+                    name: backup-config
+                - secretRef:
+                    name: backup-secrets
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: 512Mi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi
+            - name: scripts
+              configMap:
+                name: backup-files

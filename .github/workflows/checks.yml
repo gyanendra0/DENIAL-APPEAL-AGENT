@@ -294,3 +294,113 @@ jobs:
           "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" describe pods
           "$RUNNER_TEMP/kubectl" --namespace "$NAMESPACE" logs --selector app.kubernetes.io/name \
             --all-containers --prefix --ignore-errors --max-log-requests 10 --tail 100
+
+  # The CronJob's own backup.sh, run the way the CronJob runs it (pinned db image, uid 999,
+  # read-only root), then restore.sh into a second server: every table must come back with the same
+  # row count. Made-up rows, a throwaway key and a made-up password on a network with no published
+  # port. No bucket: rclone only copies the finished file, and the server run proves that part.
+  backup-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      DB_IMAGE: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+      POSTGRES_PASSWORD: made-up
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # TCP, not the socket: during its first start the image runs a server on the socket only.
+      - name: Start the source and target servers
+        run: |
+          docker network create backup
+          for server in source target; do
+            docker run --detach --name "$server" --network backup --env POSTGRES_USER=app \
+              --env POSTGRES_PASSWORD --env POSTGRES_DB=app "$DB_IMAGE"
+          done
+          for server in source target; do
+            attempts=0
+            until docker exec "$server" pg_isready -h 127.0.0.1 -U app -d app; do
+              attempts=$((attempts + 1))
+              test "$attempts" -lt 30
+              sleep 2
+            done
+          done
+
+      - name: Load the made-up rows into the source
+        run: >-
+          docker exec -i source psql -U app -d app -v ON_ERROR_STOP=1
+          < tests/deploy/fixtures/backup-rows.sql
+
+      - name: Make a throwaway key pair
+        run: |
+          mkdir -m 777 "$RUNNER_TEMP/keys" "$RUNNER_TEMP/backup"
+          docker run --rm --user 999:999 --read-only --tmpfs /tmp --network none \
+            --volume "$RUNNER_TEMP/keys:/keys" --env GNUPGHOME=/tmp/gnupg "$DB_IMAGE" bash -c '
+              set -euo pipefail
+              mkdir -m 700 "$GNUPGHOME"
+              gpg --batch --pinentry-mode loopback --passphrase "" \
+                --quick-gen-key backup-restore-ci default default never
+              gpg --armor --export backup-restore-ci > /keys/public.asc
+              gpg --batch --pinentry-mode loopback --passphrase "" \
+                --armor --export-secret-keys backup-restore-ci > /keys/private.asc'
+
+      - name: Back up the source with the CronJob's script, as the CronJob runs it
+        run: |
+          docker run --rm --user 999:999 --read-only --tmpfs /tmp --network backup \
+            --env PGHOST=source --env PGPORT=5432 --env PGUSER=app --env PGDATABASE=app \
+            --env PGPASSWORD="$POSTGRES_PASSWORD" \
+            --volume "$PWD/deploy/k8s/base/backup:/scripts:ro" \
+            --volume "$RUNNER_TEMP/keys:/keys:ro" --volume "$RUNNER_TEMP/backup:/backup" \
+            "$DB_IMAGE" bash /scripts/backup.sh /backup /keys/public.asc
+          ls -l "$RUNNER_TEMP/backup"
+
+      - name: Restore the dump into a new database on the target
+        run: |
+          dumps=("$RUNNER_TEMP"/backup/app-*.dump.gpg)
+          test "${#dumps[@]}" -eq 1
+          docker run --rm --user 999:999 --read-only --tmpfs /tmp --network backup \
+            --env PGHOST=target --env PGPORT=5432 --env PGUSER=app \
+            --env PGPASSWORD="$POSTGRES_PASSWORD" \
+            --volume "$PWD/deploy/k8s/base/backup:/scripts:ro" \
+            --volume "$RUNNER_TEMP/keys:/keys:ro" --volume "$RUNNER_TEMP/backup:/backup:ro" \
+            "$DB_IMAGE" bash /scripts/restore.sh "/backup/$(basename "${dumps[0]}")" \
+            /keys/private.asc restored
+
+      # At least three tables, so two empty outputs cannot pass as equal.
+      - name: Every table has the same row count
+        run: |
+          count() {
+            docker exec -i "$1" psql -U app -d "$2" -v ON_ERROR_STOP=1 \
+              --no-psqlrc --tuples-only --no-align < deploy/k8s/base/backup/row-counts.sql
+          }
+          count source app > "$RUNNER_TEMP/source.txt"
+          count target restored > "$RUNNER_TEMP/restored.txt"
+          cat "$RUNNER_TEMP/source.txt"
+          test "$(wc -l < "$RUNNER_TEMP/source.txt")" -ge 3
+          diff "$RUNNER_TEMP/source.txt" "$RUNNER_TEMP/restored.txt"
+
+      # Refused by createdb itself, so the check reads its message: any other failure is not a pass.
+      - name: A restore into the existing app database is refused
+        run: |
+          dumps=("$RUNNER_TEMP"/backup/app-*.dump.gpg)
+          if docker run --rm --user 999:999 --read-only --tmpfs /tmp --network backup \
+            --env PGHOST=target --env PGPORT=5432 --env PGUSER=app \
+            --env PGPASSWORD="$POSTGRES_PASSWORD" \
+            --volume "$PWD/deploy/k8s/base/backup:/scripts:ro" \
+            --volume "$RUNNER_TEMP/keys:/keys:ro" --volume "$RUNNER_TEMP/backup:/backup:ro" \
+            "$DB_IMAGE" bash /scripts/restore.sh "/backup/$(basename "${dumps[0]}")" \
+            /keys/private.asc app > "$RUNNER_TEMP/refused.txt" 2>&1; then
+            echo "a restore into app was not refused"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/refused.txt"
+          grep -q 'database "app" already exists' "$RUNNER_TEMP/refused.txt"
+
+      - name: Show what went wrong
+        if: failure()
+        run: |
+          docker logs source
+          docker logs target

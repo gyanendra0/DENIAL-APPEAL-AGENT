@@ -226,9 +226,9 @@ Three things are set by hand in GitHub, once:
    run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
    `deploy/api/.python-version` and stays on Python 3.11, and that it reads
    `deploy/prod/compose.yml`.
-4. **After the first green run of `manifests` and `smoke`:** add both to the required checks in the
-   same way. A bot deploy pull request then also builds both images, about 10 minutes more on
-   each deploy.
+4. **After the first green run of `manifests`, `smoke` and `backup-restore`:** add all three to the
+   required checks in the same way. A bot deploy pull request then also builds both images, about
+   10 minutes more on each deploy.
 
 ## Publishing the images
 
@@ -314,11 +314,13 @@ and the private key that opens a dump is never on the server. UptimeRobot checks
 5 minutes and emails when it fails. How and why, and what was measured: architecture
 [3.28](docs/03-architecture.md#328-backups-and-alerts).
 
-- **Run a backup now** (not before 03:00 UTC, or that night's run is refused as an overwrite):
+- **Run a backup now** (only if no dump exists yet for that UTC date: a second one is refused as an
+  overwrite, and a hand run before 03:00 UTC makes that night's run fail):
   `kubectl -n denial-appeal-agent create job --from=cronjob/backup backup-now`.
 - **Last runs:** `kubectl -n denial-appeal-agent get jobs`.
 - **Restore** a downloaded dump into a new database with `deploy/k8s/base/backup/restore.sh`, run
-  in the pinned db image (it has `gpg`); it never writes over an existing database. Compare
+  in the pinned db image (it has `gpg`) with `docker run -it`, since gpg asks for the key's
+  passphrase on the terminal; it never writes over an existing database. Compare
   `row-counts.sql` on both sides. The job `backup-restore` in `.github/workflows/checks.yml` is the
   tested example.
 - **Monthly check** (on the 1st): Oracle Cost analysis, last month's `sum(cost_usd)` in

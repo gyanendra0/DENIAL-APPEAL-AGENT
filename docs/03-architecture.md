@@ -5855,7 +5855,7 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 
 | File | What it does |
 |---|---|
-| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock), job `frontend` (ESLint, Prettier, `tsc`, Vitest) and job `smoke` (the manifests in a throwaway cluster, 3.26) |
+| `.github/workflows/checks.yml` | Job `checks` (ruff, black, mypy, pytest), job `lock-tests` (`pip check` and pytest on the versions in the lock), job `frontend` (ESLint, Prettier, `tsc`, Vitest), job `smoke` (the manifests in a throwaway cluster, 3.26) and job `backup-restore` (dump, encrypt, decrypt and restore, 3.28) |
 | `.github/workflows/security.yml` | Job `zizmor` (workflow files), job `trivy` (libraries, secrets, Dockerfiles), job `image-scan` (both built images) and job `manifests` (the rendered Kubernetes files, 3.26) |
 | `.github/dependabot.yml` | Weekly update pull requests for Actions, the Python lock, npm and images |
 | `.trivyignore` | Findings Trivy may skip; empty today |
@@ -5874,6 +5874,7 @@ image files. Dependabot keeps the pinned versions moving. Built in `chore/securi
 | `lock-tests` | A locked package that needs one the lock lacks, or a test that fails on the locked versions |
 | `manifests` | A rendered manifest Kubernetes would refuse, a HIGH or CRITICAL misconfiguration in one, or a production image without a digest |
 | `smoke` | The app not starting from the `local` overlay in a throwaway cluster, or a pod other than `web` reaching `api` |
+| `backup-restore` | A dump that does not restore with the same row counts, or a restore into an existing database that is not refused |
 
 A problem with no fix yet does not block, and neither does a MEDIUM or LOW one: both still reach
 the Security tab. An exception goes in `.trivyignore`, with the date and the reason on the line
@@ -6425,8 +6426,9 @@ The server's login cannot read the bucket, so a restore starts in the Oracle con
 
 1. Download the dump (bucket → `app/` → Download).
 2. Start a throwaway Postgres from the pinned db image on its own Docker network.
-3. Run `restore.sh` in the same image with the dump, the private key file and a new database name;
-   it asks for the passphrase. Nothing decrypted touches the disk.
+3. Run `restore.sh` in the same image with the dump, the private key file and a new database name,
+   with `docker run -it` (gpg asks for the passphrase on the terminal; without `-it` it cannot
+   decrypt). Nothing decrypted touches the disk.
 4. Compare `row-counts.sql` on the restored copy with production.
 
 Restoring onto a rebuilt server has not been tried yet; the setup guide (`docs/setup-guide`, the

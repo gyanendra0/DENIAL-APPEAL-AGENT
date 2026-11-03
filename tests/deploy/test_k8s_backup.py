@@ -33,8 +33,8 @@ def _pod() -> dict[str, Any]:
 
 
 def _dump() -> dict[str, Any]:
-    dump: dict[str, Any] = _pod()["initContainers"][0]
-    assert len(_pod()["initContainers"]) == 1
+    dump: dict[str, Any] = _pod()["initContainers"][1]
+    assert len(_pod()["initContainers"]) == 2
     return dump
 
 
@@ -63,6 +63,16 @@ def test_the_backup_runs_once_a_day_at_three_utc_and_never_twice_at_once() -> No
     assert spec["concurrencyPolicy"] == "Forbid"
     assert spec["jobTemplate"]["spec"]["backoffLimit"] == 1
     assert spec["jobTemplate"]["spec"]["activeDeadlineSeconds"] <= 3600
+
+
+def test_the_dump_starts_only_once_the_database_answers() -> None:
+    # A new pod's first connections can be refused while its network policies are applied; the
+    # first scheduled run failed that way.
+    wait, dump = _pod()["initContainers"]
+    assert (wait["name"], dump["name"]) == ("wait-for-db", "dump")
+    assert wait["command"][-1] == "until pg_isready -h db -p 5432 -U app -d app; do sleep 2; done"
+    assert "env" not in wait
+    assert "envFrom" not in wait
 
 
 def test_the_backup_runs_with_a_real_public_key_and_never_a_private_one() -> None:

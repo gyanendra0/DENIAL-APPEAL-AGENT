@@ -57,6 +57,27 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           initContainers:
+            # As in the migration. A new pod's first connections can be refused while the network
+            # policies are still being applied to it: the first scheduled run (2026-11-03) failed
+            # that way in the second the pod started. The job's deadline bounds the wait.
+            - name: wait-for-db
+              image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+              command:
+                - sh
+                - -c
+                - until pg_isready -h db -p 5432 -U app -d app; do sleep 2; done
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
             - name: dump
               # The database's own image, so pg_dump is the server's version; a test keeps them equal.
               image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a

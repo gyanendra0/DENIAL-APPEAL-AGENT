@@ -171,7 +171,7 @@ def test_the_database_image_is_the_one_in_the_compose_file() -> None:
     backup = _object("CronJob", "backup")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert database["image"] == pinned
     assert wait["image"] == pinned
-    assert backup["initContainers"][0]["image"] == pinned
+    assert [c["image"] for c in backup["initContainers"]] == [pinned, pinned]
 
 
 def test_the_database_keeps_its_data_in_a_subfolder_of_a_kept_volume() -> None:

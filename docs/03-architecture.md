@@ -6394,7 +6394,7 @@ answering. Built in `feat/backup-and-alerts` (Stage 6). No migration, no model c
 
 | File | What it does |
 |---|---|
-| `deploy/k8s/base/backup.yaml` | ConfigMap `backup-config` (rclone's remote, made-up bucket) and CronJob `backup`: 03:00 `Etc/UTC`, `Forbid`, `backoffLimit: 1`, at most 30 minutes. Init container `dump` on the database's own pinned image, container `upload` on `rclone/rclone:1.75.2` by digest, both uid 999, read-only root, no capabilities, 256 MiB limit |
+| `deploy/k8s/base/backup.yaml` | ConfigMap `backup-config` (rclone's remote, made-up bucket) and CronJob `backup`: 03:00 `Etc/UTC`, `Forbid`, `backoffLimit: 1`, at most 30 minutes. Init container `wait-for-db` (`pg_isready` until the database answers, as in the migration), then init container `dump` on the database's own pinned image, container `upload` on `rclone/rclone:1.75.2` by digest, both uid 999, read-only root, no capabilities, 256 MiB limit |
 | `deploy/k8s/base/backup/backup.sh` | `pg_dump --format=custom` piped into `gpg --recipient-file` as `app-<UTC date>.dump.gpg`; written as `.part` and renamed, so a failed dump leaves nothing to upload |
 | `deploy/k8s/base/backup/backup-public-key.asc` | The gpg public key (rsa3072, fingerprint `F470 8FBF 3997 9050 684F C98F 65D8 58E1 9F45 9692`). Not secret |
 | `deploy/k8s/base/backup/restore.sh` | Decrypts a dump into a **new** database; `createdb` refuses an existing name, so it never writes over `app`. Runs on the Mac and in CI, not on the server |
@@ -6482,6 +6482,7 @@ It is not changed in this branch.
 | Restore | On the Mac into a throwaway Postgres: 30 tables, every row count the same as production |
 | The server's keys | Add: allowed. Delete, overwrite and read: refused. Oracle answers 404 "does not exist ... or you are not authorized" rather than 403, so a login without rights cannot learn what exists |
 | Sealed Secrets key | `kubeseal --recovery-unseal` with the exported copy opens `app-secrets` (10 key names) and `backup-secrets` (2) on the Mac, without the cluster |
+| First scheduled run (2026-11-03 03:00 UTC) | **Failed**: both tries (03:00:00 and 03:00:10) ended in the second they started with `pg_dump: ... connection to server at "db" (10.42.0.33), port 5432 failed: Connection refused`; no file written or uploaded. `db-0` had not restarted (last restart 21 h before, same address, nothing logged after 02:55). Cause: a new pod's first connections can be refused while k3s applies the network policies to it; the hand run started just as fast and was lucky. Fixed by the `wait-for-db` init container |
 | Uptime alert | With Argo CD's self-heal off and `web` at 0 replicas, the "down" email came after about 5 minutes; the "up" email came after `web` was back. Self-heal on again: `Synced Healthy` |
 
 ### Known limits

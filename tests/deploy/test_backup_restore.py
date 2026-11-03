@@ -136,7 +136,8 @@ def test_the_backup_runs_the_cronjobs_own_script_as_the_cronjob_runs_it() -> Non
     )
     pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["securityContext"]["runAsUser"] == 999
-    assert pod["initContainers"][0]["command"][:2] == ["bash", "/scripts/backup.sh"]
+    dump = next(c for c in pod["initContainers"] if c["name"] == "dump")
+    assert dump["command"][:2] == ["bash", "/scripts/backup.sh"]
 
 
 def test_the_key_is_made_fresh_with_no_network() -> None:

@@ -11,8 +11,10 @@ There are two paths. **Path A** is the one in use: k3s on an Oracle machine, kep
 Argo CD. **Path B** is the fallback when Oracle is gone: Docker Compose on any small host. Both use
 the same outside accounts and the same shared steps.
 
-A step marked **(not tried)** has not been run on a rebuilt server yet. Every other step is how the
-current server was built (2026-11-02 and 03).
+A step marked **(not tried)** has not been run on a rebuilt server yet. A step marked
+**(rehearsed)** has not either, but it was run on the Mac against a throwaway copy
+([7.7](#77-rehearsal-record)). Every other step is how the current server was built (2026-11-02
+and 03).
 
 ---
 
@@ -137,7 +139,7 @@ Both paths use these. Each is written once here.
 ### 7.3.1 Restore the newest backup on the Mac
 
 The private key never goes to the server. So the dump is decrypted on the Mac into a throwaway
-Postgres, and from there copied into the new server ([7.4.8](#748-load-the-data-not-tried)).
+Postgres, and from there copied into the new server ([7.4.8](#748-load-the-data-rehearsed)).
 This part was done on 2026-11-03 against production; the CI job `backup-restore` in
 `.github/workflows/checks.yml` runs the same `restore.sh` on every pull request.
 
@@ -230,7 +232,7 @@ Caddy (`web`) is the only front door, so k3s's own Traefik is left out.
 
 **Success looks like:** `sudo k3s kubectl get nodes` shows the node `Ready` on `v1.36.5+k3s1`.
 
-### 7.4.3 Put back the Sealed Secrets key (not tried)
+### 7.4.3 Put back the Sealed Secrets key (rehearsed)
 
 The sealed files in git open only with the key they were sealed for. Put that key into the cluster
 **before** the controller first starts, so the controller finds it and makes no key of its own
@@ -275,8 +277,9 @@ Argo CD needs `--server-side`: its custom resources are too large for a plain ap
 **Success looks like:** both `sha256sum -c` lines print `OK`;
 `sudo k3s kubectl -n kube-system get pods -l name=sealed-secrets-controller` and
 `sudo k3s kubectl -n argocd get pods` show every pod `Running`. The controller's log
-(`sudo k3s kubectl -n kube-system logs deployment/sealed-secrets-controller`) does not say it
-generated a new key.
+(`sudo k3s kubectl -n kube-system logs deployment/sealed-secrets-controller`) says
+`registered private key secretname=sealed-secrets-key…` with the name of the key put back in
+7.4.3, and nothing about generating a new key.
 
 ### 7.4.5 Namespace and model
 
@@ -314,7 +317,7 @@ migration builds an empty database at the newest revision.
   `backup-secrets` with `DATA 2` (if they are missing, the key of 7.4.3 is not the right one);
 - `sudo k3s kubectl -n denial-appeal-agent get pods` shows `api`, `web` and `db-0` `1/1`.
 
-### 7.4.8 Load the data (not tried)
+### 7.4.8 Load the data (rehearsed)
 
 With a backup, the restored copy of [7.3.1](#731-restore-the-newest-backup-on-the-mac) replaces
 the empty database. The backup holds every table, the evidence tables too. From the Mac, with
@@ -468,7 +471,7 @@ newest revision, then the API and web start.
 
 ### 7.5.7 Load the data (not tried)
 
-As in [7.4.8](#748-load-the-data-not-tried), only into the Compose database. From the Mac, with
+As in [7.4.8](#748-load-the-data-rehearsed), only into the Compose database. From the Mac, with
 `restore-db` of [7.3.1](#731-restore-the-newest-backup-on-the-mac) still running:
 
 ```
@@ -533,11 +536,82 @@ the bucket still exists, then delete it from the machine.
 
 ## 7.6 If a key is lost
 
-Written in a later step of this branch.
+Each key below has two copies (password manager and `~/denial-appeal-keys`). These steps are for
+when both are gone. Every step in this section is **(not tried)**.
+
+**The Sealed Secrets key, server still running.** Export it again from the server:
+
+```
+ssh ubuntu@<address> 'sudo k3s kubectl -n kube-system get secret \
+  -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml' > ~/denial-appeal-keys/sealed-secrets-key.yaml
+chmod 600 ~/denial-appeal-keys/sealed-secrets-key.yaml
+```
+
+Then put the file in the password manager too.
+
+**The Sealed Secrets key, server gone.** The committed sealed files can no longer be opened. On the
+new server, skip 7.4.3: the controller makes a new key when it first starts. Then:
+
+1. Fetch its certificate over SSH (6443 stays closed):
+   ```
+   ssh ubuntu@<address> 'sudo k3s kubectl -n kube-system get secret \
+     -l sealedsecrets.bitnami.com/sealed-secrets-key -o jsonpath="{.items[0].data.tls\.crt}"' \
+     | base64 -d > ~/denial-appeal-keys/sealed-secrets-cert.pem
+   ```
+2. For each of `app-secrets.example.yaml` and `backup-secrets.example.yaml` in
+   `deploy/k8s/overlays/prod/`: copy it outside the repository, fill it from the password manager,
+   seal it with
+   `kubeseal --cert ~/denial-appeal-keys/sealed-secrets-cert.pem --format yaml < filled.yaml`
+   into the matching `.sealed.yaml`, put back the `argocd.argoproj.io/sync-wave: "-2"`
+   annotation, and delete the filled copy.
+3. Merge the two sealed files in a pull request; Argo CD then opens them.
+4. Export the new key as above, into both places.
+
+**A value inside a secret.** With the Sealed Secrets key, every value can be read back on the Mac
+without the cluster (`kubeseal --recovery-unseal --recovery-private-key
+~/denial-appeal-keys/sealed-secrets-key.yaml < deploy/k8s/overlays/prod/app-secrets.sealed.yaml`;
+it prints the values, so never in a shared terminal). If the value is gone everywhere, make a new
+one: a new API key from the LLM provider, Brevo or Google; `openssl rand -hex 32` for
+`AUTH_TOKEN_SECRET` (everyone is logged out). `POSTGRES_PASSWORD` is also stored inside the
+database, so a new one on an existing database needs `ALTER USER app PASSWORD '…'` in `db-0`
+first. Then seal again as in step 2 above.
+
+**The bucket's Customer Secret Key.** Oracle console → Identity → the Backup Writer user → Customer
+secret keys: delete the old key, make a new one, put both halves in the password manager, and seal
+`backup-secrets` again as in step 2 above.
+
+**The backup gpg private key or its passphrase.** The dumps in the bucket can never be opened again;
+they go by themselves after 30 days. Make a new key pair in the pinned database image, with no
+network (`DB_IMAGE` as in 7.3.1), after moving any old files in `~/denial-appeal-keys` aside:
+
+```
+docker run -it --rm --network none -v "$HOME/denial-appeal-keys:/keys" "$DB_IMAGE" bash -c '
+  export GNUPGHOME=$(mktemp -d)
+  gpg --pinentry-mode loopback --quick-generate-key "denial-appeal backup" rsa3072 encrypt never
+  gpg --armor --export > /keys/backup-public-key.asc
+  gpg --pinentry-mode loopback --armor --export-secret-keys > /keys/backup-private-key.asc'
+```
+
+Put the private key and its passphrase in the password manager. Copy the new public key over
+`deploy/k8s/base/backup/backup-public-key.asc` and merge it in a pull request (update the
+fingerprint in [3.28](03-architecture.md#328-backups-and-alerts)). Then run one backup by hand
+(7.4.9 step 2) and restore it with 7.3.1: until that works there is no usable backup.
 
 ## 7.7 Rehearsal record
 
-Written in a later step of this branch.
+Run on the Mac on 2026-11-03, by the owner, with throwaway copies only. Nothing on the server was
+changed; production was only read (one row count).
+
+| What | How | Result |
+|---|---|---|
+| Restore the newest backup (7.3.1) | `app-2026-11-03.dump.gpg` (19,704,056 bytes) from the bucket, `restore.sh` into `restored` | 30 tables; row counts identical to production's (`diff` empty), e.g. `evidence_chunks` 2,873, `uploads` 1, `llm_calls` 4 |
+| Load over a migrated database (7.4.8) | New database `target`, `alembic upgrade head` (0024, only the `alembic_version` row), then `pg_dump restored` piped into `pg_restore --clean --if-exists --no-owner --single-transaction --exit-on-error` | Exit 0; the 30 counts identical to production's; still revision 0024 and `vector` 0.8.7 |
+| Put back the Sealed Secrets key (7.4.3, 7.4.4, 7.4.7) | Fresh `kind` cluster on CI's node image (`kindest/node:v1.36.4`); the exported key applied **before** the pinned controller; then both committed sealed files | Controller: `registered private key secretname=sealed-secrets-key6nl2j`, no new key; both files `Unsealed`; `app-secrets` 10 keys, `backup-secrets` 2, the same names as the templates |
+
+Not rehearsed: the SSH and `kubectl exec` legs of 7.4.8 (they only carry the bytes), anything on a
+real new machine, all of Path B, and all of 7.6. The `kind` cluster and the decrypted copy were
+deleted afterwards. The SealedSecret list in 0.40.0 shows only a name and an age, so the check is
+the Secret's `DATA` count (7.4.7), not that list.
 
 ## 7.8 Stage 6 done-condition record
 

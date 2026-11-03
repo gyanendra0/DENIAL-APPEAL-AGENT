@@ -61,6 +61,7 @@ Denial document
 | 4 | [Product & Dashboard](docs/04-product-and-dashboard.md) | Screens, users, permissions |
 | 5 | [Build Plan](docs/05-build-plan.md) | Stages, what each produces, when it is done |
 | 6 | [Coding Conventions](docs/06-conventions.md) | Naming, structure and rules all code follows |
+| 7 | [Setup Guide](docs/07-setup-guide.md) | How to rebuild the server and the app from nothing |
 
 ## Status
 
@@ -295,7 +296,8 @@ Production is one Oracle A1 machine with k3s, Sealed Secrets and Argo CD, pinned
 deploy pull request (see "Publishing the images") is a deploy. The machine, the first start in
 order, and what was measured are in architecture
 [3.27](docs/03-architecture.md#327-running-on-the-server). The first start has a fixed order:
-namespace and `win-model`, then the sync, then the evidence tables.
+namespace and `win-model`, then the sync, then the evidence tables. To rebuild it from nothing,
+follow the [setup guide](docs/07-setup-guide.md).
 
 - **Secrets** are in `deploy/k8s/overlays/prod/app-secrets.sealed.yaml`, which only this server's
   controller can open. To change one value, fill a copy of `app-secrets.example.yaml` outside the

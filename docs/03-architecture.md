@@ -6483,6 +6483,8 @@ It is not changed in this branch.
 | The server's keys | Add: allowed. Delete, overwrite and read: refused. Oracle answers 404 "does not exist ... or you are not authorized" rather than 403, so a login without rights cannot learn what exists |
 | Sealed Secrets key | `kubeseal --recovery-unseal` with the exported copy opens `app-secrets` (10 key names) and `backup-secrets` (2) on the Mac, without the cluster |
 | First scheduled run (2026-11-03 03:00 UTC) | **Failed**: both tries (03:00:00 and 03:00:10) ended in the second they started with `pg_dump: ... connection to server at "db" (10.42.0.33), port 5432 failed: Connection refused`; no file written or uploaded. `db-0` had not restarted (last restart 21 h before, same address, nothing logged after 02:55). Cause: a new pod's first connections can be refused while k3s applies the network policies to it; the hand run started just as fast and was lucky. Fixed by the `wait-for-db` init container |
+| Run after the fix (2026-11-03) | By hand from the CronJob, the template a scheduled run uses: `wait-for-db` answered at once, Complete in 15 s, `app-2026-11-03.dump.gpg` 19,704,056 bytes, rclone 1 file in 2.1 s. Argo CD `Healthy` again. The scheduler itself had started the failed run at 03:00:00 UTC, on time |
+| First monthly check (2026-11-03) | Oracle Cost analysis $0.00. Model spend (`llm_calls`): October none, November so far $0.001617 (4 calls). Bucket: 2 backups of 18.79 MiB each (about 38 MiB of the free 20 GB), newest 2026-11-03 |
 | Uptime alert | With Argo CD's self-heal off and `web` at 0 replicas, the "down" email came after about 5 minutes; the "up" email came after `web` was back. Self-heal on again: `Synced Healthy` |
 
 ### Known limits

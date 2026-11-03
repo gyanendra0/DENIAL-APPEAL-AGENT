@@ -373,7 +373,163 @@ a deploy.
 
 ## 7.5 Path B: Compose fallback
 
-Written in the next step of this branch.
+For when the Oracle machine is gone: the same images, run by `deploy/prod/compose.yml` on any small
+Linux host (a 1 GB machine such as Google's `e2-micro` is enough; it is too small for Kubernetes).
+The whole compose file ran on the Mac on 2026-10-28
+([3.23](03-architecture.md#323-running-in-containers)); on a remote host, every step of this path
+is **(not tried)**.
+
+### 7.5.1 The host (not tried)
+
+1. Create the machine: Ubuntu 24.04, a public IPv4 address, the Mac's SSH public key. In the
+   provider's firewall allow TCP 22, TCP 80, TCP 443 and UDP 443 from anywhere, nothing else.
+2. On the machine, install Docker with its Compose plugin and let the login user run it:
+   ```
+   curl -fsSL https://get.docker.com | sh
+   sudo usermod -aG docker "$USER"
+   ```
+   Log out and in again.
+3. On 1 GB, add 2 GB of swap so Postgres and the API both fit:
+   ```
+   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+   sudo mkswap /swapfile && sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   ```
+4. Clone the repository into the home folder:
+   `cd ~ && git clone https://github.com/gyanendra0/DENIAL-APPEAL-AGENT`
+
+**Success looks like:** `docker compose version` prints a version without `sudo`, and `free -h`
+shows the swap.
+
+### 7.5.2 The images (not tried)
+
+The images are pulled, not built: building the screens and the Python packages needs more memory
+than a 1 GB host has. They are the exact images the cluster runs, taken by digest from
+`deploy/k8s/overlays/prod/kustomization.yaml`, then named the way `compose.yml` names them. On the
+machine:
+
+```
+cd ~/DENIAL-APPEAL-AGENT
+PINS=deploy/k8s/overlays/prod/kustomization.yaml
+API=ghcr.io/gyanendra0/denial-appeal-agent/api@$(awk '/agent\/api$/{getline; print $2}' $PINS)
+WEB=ghcr.io/gyanendra0/denial-appeal-agent/web@$(awk '/agent\/web$/{getline; print $2}' $PINS)
+docker pull "$API" && docker tag "$API" denial-appeal-agent-api
+docker pull "$WEB" && docker tag "$WEB" denial-appeal-agent-web
+```
+
+**Success looks like:** `docker images` lists `denial-appeal-agent-api` and
+`denial-appeal-agent-web`, each with the image ID of its pulled digest.
+
+### 7.5.3 The settings file (not tried)
+
+Compose reads `deploy/prod/.env` on the machine (never in git). Make it with `nano`, one `KEY=value`
+per line, without quotes:
+
+| Key | Value from |
+|---|---|
+| `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` | The password manager, the `app-secrets` entries of the same names |
+| `SITE_ADDRESS`, `APP_PUBLIC_URL`, `SHARED_ACCOUNT_NAME`, `MAIL_SMTP_HOST`, `GOOGLE_CLIENT_ID`, and every key there starting with LLM | `deploy/k8s/overlays/prod/config.yaml`, copied as they are |
+| `MAIL_BACKEND` | `smtp`, as in `deploy/k8s/base/config.yaml` |
+| `INDIVIDUAL_SIGNUP_ENABLED` | `false`: this path has no nightly backup (7.5.9) |
+
+Leave out `FORWARDED_ALLOW_IPS` (the prod `config.yaml` value is the cluster's pod range;
+`compose.yml` sets the web container's address itself), `APP_ENV` and `DATABASE_URL` (also set by
+`compose.yml`). Then `chmod 600 deploy/prod/.env`.
+
+**Success looks like:** `docker compose -f deploy/prod/compose.yml config --quiet` prints nothing
+(a missing `POSTGRES_PASSWORD` or `SITE_ADDRESS` is named in an error).
+
+### 7.5.4 The model files (not tried)
+
+`compose.yml` reads them from the clone's `models/` folder. From the Mac:
+`scp -r models <user>@<address>:DENIAL-APPEAL-AGENT/`
+
+**Success looks like:** `ls ~/DENIAL-APPEAL-AGENT/models` on the machine shows `win_model.joblib`
+and `win_model.json`.
+
+### 7.5.5 Point the name
+
+Do [7.3.2](#732-point-the-name-at-the-server) now, before `web` first starts. If the host has an
+IPv6 address too, authorise both at Brevo: one alone did not take effect in the Mac run.
+
+### 7.5.6 Start (not tried)
+
+```
+cd ~/DENIAL-APPEAL-AGENT
+docker compose -f deploy/prod/compose.yml up -d --no-build
+docker compose -f deploy/prod/compose.yml ps -a
+```
+
+`--no-build` makes Compose use the images of 7.5.2. The migration builds an empty database at the
+newest revision, then the API and web start.
+
+**Success looks like:** `db`, `api` and `web` show `healthy`, and `migrate` shows `Exited (0)`. If
+`migrate` failed, `docker compose -f deploy/prod/compose.yml logs migrate` has the reason.
+
+### 7.5.7 Load the data (not tried)
+
+As in [7.4.8](#748-load-the-data-not-tried), only into the Compose database. From the Mac, with
+`restore-db` of [7.3.1](#731-restore-the-newest-backup-on-the-mac) still running:
+
+```
+docker exec restore-db pg_dump -U app -d restored --format=custom \
+  | ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
+      exec -T db pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction \
+      --exit-on-error'
+ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml restart api'
+```
+
+Then compare the counts with the ones of 7.3.1:
+
+```
+ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
+  exec -T db psql -U app -d app -v ON_ERROR_STOP=1 --no-psqlrc --tuples-only --no-align' \
+  < deploy/k8s/base/backup/row-counts.sql
+```
+
+**Success looks like:** every table has the same count as on the Mac. Then remove the decrypted
+copy (end of 7.3.1).
+
+**With no backup at all:** copy only the evidence tables, with the command of 7.4.8 whose last line
+is `docker compose -f deploy/prod/compose.yml exec -T db psql -v ON_ERROR_STOP=1 -1 -U app -d app`
+(run in `~/DENIAL-APPEAL-AGENT`) in place of the `kubectl exec` line.
+
+### 7.5.8 Check, then watch
+
+[7.3.3](#733-check-the-site) (`/health`, then a browser sign-in) and
+[7.3.4](#734-the-uptime-monitor) (the uptime monitor shows Up).
+
+**Success looks like:** both. The site is back, without the things in 7.5.9.
+
+### 7.5.9 What is lost without the cluster
+
+| Lost | Instead, on this path |
+|---|---|
+| Argo CD deploys each merged deploy pull request | By hand: `git pull`, 7.5.2 again, then `docker compose -f deploy/prod/compose.yml up -d --no-build` (the migration runs again, then the containers whose image changed are replaced) |
+| The nightly encrypted backup to the bucket | A backup by hand, below |
+| Network policies (only `web` may reach `api`, only `api`, `migrate` and `backup` may reach `db`) | Only `web` publishes ports; inside the Compose network every container can reach every other |
+| Sealed Secrets (the secrets in git, encrypted) | The plain `deploy/prod/.env`, `chmod 600`, on the machine only |
+| Every visitor seen with their own address by the login limit | On an IPv6 host, IPv6 visitors share one address and one login count ([3.23](03-architecture.md#known-limits-15)) |
+
+**A backup by hand (not tried).** On the machine, in `~/DENIAL-APPEAL-AGENT`. The dump is made
+inside `db` and encrypted to the committed public key in a second container, so no password is
+typed and the private key stays on the Mac:
+
+```
+set -o pipefail
+DB_IMAGE=pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+docker compose -f deploy/prod/compose.yml exec -T db pg_dump -U app -d app --format=custom --no-owner \
+  | docker run -i --rm -v "$PWD/deploy/k8s/base/backup:/scripts:ro" "$DB_IMAGE" \
+    bash -c 'export GNUPGHOME=$(mktemp -d) && gpg --batch --no-tty --trust-model always \
+      --recipient-file /scripts/backup-public-key.asc --compress-algo none --encrypt' \
+  > ~/app-$(date -u +%Y-%m-%d).dump.gpg && echo backup written
+```
+
+Without `backup written` at the end, the file is broken: delete it and run again. Copy it to the
+Mac (`scp <user>@<address>:app-<date>.dump.gpg ~/Downloads/`), keep it there and in the bucket if
+the bucket still exists, then delete it from the machine.
+
+**Success looks like:** 7.3.1 restores the copied file on the Mac with every table counted.
 
 ## 7.6 If a key is lost
 

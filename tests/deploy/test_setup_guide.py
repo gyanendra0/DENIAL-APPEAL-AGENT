@@ -6,11 +6,15 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from src.config.settings import ApiSettings, LlmGatewaySettings, Settings
+
 ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "docs" / "07-setup-guide.md"
 README = ROOT / "README.md"
 ADDONS = ROOT / "deploy" / "k8s" / "addons"
 MAX_LINE = 100
+# Keys `deploy/prod/compose.yml` reads from `.env` itself; the app's settings never see them.
+COMPOSE_ONLY_KEYS = {"POSTGRES_PASSWORD", "SITE_ADDRESS", "MODEL_HOST_DIR"}
 # A path inside the repository, wherever it appears: prose, a table or a command.
 REPO_PATH = re.compile(
     r"(?<![\w.-])((?:deploy|docs|src|pipelines|tests|config|frontend|\.github)/[\w./-]*)"
@@ -95,6 +99,28 @@ def test_guide_restores_with_the_pinned_database_image() -> None:
     image = re.search(r"image: (pgvector/\S+)", (ROOT / "deploy/k8s/base/db.yaml").read_text())
     assert image
     assert f"DB_IMAGE={image.group(1)}" in _guide()
+
+
+def test_compose_path_tags_the_images_compose_runs() -> None:
+    compose = (ROOT / "deploy" / "prod" / "compose.yml").read_text()
+    overlay = (ROOT / "deploy" / "k8s" / "overlays" / "prod" / "kustomization.yaml").read_text()
+    tags = set(re.findall(r'docker tag "\$\w+" (\S+)', _guide()))
+    assert tags == set(re.findall(r"image: (denial-appeal-agent-\w+)", compose))
+    pulled = set(re.findall(r"=(ghcr\.io/\S+/(?:api|web))@", _guide()))
+    assert pulled == set(re.findall(r"name: (ghcr\.io/\S+)", overlay))
+
+
+def test_compose_settings_file_names_only_real_settings() -> None:
+    section = _guide().split("### 7.5.3")[1].split("###")[0]
+    rows = [line.split("|")[1] for line in section.splitlines() if line.startswith("| `")]
+    keys = {key for row in rows for key in re.findall(r"`([A-Z][A-Z_]+)`", row)}
+    known = {
+        name.upper()
+        for settings in (Settings, ApiSettings, LlmGatewaySettings)
+        for name in settings.model_fields
+    } | COMPOSE_ONLY_KEYS
+    assert len(keys) >= 15
+    assert keys <= known
 
 
 def test_guide_prose_wraps_at_100_characters() -> None:

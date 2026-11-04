@@ -1,41 +1,105 @@
 # 3. Architecture
 
+This document describes the system as built in `v1.0.0` (2026-11-04).
+
+## Map
+
+| Section | What it covers | Built in |
+|---|---|---|
+| 3.1–3.7 | The overview: picture, components, request flow, tables, stack, folders, targets | All stages |
+| [3.8](#38-llm-gateway) | The one gateway for model calls, the fallback and the budget guard | Stage 3 |
+| [3.9](#39-extraction) | Letter text → typed fields with a confidence each | Stage 3 |
+| [3.10](#310-win-probability-model) | The win-probability model, its features and AUC | Stage 3 |
+| [3.11](#311-deterministic-rules) | Deadlines, amount floors and must-review cases, with no model | Stage 3 |
+| [3.12](#312-evaluation-harness) | Measuring extraction, the model and the rules against the targets | Stage 3 |
+| [3.13](#313-evidence-corpus) | The public policy text, cut into chunks | Stage 4 |
+| [3.14](#314-evidence-retrieval) | Embedding the chunks and searching them | Stage 4 |
+| [3.15](#315-cited-appeal-drafting) | Drafting a letter and checking every citation | Stage 4 |
+| [3.16](#316-agent-loop) | One claim through rules, score, evidence and draft, with a trace | Stage 4 |
+| [3.17](#317-draft-acceptance-review) | How the share of accepted drafts was measured | Stage 4 |
+| [3.18](#318-api-and-auth) | The API, sign-up, login, roles and account isolation. Also every account feature of Stage 6: the login limit, changing and resetting the password, the email code, Google sign-in, the shared account and personal accounts | Stages 5 and 6 |
+| [3.19](#319-uploads-and-jobs) | An upload and its background job; the caps for personal accounts | Stages 5 and 6 |
+| [3.20](#320-draft-review-audit-log-and-costs) | Editing, approving and rejecting a draft; the audit log; job costs | Stage 5 |
+| [3.21](#321-web-dashboard-part-1) | The dashboard: sign-in screens, upload, job status, worklist, account | Stages 5 and 6 |
+| [3.22](#322-web-dashboard-part-2) | The dashboard: job detail, draft review, overview | Stages 5 and 6 |
+| [3.23](#323-running-in-containers) | The API and web images and the Compose fallback | Stage 6 |
+| [3.24](#324-checks-on-every-pull-request) | The required checks, the security scans and Dependabot | Stage 6 |
+| [3.25](#325-publishing-the-images) | Building, signing and deploying the images on every merge | Stage 6 |
+| [3.26](#326-running-on-kubernetes) | The Kubernetes manifests, Argo CD and the smoke test | Stage 6 |
+| [3.27](#327-running-on-the-server) | The Oracle A1 machine, k3s, the first start | Stage 6 |
+| [3.28](#328-backups-and-alerts) | The nightly encrypted backup, the restore and the uptime alert | Stage 6 |
+
+Section 3.18 is long, about 840 lines. Its "Where the code is" table names the module of each
+account feature.
+
+## Known limits of v1.0.0
+
+The main limits are listed here. Each section's "Known limits" has the rest.
+
+- **One API process only.** Jobs run inside it, so a restart marks unfinished jobs
+  `interrupted` and the user uploads again ([3.19](#319-uploads-and-jobs)).
+- **One letter per upload, text or PDF with a text layer only.** There is no OCR and no image
+  upload. Only the text is kept, not the file ([3.19](#319-uploads-and-jobs)).
+- **`medical_necessity` uploads were not drafted** in the measurements: the citation check
+  blocked every attempt ([3.20](#320-draft-review-audit-log-and-costs)).
+- **A decision is final, and approved means stored, not sent.** There is no export and no
+  letter file ([3.20](#320-draft-review-audit-log-and-costs)).
+- **The dashboard shows less than the product plan.** It has no highlighting on the letter,
+  no reasons behind the score and no money totals on the overview
+  ([3.22](#322-web-dashboard-part-2)).
+- **Isolation is enforced in the API code, not by the database** (no row-level security), and
+  there is no server-side logout ([3.18](#318-api-and-auth)).
+- **The letter text is not encrypted at rest by the app.** On the server, Oracle encrypts the
+  disk with Oracle's keys ([3.23](#323-running-in-containers), [3.27](#327-running-on-the-server)).
+- **Code emails come from one Gmail address at Brevo,** not a domain sender, so they may land in
+  spam ([3.18](#318-api-and-auth)).
+- **Up to 24 hours of data can be lost.** There is one backup a night, in the same Oracle
+  account and region. There is no alert for a missed backup, no restore drill on a schedule and
+  no Oracle budget alarm ([3.28](#328-backups-and-alerts)).
+- **Kept by hand:** the cluster add-ons, the evidence tables, the model files, the address
+  (not reserved) and several tool pins ([3.24](#324-checks-on-every-pull-request),
+  [3.26](#326-running-on-kubernetes), [3.27](#327-running-on-the-server)).
+- **A rollback past a migration is blocked** until `alembic downgrade` is run from the newer
+  image ([3.26](#326-running-on-kubernetes)).
+- **The appeal label is a proxy.** Every claim is synthetic, so the AUC shows that the model
+  learned the label rule, not real appeal outcomes ([3.10](#310-win-probability-model)). The
+  draft acceptance was scored by a model, not a person ([3.17](#317-draft-acceptance-review)).
+
 ## 3.1 One picture
 
 ```text
-                 ┌──────────────────────────┐
-  Browser  ─────▶│  React dashboard (Vite)  │
-                 └────────────┬─────────────┘
-                              │ HTTPS + JWT cookie
-                 ┌────────────▼─────────────┐
-                 │      FastAPI backend     │
-                 │  auth · uploads · jobs   │
-                 └────────────┬─────────────┘
-                              │
-        ┌──────────┬──────────┼──────────┬──────────────┐
-        ▼          ▼          ▼          ▼              ▼
-   extraction    ml        rules       rag           agent
-   (GenAI)    (win model) (policy)  (evidence)   (orchestrates)
-        │          │          │          │              │
-        └──────────┴──────────┴────┬─────┴──────────────┘
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │ PostgreSQL + pgvector        │
-                    │ claims · denials · drafts    │
-                    │ evidence chunks · audit log  │
-                    └──────────────────────────────┘
-                                   │
-                    ┌──────────────▼───────────────┐
-                    │ Object storage (uploads)     │
-                    └──────────────────────────────┘
+  Browser
+     │ HTTPS (Caddy, Let's Encrypt), login token in an HttpOnly cookie
+┌────▼──────────────────────────────────────────────┐
+│ web: Caddy serves the built React files and       │
+│      passes the API paths on                      │
+└────┬──────────────────────────────────────────────┘
+┌────▼──────────────────────────────────────────────┐
+│ api: FastAPI, one process                         │
+│   auth · uploads · review · jobs (background)     │
+│   extraction · rules · ml · rag · drafting · agent│
+│   llm gateway → model APIs (primary, fallback)    │
+└────┬──────────────────────────────────────────────┘
+┌────▼──────────────────────────────────────────────┐
+│ db: PostgreSQL 16 + pgvector                      │
+│   accounts · users · uploads · jobs · drafts      │
+│   evidence chunks · audit events · llm calls      │
+└────┬──────────────────────────────────────────────┘
+     │ nightly pg_dump, encrypted (3.28)
+┌────▼──────────────────────────────────────────────┐
+│ OCI Object Storage: backups only                  │
+└───────────────────────────────────────────────────┘
+
+All of it runs on one Oracle A1 machine under k3s; Argo CD applies `deploy/k8s/` from `main`
+(3.26, 3.27). `deploy/prod/compose.yml` runs the same images without Kubernetes (3.23).
 ```
 
 ## 3.2 Components
 
 | Component | Job | Key choice |
 |---|---|---|
-| `ingest` | Take files in, normalise, queue work | Accept PDF, image, text |
-| `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; OCR when needed |
+| `ingest` | Load the public data sources and read a PDF's text (see [02-data.md](02-data.md)) | Each row checked against a Pydantic model; a bad batch is rejected |
+| `extraction` | Document → structured fields (see 3.9) | LLM answer checked against a typed schema; no OCR |
 | `ml` | Predict appeal success (see 3.10) | Gradient boosting first; a neural net only if it beats it |
 | `rules` | Hard policy gates: deadlines, amount floors, must-review cases (see 3.11) | Deterministic, testable, no LLM |
 | `rag` | Find and rank supporting evidence (the corpus and its chunks: see 3.13; embedding and search: see 3.14) | pgvector, chunked policy corpus |
@@ -45,104 +109,92 @@
 | `api` | HTTP surface, auth, per-account isolation (see 3.18) | FastAPI, JWT in an HttpOnly cookie, role checks |
 | `review` | Worklist, denial detail, a person's edit, approve and reject of a draft, the audit log and the job costs (see 3.20) | Every edit and approve checked again; an audit event in the same transaction |
 | `jobs` | Turn one uploaded denial letter into a draft in the background: extraction, then the agent loop, then the stored result (see 3.19) | A `jobs` table, run by FastAPI background tasks in the API process |
-| `frontend` | The web dashboard in the browser: sign-up, login, upload, job status, worklist (see 3.21); denial detail, draft review and overview (see 3.22) | React + Vite + TypeScript; one site with the API through the dev proxy |
+| `frontend` | The web dashboard in the browser: sign-in screens, upload, job status, worklist, account (see 3.21); job detail, draft review and overview (see 3.22) | React + Vite + TypeScript; the dev proxy locally, Caddy in the images (see 3.23) |
 | `db` | Schema and migrations | SQLAlchemy + Alembic |
+| `config` | Settings read from the environment, and the log setup | A missing required setting stops the start, naming the key |
 | `synth` | Generate Layer C documents | Seeded and reproducible |
 | `evaluation` | Measure extraction, model and rules against the stage targets (see 3.12); work out the share of drafts a reviewer accepts (see 3.17) | Read-only, no LLM, nothing stored in the database |
+| `deploy/` (not in `src/`) | The images, the Compose fallback and the Kubernetes manifests (see 3.23 to 3.28) | Same images in Compose and on k3s |
 
 ## 3.3 Request flow
 
-1. User uploads a denial. File goes to object storage, a row goes to `denials`.
-2. A background job runs extraction; fields are saved with a confidence score.
-3. Rules run. A hard fail (for example, the appeal window has closed) stops here.
-4. The ML model scores the appeal. Score plus expected value is stored.
-5. If the score clears the threshold, the agent retrieves evidence and drafts a letter.
-6. The draft appears on the dashboard as **Needs review**.
-7. A human edits, approves or rejects. Every action is written to the audit log.
+1. A user uploads one denial letter, a `.txt` file or a PDF with a text layer
+   (`POST /uploads`). The API reads the text, stores it in `uploads` (the file itself is not
+   kept) with a `queued` row in `jobs`, and answers `202` (see 3.19).
+2. A background task in the same API process runs the job. Extraction reads the letter's
+   fields with a confidence each and stores them in `upload_extractions`.
+3. Rules run (see 3.11). A hard fail, such as a closed appeal window, ends the job with end
+   state `stopped_by_rules`.
+4. The model scores the appeal (see 3.10). The score is stored only in the trace.
+5. If the score clears the threshold, the agent finds evidence and drafts a letter. The
+   letter is kept only if every citation passes the check (see 3.15, 3.16). The trace goes to
+   `upload_agent_runs` and the letter to `upload_drafts`.
+6. The browser polls `GET /jobs/{id}`. The job appears on the worklist with its end state,
+   and a drafted one waits for review.
+7. A reviewer or an admin edits the draft (each edit is a new `draft_revisions` row), and an
+   admin approves or rejects it. Each action is written to `audit_events` (see 3.20).
+   Nothing is sent anywhere.
 
-Everything after step 1 is asynchronous. The UI polls job status.
-
-This is the flow of the finished product. What exists today is steps 1 to 5, in two ways.
-For the made-up claims of the synthetic sample, a command runs the agent loop on a stored
-extraction: rules, score, evidence, draft and a trace that ends in a stop for a person
-(see 3.16). For an uploaded denial letter, `POST /uploads` stores the letter's text (not the
-file, and not in object storage) and queues a background job that extracts the fields, runs
-the same loop and stores the result in the account's own tables; `GET /jobs/{id}` gives its
-status (see 3.19). Sign-up, login and the logged-in user's own record work through the API
-(see 3.18). Step 7 works through the API: a reviewer reads the worklist and the denial
-detail and edits the draft, an admin approves or rejects it, and each action is written to
-the audit log (see 3.20). In the browser, the web dashboard covers sign-up, login, the
-upload with its job status and the worklist (see 3.21), and the denial detail, the draft
-review and the overview (see 3.22).
+Everything after step 1 runs in the background. The same agent loop can also run from the
+command line on the made-up claims of the synthetic sample, storing its results in
+`agent_runs` and `appeal_drafts` (see 3.16).
 
 ## 3.4 Data model (core tables)
 
-| Table | Holds |
-|---|---|
-| `accounts` | Tenants |
-| `users` | Login (email unique across all accounts, Argon2id password hash), role, account link |
-| `claims` | Claim header, payer, amounts |
-| `denials` | Denial record, reason codes, source file |
-| `extractions` | Fields pulled from a document, with confidence and model version |
-| `predictions` | Score, model version, features used |
-| `evidence_documents` | One published policy document: source, section number, title, version |
-| `evidence_chunks` | Policy text cut into chunks |
-| `evidence_chunk_embeddings` | The vector an embedding model gave for one chunk, used by the search |
-| `appeal_drafts` | A drafted appeal letter that passed the citation validator, for one claim of the synthetic sample |
-| `agent_runs` | What the agent loop did with one claim of the synthetic sample: the end state and the trace of the five steps |
-| `uploads` | One denial letter a user uploaded: the file name, its type (`text` / `pdf`), its size and the text read from it; the file itself is not kept |
-| `jobs` | The background job of one upload: status, failure code, the loop's end state and the times |
-| `upload_extractions` | The letter fields a model read from one upload, with the prompt version and the model |
-| `upload_agent_runs` | What the agent loop did with one upload: the end state and the trace |
-| `upload_drafts` | The checked appeal letter of one upload, when the loop drafted one, and its review: status, who, when, the reject reason, the approved version |
-| `draft_revisions` | One version of a draft a person edited; the model's draft stays in `upload_drafts` |
-| `audit_events` | One thing a person did: account created, upload, edit, approve, reject; who, when, which job, no text |
-| `drafts` | Generated letter, citations, status |
+Migrations 0001 to 0024 make 29 tables. They come in three kinds (the rule is in
+[conventions 6.4](06-conventions.md#64-database)):
 
-Every business table carries `account_id`, and every query filters on it. This is the
-single most important rule in the codebase.
+- **Business** tables hold customer data. They carry `account_id`, and every query filters
+  on it.
+- **Public reference** tables hold data loaded or made from public sources, shared by every
+  account. They have no `account_id`.
+- **Operational** tables are the system's own bookkeeping. They hold no customer data and no
+  `account_id`.
 
-Two kinds of table hold no customer data and have no `account_id`: public reference tables
-loaded from public sources, and operational tables such as `llm_calls` (see 3.8) and
-`login_failures` (see 3.18). The rule
-is in [conventions 6.4](06-conventions.md#64-database).
+| Table | Kind | Migration | Holds |
+|---|---|---|---|
+| `accounts` | business (the root) | 0001, 0024 | One account: the shared one, or one person's own (`kind`) |
+| `users` | business | 0001, 0015, 0016, 0019, 0021, 0022 | Login (email unique across all accounts, Argon2id password hash), role, account link, token version |
+| `claims` | business | 0001 | Claim header, payer, amounts. Made by the first migration; the product does not use it |
+| `denials` | business | 0001 | Denial record, reason code, status. Made by the first migration; the product does not use it |
+| `issuer_denial_stats` | public reference | 0002 | Claim and appeal counts per issuer from the Marketplace PUF (see 02) |
+| `plan_denial_stats` | public reference | 0003 | The same counts per plan |
+| `claim_samples` | public reference | 0004 | One claim of the synthetic DE-SynPUF sample |
+| `claim_sample_lines` | public reference | 0004 | The lines of one sample claim |
+| `claim_sample_labels` | public reference | 0005 | The denial and appeal proxy labels of one sample claim, with the rule version and split |
+| `generated_documents` | public reference | 0006, 0007 | A generated letter, clinical note or prior-authorisation record, with its seed (see 02) |
+| `llm_calls` | operational | 0008 | One model call: provider, model, tokens, cost (see 3.8) |
+| `document_extractions` | public reference | 0009 | The fields a model read from one generated document (see 3.9) |
+| `evidence_documents` | public reference | 0010, 0014 | One published policy document: source, section number, title, version |
+| `evidence_chunks` | public reference | 0010 | Policy text cut into chunks |
+| `evidence_chunk_embeddings` | public reference | 0011 | The vector an embedding model gave for one chunk, used by the search |
+| `appeal_drafts` | public reference | 0012 | A drafted letter that passed the citation check, for one claim of the synthetic sample |
+| `agent_runs` | public reference | 0013 | What the agent loop did with one sample claim: the end state and the trace |
+| `uploads` | business | 0016, 0023 | One uploaded letter: the file name, its type (`text` / `pdf`), its size, its text and who uploaded it; the file itself is not kept |
+| `jobs` | business | 0016, 0017 | The background job of one upload: status, failure code, the loop's end state, the times, the cost |
+| `upload_extractions` | business | 0016 | The letter fields a model read from one upload, with the prompt version and the model |
+| `upload_agent_runs` | business | 0016 | What the agent loop did with one upload: the end state and the trace |
+| `upload_drafts` | business | 0016, 0017 | The checked letter of one upload, when the loop drafted one, and its review: status, who, when, the reject reason, the approved version |
+| `draft_revisions` | business | 0017 | One version of a draft a person edited; the model's draft stays in `upload_drafts` |
+| `audit_events` | business | 0017, 0019–0023 | One thing a person did (account created, upload, edit, approve, reject, password and email events, joining); who, when, which job, no text |
+| `login_failures` | operational | 0018 | One failed login, keyed by a hash of the email or the client IP, for the login limit (see 3.18) |
+| `user_identities` | business | 0021 | A Google identity linked to one user |
+| `email_codes` | business | 0022 | A hashed 6-digit code sent to confirm an email or reset a password |
+| `mail_sends` | operational | 0022 | One email sent, for the daily mail cap; no address, no text |
+| `individual_upload_days` | operational | 0024 | One count per UTC day of the uploads of all personal accounts, for the daily cap |
 
-`accounts` and `users` are the first business tables the product uses: everyone who signs up
-joins one shared account (the first sign-up writes its `accounts` row, every sign-up one
-`users` row), and every API request reads the logged-in user (see 3.18). Since migration 0015
-an email belongs to one user of one account, so login can find the account from the email.
-That lookup is the one query on `users` without an `account_id` filter.
+Migration 0020 made `password_reset_tokens`; 0022 dropped it when reset links became codes.
 
-The five upload tables (`uploads`, `jobs`, `upload_extractions`, `upload_agent_runs`,
-`upload_drafts`, migration 0016) are the first business tables that hold a customer's
-documents. Each carries `account_id`, and every link between them carries it too, so a row
-of one account cannot point at a row of another (see 3.19). They take the place of the
-planned `denials`, `extractions` and `drafts` for an uploaded letter: what a model reads from
-an upload is in `upload_extractions`, the checked letter in `upload_drafts`. What a model
-reads from the generated documents stays in the public reference table
-`document_extractions` (see 3.9).
+Only one query on a business table has no `account_id` filter: the lookup of a user by email
+at login, sign-up, password reset and Google sign-in. It is safe because an email belongs to
+one user of one account (since migration 0015). The conditions are in
+[conventions 6.4](06-conventions.md#64-database).
 
-The business table `predictions` does not exist. The win-probability model is trained and
-saved as files (see 3.10). A score is stored only in the agent's trace: in `agent_runs` for
-a claim of the synthetic sample (see 3.16), in `upload_agent_runs` for an upload (see 3.19).
-
-A rule verdict has no table of its own either. The rules are a function that is called when
-a verdict is needed (see 3.11). The agent's trace is the one place a verdict is written
-down: the outcome and its reasons, in the public reference table `agent_runs` (see 3.16).
-
-An evaluation result is not stored either. The evaluation harness prints its report and
-writes nothing (see 3.12). The verdicts of a draft review are a local file, not a table
-(see 3.17). A person's review of an upload's draft is in `upload_drafts` and
-`draft_revisions`, and the planned `reviews` and `audit_log` became those columns and the
-business table `audit_events` (migration 0017, see 3.20).
-
-`evidence_documents` and `evidence_chunks` exist and are public reference tables: the policy
-text is public and shared by every account (see 3.13). The vectors of the chunks are in a
-table of their own, `evidence_chunk_embeddings`, also a public reference table (see 3.14).
-
-The business table `drafts` does not exist. A drafted letter for a claim of the synthetic
-sample is stored in the public reference table `appeal_drafts` (see 3.15); one for an upload
-in the business table `upload_drafts` (see 3.19).
+Some tables of the first plan were never made: `extractions`, `predictions`, `drafts`,
+`reviews` and `audit_log`. They became `upload_extractions`, the trace (a score is stored only
+there), `upload_drafts`, the review columns of `upload_drafts` with `draft_revisions`, and
+`audit_events`. A rule verdict, an evaluation result and a draft acceptance verdict have no
+table either: they are in the trace, the printed report (3.12) and a local file (3.17).
 
 ## 3.5 Tech stack
 
@@ -154,12 +206,12 @@ in the business table `upload_drafts` (see 3.19).
 | Database | PostgreSQL + pgvector | One store for rows *and* vectors — keeps cost near zero |
 | Jobs | A `jobs` table in Postgres, run by FastAPI background tasks in the API process (see 3.19) | No extra broker or worker to pay for or run |
 | ML | scikit-learn | Strong on tabular, cheap to train |
-| LLM | Hosted API primary, open-weight fallback | Quality with a cost escape hatch |
-| Frontend | React + Vite + TypeScript | Fast build, typed |
+| LLM | Hosted API primary (`gpt-4o-mini`, embeddings `text-embedding-3-small`), an open-weight model through an OpenAI-compatible service as fallback (see 3.8) | Quality with a cost escape hatch |
+| Frontend | React + Vite + TypeScript, served by Caddy | Fast build, typed |
 | Tests | pytest, coverage; Vitest + Testing Library for the frontend | Standard, cheap |
 | Lint/format | ruff, black, mypy; ESLint, Prettier, `tsc` for the frontend | One command each |
-| Checks | Automated check script | Lint, types and tests in one step |
-| Runtime | Containers on one small always-on machine | Under budget |
+| Checks | GitHub Actions; nine required checks: `checks`, `zizmor`, `frontend`, `trivy`, `lock-tests`, `image-scan`, `backup-restore`, `manifests`, `smoke` (see 3.24, 3.26) | Nothing merges into `main` without them |
+| Runtime | One Oracle A1 machine (Always Free), k3s, Argo CD following `main` (see 3.26, 3.27); `deploy/prod/compose.yml` as the fallback (see 3.23) | Under budget |
 
 ## 3.6 Folder layout
 
@@ -168,6 +220,7 @@ denial-appeal-agent/
 ├─ src/
 │  ├─ agent/        orchestration loop and tools
 │  ├─ api/          FastAPI routes, auth, schemas
+│  ├─ config/       settings, log setup
 │  ├─ db/           models, migrations, session
 │  ├─ drafting/     cited appeal letters and the citation validator
 │  ├─ evaluation/   measured results against the stage targets
@@ -180,10 +233,10 @@ denial-appeal-agent/
 │  ├─ review/       worklist, denial detail, draft review, audit log, costs
 │  ├─ rules/        deterministic policy checks
 │  └─ synth/        synthetic document generation
-├─ tests/           mirrors src/
+├─ tests/           mirrors src/, plus tests of deploy/ and pipelines/
 ├─ pipelines/       runnable end-to-end scripts
 ├─ frontend/        React dashboard
-├─ config/          prompts, evaluation question sets, rule config
+├─ config/          prompts, evaluation question sets
 ├─ deploy/          container and deployment manifests
 ├─ docs/            these documents
 ├─ .github/         workflows and the Dependabot config
@@ -193,14 +246,14 @@ denial-appeal-agent/
 
 ## 3.7 Non-functional targets
 
-| Concern | Target |
-|---|---|
-| Upload to draft ready | < 2 minutes |
-| API response (non-job) | < 300 ms at p95 |
-| Test coverage on `src/` | ≥ 70% |
-| Cost | < $5/month |
-| Secrets | Environment only, never stored in the project |
-| Auditability | Every automated decision reconstructable from the log |
+| Concern | Target | Measured (v1.0.0) |
+|---|---|---|
+| Upload to draft ready | < 2 minutes | 12.0 s in the Stage 5 done-condition run ([05](05-build-plan.md)); 10.2 s to 15.7 s in the earlier runs (3.20 to 3.22); about 15 s on the server (3.27) |
+| API response (non-job) | < 300 ms at p95 | Not measured |
+| Test coverage on `src/` | ≥ 70% | 99.87% (4,132 tests); frontend 99.79% of lines (479 tests) |
+| Cost | < $5/month | Oracle $0.00 + model $0.001617 (3.28) |
+| Secrets | Environment only, never stored in the project | Settings from the environment; on the server, sealed secrets (3.26) |
+| Auditability | Every automated decision reconstructable | A person's actions are in `audit_events` (3.20); the automated steps are in the stored trace, `upload_agent_runs` (3.19) |
 
 ## 3.8 LLM gateway
 
@@ -793,7 +846,7 @@ The deadline rule:
 - A missing letter date leaves the date-order check out. The passed check still runs.
 - The rule reads the deadline as printed and never computes one. The 180-day appeal window
   on the generated letters is made up
-  ([02-data.md 2.4.1](02-data.md#241-generated-so-far-denial-letters-v1)), so no real law is
+  ([02-data.md 2.4.1](02-data.md#241-generated-denial-letters-v1)), so no real law is
   used.
 
 The amount rule:
@@ -4549,7 +4602,7 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   gap is milliseconds, far below network noise, but not zero (and sign-up's `409` already
   tells a confirmed email apart).
 - **Code emails may land in spam.** The sender is one Gmail address verified at Brevo, not a
-  domain of our own; a domain sender comes with the deployment (Stage 6), a `.env` change.
+  domain of our own. Stage 6 kept it; a domain sender would be a settings change.
 - **A code email can be lost.** It is sent after the answer in the one API process (3.19);
   a restart at that moment drops it, and the user asks for a new code.
 - **Whoever reads the mailbox can reset the password.** That is how email reset works.
@@ -4626,8 +4679,8 @@ failed sign-up does not carry the email or the hash. This holds for the pipeline
   `INDIVIDUAL_SIGNUP_ENABLED` is on, any Gmail or Workspace address; each such individual
   still gets only the upload caps).
 - **Google sign-in works only at the address on file in Google Cloud.** The redirect URL must
-  match `APP_PUBLIC_URL` + `/auth/google/callback` exactly; the production URL is added when
-  the app has a public address (Stage 6).
+  match `APP_PUBLIC_URL` + `/auth/google/callback` exactly. The production URL was added in
+  Stage 6 (3.27, [07-setup-guide.md](07-setup-guide.md)).
 - **The API image writes no uvicorn access log.** That log writes each path with its query, so
   it would record the callback's `?code=...&state=...`. The code works once and needs the secret
   and the flow cookie, but it should not sit in logs, so `deploy/api/Dockerfile` starts uvicorn
@@ -4862,8 +4915,9 @@ measurement, with a draft, is in 3.20.
   trained on features from claim rows (3.10). A wrong extracted amount changes the score.
 - **The raw file is not kept.** Only its text is stored, so a PDF cannot be shown again as
   it was.
-- **The text is stored in plain form in Postgres.** Encryption at rest and an access log
-  ([02-data.md 2.7](02-data.md#27-privacy)) come with the deployment (Stage 6).
+- **The text is stored in plain form in Postgres.** The app does not encrypt it; on the server
+  Oracle encrypts the disk with Oracle's keys (3.23, 3.27). There is no access log on purpose
+  (3.23). See also [02-data.md 2.7](02-data.md#27-privacy).
 - **`GET /jobs/{id}` gives only the status and the end state.** The draft and everything
   else of a job are read with `GET /jobs/{id}/detail` (3.20).
 - **Nothing is sent to an insurer.** A finished job always stops for a person.
@@ -5073,7 +5127,7 @@ server log held no error and no personal field.
 
 ### Known limits
 
-- **`medical_necessity` uploads are not drafted yet.** Both ended `draft_failed`: all four
+- **`medical_necessity` uploads are not drafted.** Both ended `draft_failed`: all four
   attempts were blocked with `quote_not_in_evidence`, on the same five `cms_manual` passages.
   Some of those passages hold curly quotation marks, which the validator compares exactly.
   The trace keeps no model text, so the cause is not proven.
@@ -5089,7 +5143,7 @@ server log held no error and no personal field.
 - **A job's cost can differ from `llm_calls`.** A job marked `interrupted` at startup keeps
   `cost_usd` 0, even if it already paid for calls. The meter also counts a paid call whose
   `llm_calls` row could not be saved, so a job's cost can be higher than its recorded calls.
-- **Approved means stored, not sent.** There is no export or letter file yet.
+- **Approved means stored, not sent.** There is no export or letter file.
 - **The audit log is only append-only in the code.** The database does not stop an `UPDATE`
   or `DELETE` on `audit_events`.
 - **The cost of a month is by upload date.** A job uploaded just before midnight at the end
@@ -5477,8 +5531,8 @@ it in the worklist, tried the filters and logged out.
 
 ### Known limits
 
-- **Served beside the API since 3.23.** The web image builds the files and Caddy serves them
-  with the API on one site; this measurement ran on the dev server.
+- **Measured on the dev server.** In the images, Caddy serves the built files with the API on
+  one site (3.23); this measurement predates that.
 - **Login and `GET /me` were not exercised live in this measurement.** After logout the guard
   sent the user to login from the session already in the cache, with no request. Both are
   covered by tests with a stubbed `fetch`, and both ran live in the measurement of 3.22.
@@ -5646,14 +5700,14 @@ numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API nu
   confirm "Approving version 0". It is the API's numbering and the audit log's, kept on
   purpose.
 - **No highlighting on the letter.** The extraction keeps no positions, so a field cannot be
-  marked on the letter or jumped to (04 screen 6).
+  marked on the letter or jumped to (04 screen 5).
 - **No reasons behind the score.** The trace has the score and the threshold only.
 - **A citation shows its quote, not the whole chunk.** Seeing the chunk would need a new API
   route.
 - **The overview is counts and costs only.** Money at risk, win rate, payers and overdue
   appeals are not in `GET /overview`; the screen says they are not shown yet.
 - **Leaving with unsaved edits is not blocked.** The edits are lost without a warning.
-- **Approved means stored, not sent.** As in 3.20, there is no export or letter file yet.
+- **Approved means stored, not sent.** As in 3.20, there is no export or letter file.
 - **The API types are written by hand** (3.21), now including the detail, the draft and the
   overview.
 - **One measurement**, on one text letter.
@@ -5943,10 +5997,12 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
 
 ### Known limits
 
-- **Dependabot is unproven.** It runs only from `main`, so the config has passed GitHub's schema
-  check and nothing more. Three questions stay open until its first run: does it update
-  `requirements.txt` with hashes when no `.in` file sits next to it, does it read
-  `deploy/api/.python-version` and stay on Python 3.11, and does it read the name `compose.yml`.
+- **Dependabot is proven for npm only.** Its first run opened the grouped npm pull request #93
+  (2026-10-30), still open: its `frontend` job fails at install, `typescript` 7 against
+  `typescript-eslint` 8. No pull request for pip, Docker or Compose is on record, so three
+  questions stay open: does it update `requirements.txt` with hashes when no `.in` file sits
+  next to it, does it read `deploy/api/.python-version` and stay on Python 3.11, and does it
+  read the name `compose.yml`.
 - **A lock bump changes versions only.** With no `.in` file, Dependabot rewrites the lines already
   in the lock and resolves nothing, so a new version that needs a package the lock lacks is not
   added. The `checks` job installs from `pyproject.toml` and never sees this. The `pip check` step in the
@@ -5971,8 +6027,9 @@ would have skipped `requirements.lock` with no error. Trivy lists it under this 
 
 A merge to `main` builds both images for both platforms, scans the arm64 ones, publishes them to
 GitHub's registry (GHCR), signs them, checks the signatures the way the cluster would, and opens a
-pull request that names the new images. The server is not involved: nothing pulls these images
-yet. Built in `chore/image-pipeline` (Stage 6). No migration, no model call, no server.
+pull request that names the new images. Merging that pull request is what deploys them: Argo CD
+on the server follows `main` (3.26, 3.27). Built in `chore/image-pipeline` (Stage 6). No
+migration, no model call.
 
 ### The code
 
@@ -6050,6 +6107,8 @@ be different versions.
   and passed, it merged by itself, and it started no new build. The ruleset's
   `require_extra_approval_for_unattributed_changes` did not hold it back. It replaced the digests
   from the branch run.
+- **The published images serve production** since 2026-11-02: the server runs them and
+  `/health` answers `200` (3.27).
 
 ### Known limits
 
@@ -6064,9 +6123,6 @@ be different versions.
   an older one to close. A run stopped between opening a pull request and turning auto-merge on
   leaves one that reads as paused: nothing deploys until a person closes it. The run says so in a
   warning.
-- **The published images have not been fully started.** Docker on arm64 ran the published `web` and
-  loaded the app from the published `api` (design check, 2026-11-01), but nothing has answered
-  `/health` from a published image. The smoke test (3.26) builds its own images.
 - **A finding only on arm64 shows up after the merge.** `image-scan` cannot see it; the merge stands
   and `scan` fails, so `publish` never starts and nothing deploys until it is fixed.
 - **Every merge builds and deploys, docs included.** Only the Kustomize folder is ignored.
@@ -6431,8 +6487,8 @@ The server's login cannot read the bucket, so a restore starts in the Oracle con
    decrypt). Nothing decrypted touches the disk.
 4. Compare `row-counts.sql` on the restored copy with production.
 
-Restoring onto a rebuilt server has not been tried yet; the setup guide (`docs/setup-guide`, the
-last Stage 6 branch) covers it.
+Restoring onto a rebuilt server has not been tried;
+[07-setup-guide.md](07-setup-guide.md) 7.4 and 7.5 describe it (7.5 is marked not tried).
 
 Without the gpg private key no backup can be opened; without the Sealed Secrets key every value in
 `app-secrets` and `backup-secrets` must be sealed again for a new controller.

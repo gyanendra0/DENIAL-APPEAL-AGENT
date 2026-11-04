@@ -17,39 +17,39 @@ GenAI + classical ML + an agent loop, on top of public data.
   skipped, so winnable cases get dropped.
 - **Three techniques in one product.** Extraction (GenAI), win prediction (ML), and
   letter drafting with retrieval and tools (agentic).
-- **Human stays in charge.** Nothing is sent without approval, and every automated
-  decision is logged.
+- **Human stays in charge.** Nothing is sent anywhere, every automated step is kept in a
+  stored trace, and every action a person takes is in the audit log.
 
 ## How it works
 
 ```text
-Denial document
+Denial letter (.txt or a PDF with text)
       |
       v
-[1] Read it        -> what kind of denial, which codes, which claim
+[1] Read it        -> the denial reason, the amounts, the dates
       v
-[2] Score it       -> probability this appeal succeeds, and what it is worth
+[2] Check rules    -> appeal window closed or amount too small: stop here
       v
-[3] Decide         -> appeal / do not appeal / send to a human to judge
+[3] Score it       -> probability this appeal succeeds
       v
-[4] Build the case -> pull the policy text and records that support the argument
+[4] Build the case -> search the public policy text that supports the argument
       v
-[5] Draft          -> write the appeal letter, cite the evidence
+[5] Draft          -> write the appeal letter; every citation is checked against the evidence
       v
-[6] Human approves -> person edits, approves or rejects. Nothing auto-sends.
+[6] Human reviews  -> a reviewer edits, an admin approves or rejects. Nothing is sent.
 ```
 
-## Intended shape
+## Shape as built
 
-| Thing | Direction |
+| Thing | As built in v1.0.0 |
 |---|---|
 | Built by | One person, end to end |
 | Backend | Python, FastAPI |
-| Database | PostgreSQL with pgvector |
-| Frontend | React + Vite + TypeScript |
-| LLM | Hosted API primary, open-weight fallback |
-| Runtime | A single small always-on machine |
-| Budget | Under $5/month all in |
+| Database | PostgreSQL 16 with pgvector |
+| Frontend | React + Vite + TypeScript, served by Caddy |
+| LLM | `gpt-4o-mini` (and `text-embedding-3-small`) primary, an open-weight model as fallback, under a monthly budget cap |
+| Runtime | One Oracle A1 machine (Always Free) with k3s and Argo CD |
+| Budget | Under $5/month all in (measured: Oracle $0.00, model $0.001617) |
 
 ## Documentation
 
@@ -65,16 +65,33 @@ Denial document
 
 ## Status
 
-**Stages 0 to 5 are released (`v0.6.0`); Stage 6, deployment, is in progress.** The API
-signs users up into one shared account, takes an uploaded denial letter through extraction,
-rules, scoring, evidence and drafting, lets a reviewer edit the draft and an admin approve or
-reject it. Each user sees only the letters they uploaded; an admin sees them all. The web
-dashboard covers all of it in the browser: sign-up, login, the upload, the worklist, the
-denial beside its draft, the review, and an overview. A user can also change or reset a
-password, confirm their email with a 6-digit code, and sign in with Google. It is served at
-`https://denial-appeal.duckdns.org` from one small Oracle machine running k3s and Argo CD, with a
-nightly encrypted backup off the machine and an uptime alert; a setup guide comes next. See the
-[build plan](docs/05-build-plan.md).
+**All seven stages are released. `v1.0.0` (2026-11-04) is the current version.** It is served at
+`https://denial-appeal.duckdns.org` from one Oracle A1 machine running k3s and Argo CD, with a
+nightly encrypted backup off the machine and an uptime alert.
+
+- **What it does.** Users sign up into one shared account (allow-listed emails only).
+  Individual sign-up into personal accounts exists but is off in production. A user uploads a
+  denial letter; a background job takes it through extraction, rules, scoring, evidence and
+  drafting. A reviewer edits the draft and an admin approves or rejects it. Each user sees only
+  the letters they uploaded, and an admin sees them all.
+- **Accounts.** A user can change or reset a password, confirm their email with a 6-digit code
+  and sign in with Google.
+- **Measured.** Each stage's target was met:
+
+  | Target | Result |
+  |---|---|
+  | Extraction accuracy ≥ 85% | 93.04% |
+  | Model AUC ≥ 0.70 | 0.7539, on a proxy label |
+  | Drafts accepted ≥ 60% | 76.67% (23 of 30), scored by a model, not a person |
+  | Upload to draft < 2 minutes | 12.0 s |
+  | Cost < $5/month | Oracle $0.00, model $0.001617 |
+  | Test coverage ≥ 70% | 99.87% (4,132 Python tests), 99.79% of frontend lines (479 tests) |
+
+- **Known limits.** One API process, one letter per upload, no OCR, letter text not encrypted
+  at rest by the app, and up to 24 hours of data at risk between backups. The full list is in
+  [architecture, "Known limits of v1.0.0"](docs/03-architecture.md#known-limits-of-v100).
+
+Each stage's plan and result: the [build plan](docs/05-build-plan.md).
 
 ## Running it locally
 
@@ -217,19 +234,19 @@ docker build -f deploy/web/Dockerfile -t denial-appeal-agent-web .
 trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 denial-appeal-agent-web
 ```
 
-Three things are set by hand in GitHub, once:
+Two things are set by hand in GitHub, once:
 1. **Settings > Advanced Security:** turn on secret scanning and push protection.
-2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the status checks
-   `checks`, `lock-tests`, `frontend`, `zizmor`, `trivy` and `image-scan`. Choose **GitHub Actions**
-   as the source of each one: a pull request also shows code-scanning results named `zizmor` and
-   `Trivy`, and those are not the gates.
-3. **After the first merge:** open **Insights > Dependency graph > Dependabot** and read its first
-   run. Check that it updates `deploy/api/requirements.txt` with hashes, that it reads
-   `deploy/api/.python-version` and stays on Python 3.11, and that it reads
-   `deploy/prod/compose.yml`.
-4. **After the first green run of `manifests`, `smoke` and `backup-restore`:** add all three to the
-   required checks in the same way. A bot deploy pull request then also builds both images, about
+2. **Settings > Rules > Rulesets**, for `main`: require a pull request and the nine status checks
+   `checks`, `lock-tests`, `frontend`, `zizmor`, `trivy`, `image-scan`, `manifests`, `smoke` and
+   `backup-restore`. Choose **GitHub Actions** as the source of each one: a pull request also shows
+   code-scanning results named `zizmor` and `Trivy`, and those are not the gates. Because
+   `manifests` and `smoke` are required, a bot deploy pull request also builds both images, about
    10 minutes more on each deploy.
+
+Dependabot has opened pull requests for npm only so far. Whether it updates the hashed
+`deploy/api/requirements.txt`, stays on Python 3.11 and reads `deploy/prod/compose.yml` is still
+open: architecture [3.24](docs/03-architecture.md#324-checks-on-every-pull-request), "Known
+limits". Its pull requests are listed under **Insights > Dependency graph > Dependabot**.
 
 ## Publishing the images
 
@@ -328,17 +345,16 @@ and the private key that opens a dump is never on the server. UptimeRobot checks
 - **Monthly check** (on the 1st): Oracle Cost analysis, last month's `sum(cost_usd)` in
   `llm_calls`, and the bucket's size and newest dump.
 
-## How work is split across machines
+## Who does what
 
-| Authoring machine | Run machine |
+| Where | What happens there |
 |---|---|
-| Write code and documentation | `git init`, commit, push |
-| Record design decisions | GitHub repo, rulesets, branch protection |
-| Generate files | Install dependencies, database, run, test |
-| — | CI and deployment |
+| The development Mac | Code and docs are written and checked (lint, types, tests, the local database and the dev server). Commits are made here; the owner pushes, opens and merges pull requests, and creates the release tags |
+| GitHub | The required checks run on every pull request; a merge to `main` builds, signs and publishes the images and opens the deploy pull request |
+| The server | Argo CD applies `main` to k3s; the nightly backup runs there. Nothing is copied to it by hand except what the [setup guide](docs/07-setup-guide.md) says (the add-ons, the model files, the evidence tables) |
 
-Nothing is installed, executed or pushed from the authoring machine. Any command shown in
-these documents is meant to be run on the **run machine**.
+Unless a section says otherwise, a command in these documents runs on the development
+machine, from the repository's top folder.
 
 ## What gets committed
 
@@ -351,5 +367,7 @@ local. See `.gitignore`.
 All work follows the same workflow: no direct commits to `main`, an issue before every
 branch, one branch per feature group, pull request with green checks, squash merge.
 
-> **Note on sources.** Dataset names, links and numbers in these documents are written
-> from general knowledge. Verify each one before depending on it.
+> **Note on sources.** The loaded sources were inspected before use, and the numbers in these
+> documents were measured. The candidate sources that were never loaded
+> ([data 2.2](docs/02-data.md#22-layer-a--claims-and-denial-outcomes)) were not checked:
+> verify one before depending on it.

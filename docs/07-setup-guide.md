@@ -337,21 +337,24 @@ means a failure leaves the empty database as it was. The data travels inside SSH
 The load also brings back the backup's `alembic_version`. If a migration merged after the backup
 was taken, the database is now older than the code. Run the migration again with a new sync (not
 tried; the `migrate` hook runs on every sync), then check the revision and restart the API so it
-reads the restored database fresh. On the server, ask for the sync:
+reads the restored database fresh. On the server, first note the start time of the last sync:
+
+```
+sudo k3s kubectl -n argocd get application denial-appeal-agent \
+  -o jsonpath='{.status.operationState.phase} {.status.operationState.startedAt}{"\n"}'
+```
+
+Then ask for the sync:
 
 ```
 sudo k3s kubectl -n argocd patch application denial-appeal-agent --type merge \
   -p '{"operation":{"sync":{"syncStrategy":{"hook":{}}}}}'
 ```
 
-The patch returns at once; the `migrate` Job runs after it. Repeat this until it shows `Succeeded`
-with a start time later than the patch (the sync before it also reads `Succeeded`, so a plain
-`kubectl wait` would return at once):
-
-```
-sudo k3s kubectl -n argocd get application denial-appeal-agent \
-  -o jsonpath='{.status.operationState.phase} {.status.operationState.startedAt}{"\n"}'
-```
+The patch returns at once; the `migrate` Job runs after it. Repeat the first command until the
+start time has changed and the phase shows `Succeeded` (the sync before it also reads `Succeeded`,
+so a plain `kubectl wait` would return at once). If it shows `Failed` or `Error`, read
+`sudo k3s kubectl -n denial-appeal-agent logs job/migrate` and do not restart the API.
 
 Then check the revision and restart the API:
 
@@ -359,12 +362,13 @@ Then check the revision and restart the API:
 sudo k3s kubectl -n denial-appeal-agent exec db-0 -- psql -U app -d app --tuples-only --no-align \
   -c 'SELECT version_num FROM alembic_version'
 sudo k3s kubectl -n denial-appeal-agent rollout restart deployment/api
+sudo k3s kubectl -n denial-appeal-agent rollout status deployment/api
 sudo k3s kubectl -n argocd get application denial-appeal-agent
 ```
 
-**Success looks like:** the sync shows `Succeeded` with the new start time, the revision printed is
-the number of the newest file in `src/db/migrations/versions` (`0024` on 2026-11-04), and the last
-command shows `Synced Healthy`.
+**Success looks like:** the sync shows `Succeeded` with a new start time, the revision printed is
+the number of the newest file in `src/db/migrations/versions` (`0024` on 2026-11-04), `rollout
+status` ends with `successfully rolled out`, and the last command shows `Synced Healthy`.
 
 Compare the counts with the ones of 7.3.1:
 

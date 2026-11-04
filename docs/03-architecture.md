@@ -154,7 +154,7 @@ Migrations 0001 to 0024 make 29 tables. They come in three kinds (the rule is in
 | Table | Kind | Migration | Holds |
 |---|---|---|---|
 | `accounts` | business (the root) | 0001, 0024 | One account: the shared one, or one person's own (`kind`) |
-| `users` | business | 0001, 0015, 0019 | Login (email unique across all accounts, Argon2id password hash), role, account link, token version |
+| `users` | business | 0001, 0015, 0016, 0019, 0021, 0022 | Login (email unique across all accounts, Argon2id password hash), role, account link, token version |
 | `claims` | business | 0001 | Claim header, payer, amounts. Made by the first migration; the product does not use it |
 | `denials` | business | 0001 | Denial record, reason code, status. Made by the first migration; the product does not use it |
 | `issuer_denial_stats` | public reference | 0002 | Claim and appeal counts per issuer from the Marketplace PUF (see 02) |
@@ -171,13 +171,13 @@ Migrations 0001 to 0024 make 29 tables. They come in three kinds (the rule is in
 | `appeal_drafts` | public reference | 0012 | A drafted letter that passed the citation check, for one claim of the synthetic sample |
 | `agent_runs` | public reference | 0013 | What the agent loop did with one sample claim: the end state and the trace |
 | `uploads` | business | 0016, 0023 | One uploaded letter: the file name, its type (`text` / `pdf`), its size, its text and who uploaded it; the file itself is not kept |
-| `jobs` | business | 0016 | The background job of one upload: status, failure code, the loop's end state, the times, the cost |
+| `jobs` | business | 0016, 0017 | The background job of one upload: status, failure code, the loop's end state, the times, the cost |
 | `upload_extractions` | business | 0016 | The letter fields a model read from one upload, with the prompt version and the model |
 | `upload_agent_runs` | business | 0016 | What the agent loop did with one upload: the end state and the trace |
 | `upload_drafts` | business | 0016, 0017 | The checked letter of one upload, when the loop drafted one, and its review: status, who, when, the reject reason, the approved version |
 | `draft_revisions` | business | 0017 | One version of a draft a person edited; the model's draft stays in `upload_drafts` |
-| `audit_events` | business | 0017 | One thing a person did (account created, upload, edit, approve, reject, password and email events, joining); who, when, which job, no text |
-| `login_failures` | operational | 0018 | One failed login, keyed by a hash of the email or the address, for the login limit (see 3.18) |
+| `audit_events` | business | 0017, 0019–0023 | One thing a person did (account created, upload, edit, approve, reject, password and email events, joining); who, when, which job, no text |
+| `login_failures` | operational | 0018 | One failed login, keyed by a hash of the email or the client IP, for the login limit (see 3.18) |
 | `user_identities` | business | 0021 | A Google identity linked to one user |
 | `email_codes` | business | 0022 | A hashed 6-digit code sent to confirm an email or reset a password |
 | `mail_sends` | operational | 0022 | One email sent, for the daily mail cap; no address, no text |
@@ -5127,7 +5127,7 @@ server log held no error and no personal field.
 
 ### Known limits
 
-- **`medical_necessity` uploads are not drafted yet.** Both ended `draft_failed`: all four
+- **`medical_necessity` uploads are not drafted.** Both ended `draft_failed`: all four
   attempts were blocked with `quote_not_in_evidence`, on the same five `cms_manual` passages.
   Some of those passages hold curly quotation marks, which the validator compares exactly.
   The trace keeps no model text, so the cause is not proven.
@@ -5143,7 +5143,7 @@ server log held no error and no personal field.
 - **A job's cost can differ from `llm_calls`.** A job marked `interrupted` at startup keeps
   `cost_usd` 0, even if it already paid for calls. The meter also counts a paid call whose
   `llm_calls` row could not be saved, so a job's cost can be higher than its recorded calls.
-- **Approved means stored, not sent.** There is no export or letter file yet.
+- **Approved means stored, not sent.** There is no export or letter file.
 - **The audit log is only append-only in the code.** The database does not stop an `UPDATE`
   or `DELETE` on `audit_events`.
 - **The cost of a month is by upload date.** A job uploaded just before midnight at the end
@@ -5707,7 +5707,7 @@ numbering. Fixed with `MODEL_DRAFT_VERSION` and test data numbered as the API nu
 - **The overview is counts and costs only.** Money at risk, win rate, payers and overdue
   appeals are not in `GET /overview`; the screen says they are not shown yet.
 - **Leaving with unsaved edits is not blocked.** The edits are lost without a warning.
-- **Approved means stored, not sent.** As in 3.20, there is no export or letter file yet.
+- **Approved means stored, not sent.** As in 3.20, there is no export or letter file.
 - **The API types are written by hand** (3.21), now including the detail, the draft and the
   overview.
 - **One measurement**, on one text letter.
@@ -6487,8 +6487,8 @@ The server's login cannot read the bucket, so a restore starts in the Oracle con
    decrypt). Nothing decrypted touches the disk.
 4. Compare `row-counts.sql` on the restored copy with production.
 
-Restoring onto a rebuilt server has not been tried yet; the setup guide (`docs/setup-guide`, the
-last Stage 6 branch) covers it.
+Restoring onto a rebuilt server has not been tried;
+[07-setup-guide.md](07-setup-guide.md) 7.4 and 7.5 describe it (7.5 is marked not tried).
 
 Without the gpg private key no backup can be opened; without the Sealed Secrets key every value in
 `app-secrets` and `backup-secrets` must be sealed again for a new controller.

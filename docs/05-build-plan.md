@@ -5,8 +5,8 @@ condition that must hold before the next stage begins.
 
 **All seven stages are done.** The last one was released as `v1.0.0` on 2026-11-04. Each
 stage below keeps its plan and adds its **Result**: the tag date and what was measured. The
-plan has no Stage 7; the open limits of v1.0.0 are in the "Known limits" of
-[03-architecture.md](03-architecture.md), sections 3.18 to 3.28.
+plan has no Stage 7; the open limits of v1.0.0 are in
+[03-architecture.md, "Known limits of v1.0.0"](03-architecture.md#known-limits-of-v100).
 
 Stages were not dated in advance, and none was reordered: each one relies on the previous.
 
@@ -158,7 +158,8 @@ decision of 2026-10-11). The four earlier measurements gave 0%, 0%, 56.67% and 6
 - Sign-up, login, accounts and roles, with per-account isolation enforced in the API.
 - Upload endpoint with background job status.
 - Screens: worklist, split-view denial detail, draft review, overview dashboard. As built,
-  also sign-up, login and upload screens; see [04-product-and-dashboard.md](04-product-and-dashboard.md).
+  also sign-up, login and upload screens; see
+  [04-product-and-dashboard.md](04-product-and-dashboard.md).
 - Audit log and LLM cost tracking.
 
 **Done when:** a new user can sign up, upload a denial, and approve a draft entirely in

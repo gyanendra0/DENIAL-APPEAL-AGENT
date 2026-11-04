@@ -71,7 +71,7 @@ them like this:
     up to it.
   - **Personal accounts,** only while `INDIVIDUAL_SIGNUP_ENABLED` is on (off by default and
     in production). The person is `admin` of their own account and has monthly and daily
-    upload caps, a "no personal data" tick on every upload, and "Delete my account".
+    upload caps and "Delete my account".
 - **Isolation:** an account sees only its own data. Inside an account, a user who is not an
   admin sees only the jobs of their own uploads.
 
@@ -100,7 +100,8 @@ Short, non-technical definitions. Keep adding as new words appear.
 ### In scope (v1, built)
 
 - Upload one denial letter per upload: a UTF-8 `.txt` file or a PDF with a text layer. Only
-  the text is kept, not the file.
+  the text is kept, not the file. Every upload, in either kind of account, needs a tick that
+  says the letter holds no personal data.
 - Extract typed fields from it, with a confidence score per field.
 - Check fixed rules (appeal deadline, amount floor).
 - Predict the chance an appeal succeeds.
@@ -131,7 +132,8 @@ Short, non-technical definitions. Keep adding as new words appear.
   validator blocked every attempt (see 03, section 3.20, "Known limits").
 - **No export and no sending.** Approved means stored.
 - **A decision is final.** An approved or rejected draft cannot be reopened.
-- The full list for v1.0.0 is in the "Known limits" of 03, sections 3.18 to 3.28.
+- The full list for v1.0.0 is in
+  [03, "Known limits of v1.0.0"](03-architecture.md#known-limits-of-v100).
 
 ## 1.6 Success criteria
 

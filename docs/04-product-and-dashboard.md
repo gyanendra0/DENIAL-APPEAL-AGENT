@@ -10,8 +10,8 @@ and is invisible to every other account.
 
 | Kind | Who joins it | Notes |
 |---|---|---|
-| **Shared** | Emails or domains on the allow list | One account for the team (`SHARED_ACCOUNT_NAME`) |
-| **Personal** | Any other email, only while `INDIVIDUAL_SIGNUP_ENABLED` is on | Off by default and in production. Monthly and daily upload caps, a "no personal data" tick on every upload, "Delete my account" |
+| **Shared** | The `ADMIN_EMAILS` addresses, and emails or domains on the allow list | One account for the team (`SHARED_ACCOUNT_NAME`) |
+| **Personal** | Any other email, only while `INDIVIDUAL_SIGNUP_ENABLED` is on | Off by default and in production. Monthly and daily upload caps, "Delete my account" |
 
 Roles (`src/api/roles.py`):
 
@@ -50,7 +50,8 @@ The "how are we doing" screen.
 - Letters uploaded, drafts waiting for review, approved (and its share of decided drafts),
   average time from upload to the end of the job.
 - The model cost this month and in all, for admins only.
-- Counts and charts: jobs by status, finished jobs by end state, drafts by review.
+- Counts of jobs by status, finished jobs by end state and drafts by review; the same as
+  charts for admins only.
 
 There is no money at risk, no win rate, no breakdown by payer and no overdue count: the
 letters carry no outcome, and no deadline is tracked.
@@ -58,6 +59,7 @@ letters carry no outcome, and no deadline is tracked.
 ### 3. Upload
 
 - A drop zone (or file picker) for one `.txt` or text-layer PDF. A scanned PDF is refused.
+- A "no personal data" tick, needed for every upload in either kind of account.
 - The job's live status: `queued` → `running` → `done` or `failed`. A finished job shows its
   end state (draft waiting for review, no draft because the rules or the score stopped it, or
   the draft failed).

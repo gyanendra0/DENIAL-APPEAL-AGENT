@@ -6245,8 +6245,8 @@ of its own: the pod spec builds it from `POSTGRES_PASSWORD`, which must therefor
 
 ### Known limits
 
-- **Neither job is required yet.** Both have passed in CI; they go in the ruleset by hand. A bot
-  deploy pull request then also builds both images, about 10 minutes more on each deploy.
+- **Both jobs are required** (in the ruleset since 2026-11-04), so a bot deploy pull request also
+  builds both images, about 10 minutes more on each deploy.
 - **A rollback past a migration is blocked.** The revert brings back an older image, its migration
   Job runs `alembic upgrade head`, and that image does not know the newer revision. The Job fails,
   wave 1 is not applied, and the API keeps running the newer image, while Argo CD retries the sync
@@ -6488,6 +6488,8 @@ It is not changed in this branch.
 | Run after the fix (2026-11-03) | By hand from the CronJob, the template a scheduled run uses: `wait-for-db` answered at once, Complete in 15 s, `app-2026-11-03.dump.gpg` 19,704,056 bytes, rclone 1 file in 2.1 s. Argo CD `Healthy` again. The scheduler itself had started the failed run at 03:00:00 UTC, on time |
 | First monthly check (2026-11-03) | Oracle Cost analysis $0.00. Model spend (`llm_calls`): October none, November so far $0.001617 (4 calls). Bucket: 2 backups of 18.79 MiB each (about 38 MiB of the free 20 GB), newest 2026-11-03 |
 | Uptime alert | With Argo CD's self-heal off and `web` at 0 replicas, the "down" email came after about 5 minutes; the "up" email came after `web` was back. Self-heal on again: `Synced Healthy` |
+| First scheduled run after the fix (2026-11-04 03:00 UTC) | Job `backup-29896020` started by the scheduler: `wait-for-db` answered at 03:00:01, `app-2026-11-04.dump.gpg` 19,704,056 bytes at 03:00:09, rclone `Copied (new)` 18.791 MiB in 0.5 s, `Complete 1/1` in 14 s. The two failed pods of 2026-11-03 stay listed (job history), with no new failure |
+| Second cost check (2026-11-04) | Oracle Cost analysis $0.00. Model spend: November so far $0.001617 (4 calls, unchanged). Bucket: 3 backups of 18.79 MiB each, newest 2026-11-04. UptimeRobot 99.783% since the monitor was made, matching the alert test's down time. Recorded as the Stage 6 done condition in [7.8](07-setup-guide.md#78-stage-6-done-condition-record) |
 
 ### Known limits
 
@@ -6496,7 +6498,9 @@ It is not changed in this branch.
 - **Same Oracle account and region** as the server; losing the account loses both.
 - **No alert for a missed or failed backup.** Up to a month may pass before the monthly check shows
   it; between checks, `kubectl get jobs -n denial-appeal-agent` shows the last runs.
-- **No restore drill.** A backup that uploads but holds a broken dump is caught only by a restore.
+- **No scheduled restore drill.** One real backup was restored on 2026-11-03
+  ([7.7](07-setup-guide.md#77-rehearsal-record)); a later backup that uploads but holds a broken
+  dump is caught only by the next restore.
 - **No Oracle budget alarm;** safe only while the account stays Always Free with no Pay As You Go.
 - **One sealing key for ever.** A leak of it opens every sealed file in the repository, past and
   future.

@@ -615,4 +615,16 @@ the Secret's `DATA` count (7.4.7), not that list.
 
 ## 7.8 Stage 6 done-condition record
 
-Written in a later step of this branch.
+Stage 6 is done when the app is served continuously for under $5 a month. Read by the owner on
+2026-11-04, on the current server; nothing was changed there.
+
+| What | How | Result |
+|---|---|---|
+| The nightly backup runs by itself | `kubectl get jobs` and `kubectl logs job/backup-29896020 --all-containers` | The 2026-11-04 03:00 UTC run, the first scheduled one after the `wait-for-db` fix: `Complete 1/1` in 14 s; `wait-for-db` answered at 03:00:01; `app-2026-11-04.dump.gpg` written, 19,704,056 bytes; rclone `Copied (new)`, 18.791 MiB in 0.5 s |
+| The bucket keeps them | Oracle console, `denial-appeal-backups` → `app/` | 3 backups: 2026-11-02, 03 and 04 |
+| Served continuously | UptimeRobot, the `/health` monitor | 99.783% since the monitor was made. The missing 0.217% matches the planned alert test of 2026-11-03 ([3.28](03-architecture.md#328-backups-and-alerts)), about 5 minutes of `web` at 0 replicas |
+| Under $5 a month | Oracle Cost analysis; `sum(cost_usd)` of `llm_calls` by month through `kubectl exec` on `db-0` | Oracle $0.00 for November so far; model $0.001617 (4 calls), no rows before November |
+| Every gate required | Ruleset `protect-main`, read back with `gh api` | 9 required checks: `checks`, `zizmor`, `frontend`, `trivy`, `lock-tests`, `image-scan`, `backup-restore`, `manifests`, `smoke` |
+
+The done condition is met: the app has been served from the Oracle machine since 2026-11-02, the
+backup now runs each night without help, and the month so far cost $0.001617.

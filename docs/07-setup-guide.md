@@ -160,11 +160,13 @@ This part was done on 2026-11-03 against production; the CI job `backup-restore`
    docker run -it --rm --network restore \
      -e PGHOST=restore-db -e PGUSER=app -e PGPASSWORD=throwaway \
      -v "$PWD/deploy/k8s/base/backup:/scripts:ro" \
-     -v "$HOME/Downloads:/backup:ro" -v "$HOME/denial-appeal-keys:/keys:ro" \
+     -v "$HOME/Downloads:/backup:ro" \
+     -v "$HOME/denial-appeal-keys/backup-private-key.asc:/keys/backup-private-key.asc:ro" \
      "$DB_IMAGE" bash /scripts/restore.sh /backup/app-<date>.dump.gpg \
      /keys/backup-private-key.asc restored
    ```
-4. Count the rows:
+   Only the private key file is mounted, not the whole keys folder.
+4. Count the rows, from the repository's top folder (the `<` reads a file of the clone):
    ```
    docker exec -i restore-db psql -U app -d restored -v ON_ERROR_STOP=1 \
      --no-psqlrc --tuples-only --no-align < deploy/k8s/base/backup/row-counts.sql
@@ -354,7 +356,8 @@ sudo k3s kubectl -n argocd patch application denial-appeal-agent --type merge \
 The patch returns at once; the `migrate` Job runs after it. Repeat the first command until the
 start time has changed and the phase shows `Succeeded` (the sync before it also reads `Succeeded`,
 so a plain `kubectl wait` would return at once). If it shows `Failed` or `Error`, read
-`sudo k3s kubectl -n denial-appeal-agent logs job/migrate` and do not restart the API.
+`sudo k3s kubectl -n denial-appeal-agent logs job/migrate` and do not restart the API. That shows
+the main container; if it shows nothing, the init container failed, so add `-c wait-for-db`.
 
 Then check the revision and restart the API:
 
@@ -367,10 +370,10 @@ sudo k3s kubectl -n argocd get application denial-appeal-agent
 ```
 
 **Success looks like:** the sync shows `Succeeded` with a new start time, the revision printed is
-the number of the newest file in `src/db/migrations/versions` (`0024` on 2026-11-04), `rollout
-status` ends with `successfully rolled out`, and the last command shows `Synced Healthy`.
+the number of the newest file in `src/db/migrations/versions` (`0024` on 2026-11-04),
+`rollout status` ends with `successfully rolled out`, and the last command shows `Synced Healthy`.
 
-Compare the counts with the ones of 7.3.1:
+Compare the counts with the ones of 7.3.1, from the repository's top folder on the Mac:
 
 ```
 ssh ubuntu@<address> 'sudo k3s kubectl exec -i -n denial-appeal-agent db-0 -- psql -U app -d app \
@@ -462,12 +465,13 @@ docker pull "$WEB" && docker tag "$WEB" denial-appeal-agent-web
 ### 7.5.3 The settings file (not tried)
 
 Compose reads `deploy/prod/.env` on the machine (never in git). Make it with `nano`, one `KEY=value`
-per line, without quotes:
+per line. Write each value without quotes: drop the YAML quotes of `config.yaml` (`"3.00"` becomes
+`3.00`).
 
 | Key | Value from |
 |---|---|
 | `POSTGRES_PASSWORD`, `AUTH_TOKEN_SECRET`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM`, `GOOGLE_CLIENT_SECRET`, `ADMIN_EMAILS`, `SIGNUP_ALLOWED_EMAILS` | The password manager, the `app-secrets` entries of the same names |
-| `SITE_ADDRESS`, `APP_PUBLIC_URL`, `SHARED_ACCOUNT_NAME`, `MAIL_SMTP_HOST`, `GOOGLE_CLIENT_ID`, and every key there starting with LLM | `deploy/k8s/overlays/prod/config.yaml`, copied as they are |
+| `SITE_ADDRESS`, `APP_PUBLIC_URL`, `SHARED_ACCOUNT_NAME`, `MAIL_SMTP_HOST`, `GOOGLE_CLIENT_ID`, and every key there starting with LLM | `deploy/k8s/overlays/prod/config.yaml`, with the YAML quotes dropped |
 | `MAIL_BACKEND` | `smtp`, as in `deploy/k8s/base/config.yaml` |
 | `INDIVIDUAL_SIGNUP_ENABLED` | `false`: this path has no nightly backup (7.5.9) |
 
@@ -525,7 +529,7 @@ ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/co
 
 The revision printed is the number of the newest file in `src/db/migrations/versions`.
 
-Then compare the counts with the ones of 7.3.1:
+Then compare the counts with the ones of 7.3.1, from the repository's top folder on the Mac:
 
 ```
 ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
@@ -536,9 +540,18 @@ ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/co
 **Success looks like:** every table has the same count as on the Mac. Then remove the decrypted
 copy (end of 7.3.1).
 
-**With no backup at all:** copy only the evidence tables, with the command of 7.4.8 whose last line
-is `docker compose -f deploy/prod/compose.yml exec -T db psql -v ON_ERROR_STOP=1 -1 -U app -d app`
-(run in `~/DENIAL-APPEAL-AGENT`) in place of the `kubectl exec` line.
+**With no backup at all:** copy only the three public evidence tables from the development
+database. From the Mac, in the repository's top folder, with the development database running:
+
+```
+docker compose exec -T db pg_dump -U app -d app --data-only \
+  -t evidence_documents -t evidence_chunks -t evidence_chunk_embeddings \
+  | gzip | ssh <user>@<address> \
+  'gunzip | (cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
+      exec -T db psql -v ON_ERROR_STOP=1 -1 -U app -d app)'
+```
+
+and check 952 / 2,873 / 2,873 rows.
 
 ### 7.5.8 Check, then watch
 
@@ -585,10 +598,13 @@ when both are gone. Every step in this section is **(not tried)**.
 **The Sealed Secrets key, server still running.** Export it again from the server:
 
 ```
+umask 077
 ssh ubuntu@<address> 'sudo k3s kubectl -n kube-system get secret \
   -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml' > ~/denial-appeal-keys/sealed-secrets-key.yaml
 chmod 600 ~/denial-appeal-keys/sealed-secrets-key.yaml
 ```
+
+`umask 077` makes the file private from the moment it is written. It lasts for that terminal only.
 
 Then put the file in the password manager too.
 

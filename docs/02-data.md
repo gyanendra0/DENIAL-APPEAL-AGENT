@@ -9,7 +9,7 @@ So we build the dataset in three layers:
 
 | Layer | What it gives us | How real it is |
 |---|---|---|
-| **A. Public claims data** | Real denial rates, real reason categories, real money amounts | Real, but tabular — no documents |
+| **A. Public claims data** | Denial and appeal counts per issuer and plan; claim rows with money amounts; the denial and appeal labels | Mixed. The issuer and plan counts are real. The claim rows are **synthetic** (DE-SynPUF), and the labels come from a fixed rule (label rule v2), so they are a proxy, not observed outcomes. Tabular, no documents |
 | **B. Public policy & coding text** | The text an appeal argues against | Real |
 | **C. Generated documents** | Denial letters and clinical notes that look like the real thing | Synthetic, built on top of A |
 
@@ -18,20 +18,22 @@ retrieval. Layer C gives the **documents** for extraction and drafting.
 
 ## 2.2 Layer A — claims and denial outcomes
 
-Candidate public sources. **Verify each before relying on it.**
+Candidate public sources. The two loaded ones were inspected before their loaders were
+written (2.2.1, 2.2.2). **The three not loaded were never checked: verify each before relying
+on it.**
 
 | Source | What is in it | Use |
 |---|---|---|
 | CMS public use files (Medicare claims samples) | Claim lines, amounts, payment status | Base table, money amounts. **Loaded** (the synthetic file), see 2.2.2 |
-| CMS Transparency in Coverage / payer transparency files | Payer-level rates and coverage terms | Payer behaviour features. Not loaded in Stage 1 |
-| Healthcare.gov Marketplace issuer data | Issuer-level claim denial rates and reasons | Denial-rate priors per payer. **Loaded**, see 2.2.1 |
-| HCUP / public discharge summaries | Diagnosis and procedure mixes | Realistic clinical context. Not loaded in Stage 1 |
-| Hugging Face healthcare/insurance tabular sets | Extra volume | Augmentation only. Not loaded in Stage 1 |
+| Payer machine-readable rate files (the Transparency in Coverage rule) | Payer-level rates and coverage terms | Payer behaviour features. Not loaded (v1.0.0) |
+| Healthcare.gov Marketplace Transparency in Coverage PUF | Issuer- and plan-level claim, denial and appeal counts | Denial-rate priors per payer. **Loaded**, see 2.2.1 |
+| HCUP / public discharge summaries | Diagnosis and procedure mixes | Realistic clinical context. Not loaded (v1.0.0) |
+| Hugging Face healthcare/insurance tabular sets | Extra volume | Augmentation only. Not loaded (v1.0.0) |
 
-Two sources are loaded, and they are enough for Stage 1: the claims sample gives the rows to
-label and split, and the Marketplace file gives denial counts per issuer and plan. The other
-three are not loaded and nothing depends on them yet. A later stage that needs one of them
-verifies it first and adds its own section here.
+Two sources are loaded, and they were enough for every stage: the claims sample gives the
+rows to label and split, and the Marketplace file gives denial counts per issuer and plan.
+The other three are not loaded and nothing depends on them. Loading one would need its own
+inspection and its own section here.
 
 ### 2.2.1 Loaded source: Marketplace Transparency in Coverage PUF
 
@@ -407,7 +409,7 @@ Text the appeal letter can cite. The kinds of text the corpus is meant to hold i
 - Public code descriptors — ICD-10, CPT/HCPCS, and claim adjustment reason codes.
 - Appeal-rights and timeline guidance published by regulators.
 
-Two sources are loaded so far: the CMS national coverage determinations (2.3.1) and four
+Two sources are loaded: the CMS national coverage determinations (2.3.1) and four
 chapters of the CMS manuals (2.3.2). Each has its own command, and loading one leaves the
 other as it is. The text is stored cut into chunks, and every chunk has an embedding, so
 the chunks can be searched by meaning
@@ -694,12 +696,12 @@ Rules for generation:
 - Store the generator version and the seed with every document, so any file can be
   reproduced exactly.
 
-Built so far: the denial letter (2.4.1), the clinical note (2.4.2) and the prior-authorisation
+Built: the denial letter (2.4.1), the clinical note (2.4.2) and the prior-authorisation
 record (2.4.3), and the noise step that every document then goes through (2.4.4). The stored
 text is the noisy one. Sections 2.4.1 to 2.4.3 describe each document as its generator
 writes it, before noise.
 
-### 2.4.1 Generated so far: denial letters v1
+### 2.4.1 Generated: denial letters v1
 
 **Every letter is fabricated.** The claim it describes comes from the synthetic claims sample
 (2.2.2), and every name, id and letter date added on top is made up by the generator. No real
@@ -859,7 +861,7 @@ because new labels can change which claims are denied.
 - There are only four layouts, and the noise (2.4.4) is text-only with assumed rates, so
   extraction from these letters is probably still easier than from real, scanned ones.
 
-### 2.4.2 Generated so far: clinical notes v1
+### 2.4.2 Generated: clinical notes v1
 
 **Every note is fabricated**, in the same way as the letter (2.4.1): the claim is synthetic
 and every name and id added on top is made up. No real patient or provider appears in a note.
@@ -920,7 +922,7 @@ generator has its own version, `v1`, stored on its rows.
 - There are only three layouts. The notes are short, so the noise (2.4.4) changes them least:
   half of the notes at level `light` get no character error at all.
 
-### 2.4.3 Generated so far: prior-authorisation records v1
+### 2.4.3 Generated: prior-authorisation records v1
 
 **Every record is fabricated, more so than the other two.** The claims sample has no
 prior-authorisation field at all, so the authorisation number, the request date, the decision
@@ -1188,43 +1190,62 @@ A batch is rejected if any of these fail:
   of claims that are denied is reported but not gated, because it is not a training target.
 
 These are the general rules. Each loaded source lists the gates it actually applies in its
-own section (2.2.1, 2.2.2, 2.3.1); the class balance gate is applied by the pipeline (2.9). Where
-the published file itself breaks a general rule (for example amounts of zero, or codes
+own section (2.2.1, 2.2.2, 2.3.1, 2.3.2); the class balance gate is applied by the pipeline
+(2.9). Where the published file itself breaks a general rule (for example amounts of zero, or codes
 outside the known list), the loader relaxes that rule or applies it as a warning instead of
 a rejection, and the section says so.
 
 ## 2.7 Privacy
 
 No real patient data ever enters this project. The generated documents are fictional. Even
-so, treat uploads as sensitive: encrypt at rest, restrict by account, and keep an access
-log.
+so, uploads are treated as sensitive.
 
-Today an upload is restricted by account: its text and everything read from it are in
-business tables with `account_id` ([03-architecture.md 3.19](03-architecture.md#319-uploads-and-jobs)).
-Only the text is stored, not the file. It is not yet encrypted at rest and there is no access
-log; both come with the deployment (Stage 6). The letters uploaded so far are made up.
+As built in v1.0.0:
+
+- **Restricted by account.** An upload's text and everything read from it are in business
+  tables with `account_id`, and a non-admin reads only their own uploads
+  ([03-architecture.md 3.19](03-architecture.md#319-uploads-and-jobs)). Only the text is
+  stored, not the file.
+- **A tick on every upload.** The user must confirm the letter holds no personal data. Nothing
+  checks the text itself (3.18, "Known limits").
+- **Not encrypted at rest by the app** (a known limit). On the server, Oracle encrypts the disk
+  with Oracle's keys. That covers a disk leaving Oracle, not someone on the running machine
+  ([3.23](03-architecture.md#323-running-in-containers),
+  [3.27](03-architecture.md#327-running-on-the-server)). The nightly backups are encrypted
+  ([3.28](03-architecture.md#328-backups-and-alerts)).
+- **No access log, on purpose.** Neither the API nor Caddy writes one, because a log line could
+  hold a sign-in code from a URL ([3.23](03-architecture.md#323-running-in-containers)). The
+  audit log records what a person did, with no letter text
+  ([3.20](03-architecture.md#320-draft-review-audit-log-and-costs)).
+- **Personal accounts** (only while individual sign-up is on) can delete themselves with
+  everything they uploaded; the backups keep it until they expire after 30 days
+  ([3.18](03-architecture.md#318-api-and-auth)).
+
+The letters uploaded in every measurement were made up.
 
 ## 2.8 Layout on disk
 
 ```text
 data/
-  raw/          downloaded public files, never edited by hand
-  interim/      cleaned and joined tables
-  processed/    model-ready features and splits
-  documents/    generated documents kept as files (none yet, see below)
-  evidence/     policy corpus kept as files (none yet, see below)
+  raw/
+    claims/       the DE-SynPUF carrier claims zip (2.2.2)
+    marketplace/  the Transparency in Coverage PUF workbook (2.2.1)
+    evidence/     the downloaded policy files (2.3.1, 2.3.2)
+  review/         draft review exports and their scores, one folder per round (03, 3.17)
+  measurement/    the made-up letters uploaded in the "upload to draft ready" runs
 ```
 
-`data/` is never stored with the project. Everything in it must be
-reproducible by running a loader script.
+`data/` is never stored with the project. The files under `raw/` are downloaded by hand,
+never edited, and everything made from them is reproducible by running a loader script. The
+folders under `review/` and `measurement/` hold files made by hand or by a command whose
+output path is given on the command line.
 
-The policy corpus is not a set of files under `evidence/` either: the downloaded files are
-kept under `raw/evidence/`, and their chunks are stored in the `evidence_documents` and
-`evidence_chunks` tables (2.3.1, 2.3.2). Their embeddings are stored in `evidence_chunk_embeddings`.
-
-The generated documents (denial letters, clinical notes and prior-authorisation records) are
-not files under `documents/`: they are stored as text in the `generated_documents` table
-(2.4.1 to 2.4.4).
+Nothing made from the raw files is kept as a file. The cleaned claims, labels and splits are in
+the `claim_samples`, `claim_sample_lines` and `claim_sample_labels` tables (2.2.2, 2.5). The
+policy text is cut into chunks in `evidence_documents` and `evidence_chunks` (2.3.1, 2.3.2), with
+their embeddings in `evidence_chunk_embeddings`. The generated documents (denial letters,
+clinical notes and prior-authorisation records) are stored as text in the
+`generated_documents` table (2.4.1 to 2.4.4).
 
 ## 2.9 Running the whole pipeline
 

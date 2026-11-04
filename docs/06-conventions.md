@@ -8,18 +8,18 @@ Rules every file in this repository follows. This document covers the code itsel
 
 | Thing | Convention | Example |
 |---|---|---|
-| Modules, functions, variables | `snake_case` | `extract_denial_reason` |
-| Classes | `PascalCase` | `DenialExtractor` |
-| Constants | `UPPER_SNAKE_CASE` | `MAX_UPLOAD_BYTES` |
+| Modules, functions, variables | `snake_case` | `extract_document` |
+| Classes | `PascalCase` | `LlmGateway` |
+| Constants | `UPPER_SNAKE_CASE` | `LABEL_RULE_VERSION` |
 | Database tables | plural `snake_case` | `evidence_chunks` |
 | Database columns | singular `snake_case` | `account_id` |
 | Test files | `test_<module>.py` | `test_extractor.py` |
-| Test functions | `test_<behaviour>` | `test_rejects_upload_over_size_limit` |
+| Test functions | `test_<behaviour>` | `test_an_upload_without_a_declared_size_is_411` |
 | Frontend components | `PascalCase.tsx` | `UploadScreen.tsx` |
 | Frontend modules, functions, variables | `camelCase` | `afterLoginPath` |
 | Frontend test files | `<module>.test.ts(x)` | `UploadScreen.test.tsx` |
-| Pipeline scripts | `<verb>_<noun>.py` | `load_claims.py` |
-| Environment variables | `UPPER_SNAKE_CASE` | `LLM_MONTHLY_BUDGET_USD` |
+| Pipeline scripts | `<verb>_<noun>.py` | `load_claims_sample.py` |
+| Environment variables | `UPPER_SNAKE_CASE` | `UPLOAD_MAX_BYTES` |
 
 ---
 
@@ -29,7 +29,7 @@ Rules every file in this repository follows. This document covers the code itsel
 src/
   agent/        orchestration loop and tools
   api/          FastAPI routes, auth, request/response schemas
-  config/       settings
+  config/       settings, log setup
   db/           models, migrations, session
   drafting/     cited appeal letters and the citation validator
   evaluation/   measured results against the stage targets
@@ -42,17 +42,20 @@ src/
   review/       worklist, denial detail, draft review, audit log, costs
   rules/        deterministic policy checks
   synth/        synthetic document generation
-tests/          mirrors src/ exactly
+tests/          mirrors src/, plus tests of deploy/ and pipelines/
 pipelines/      runnable end-to-end scripts
 config/         prompts and evaluation question sets
 frontend/       React dashboard
 deploy/         container and deployment manifests
+docs/           the published documents
+.github/        workflows, the Dependabot config, the pull request template
 ```
 
 Rules:
 
-- `tests/` mirrors `src/`. `src/rag/retriever.py` is tested in
-  `tests/rag/test_retriever.py`.
+- `tests/` mirrors `src/`. `src/rag/retrieval.py` is tested in
+  `tests/rag/test_retrieval.py`. Code outside `src/` is tested in a folder of the same name:
+  `tests/deploy/` for `deploy/`, `tests/pipelines/` for `pipelines/`.
 - `frontend/tests/` mirrors `frontend/src/` the same way. `frontend/src/auth/redirect.ts` is
   tested in `frontend/tests/auth/redirect.test.ts`.
 - One responsibility per module. If the filename needs "and", split it.
@@ -151,7 +154,9 @@ Rules:
 - Tests use small fixture files stored beside them. No live downloads, no real API
   calls, no real LLM calls.
 - External services are replaced with stubs: LLM providers, HTTP sources, file storage.
-- Database tests use a throwaway schema and leave nothing behind.
+- Database tests use a separate database whose name ends in `_test` (`TEST_DATABASE_URL`).
+  It is migrated up at the start of the session and down to base at the end, and each test's
+  work is rolled back (`tests/conftest.py`), so nothing is left behind.
 - Coverage on `src/` and on `frontend/src/` must stay at or above 70%. CI fails below that.
 - Frontend tests stub `fetch`; none reaches a server.
 - Test names describe the behaviour, not the function: `test_rejects_expired_appeal`,

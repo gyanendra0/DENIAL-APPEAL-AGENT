@@ -14,6 +14,6 @@ patches:
 # pull request.
 images:
   - name: ghcr.io/gyanendra0/denial-appeal-agent/api
-    digest: sha256:c827d7182f2ffa12413edfd709da350f4d09e864f28797d529748034b7e69634
+    digest: sha256:c8504bf61a93d5ae152a9bc925aa5f3a980d5c31fa441e97ffea68e01dd5712c
   - name: ghcr.io/gyanendra0/denial-appeal-agent/web
-    digest: sha256:ffb32e8ed529c61d76f2aa6eaa528df528c3dbc756b2e7ad968832d1dfec1643
+    digest: sha256:1d1d29034186d891a96f9be0b95bc2226326dfb7d3f87b71e3b040ccc583e642

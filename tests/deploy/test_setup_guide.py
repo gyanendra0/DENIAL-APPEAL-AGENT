@@ -3,6 +3,8 @@ lands on a real heading, its pinned versions and checksums are the ones the repo
 the README points to it."""
 
 import re
+import shutil
+import subprocess
 from collections import Counter
 from pathlib import Path
 
@@ -15,6 +17,8 @@ ADDONS = ROOT / "deploy" / "k8s" / "addons"
 MAX_LINE = 100
 # Keys `deploy/prod/compose.yml` reads from `.env` itself; the app's settings never see them.
 COMPOSE_ONLY_KEYS = {"POSTGRES_PASSWORD", "SITE_ADDRESS", "MODEL_HOST_DIR"}
+# Files the guide has the reader make on the machine; they hold secrets and never enter git.
+NEVER_IN_GIT = {"deploy/prod/.env"}
 # A path inside the repository, wherever it appears: prose, a table or a command.
 REPO_PATH = re.compile(
     r"(?<![\w.-])((?:deploy|docs|src|pipelines|tests|config|frontend|\.github)/[\w./-]*)"
@@ -62,11 +66,30 @@ def _addon_pin(folder: str) -> tuple[str, str]:
     return url.group(0), digest.group(1)
 
 
+def _tracked() -> set[str]:
+    """Every file git tracks, and every folder that holds one: what a fresh clone has."""
+    git = shutil.which("git")
+    assert git is not None
+    # Only lists our own repository; nothing from outside reaches the command.
+    result = subprocess.run(  # noqa: S603
+        [git, "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    files = set(result.stdout.splitlines())
+    return files | {str(parent) for file in files for parent in Path(file).parents}
+
+
 def test_every_repository_path_in_the_guide_exists() -> None:
     paths = {match.rstrip(".,/") for match in REPO_PATH.findall(_guide())}
     assert len(paths) >= 10
-    missing = sorted(path for path in paths if not (ROOT / path).exists())
+    tracked = _tracked()
+    missing = sorted(path for path in paths - NEVER_IN_GIT if path not in tracked)
     assert not missing
+
+
+def test_files_the_guide_keeps_out_of_git_are_not_tracked() -> None:
+    named = {match.rstrip(".,/") for match in REPO_PATH.findall(_guide())}
+    assert NEVER_IN_GIT.issubset(named)
+    assert not NEVER_IN_GIT & _tracked()
 
 
 def test_every_link_in_the_guide_lands_on_a_real_heading() -> None:

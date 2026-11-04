@@ -320,8 +320,10 @@ migration builds an empty database at the newest revision.
 ### 7.4.8 Load the data (rehearsed)
 
 With a backup, the restored copy of [7.3.1](#731-restore-the-newest-backup-on-the-mac) replaces
-the empty database. The backup holds every table, the evidence tables too. From the Mac, with
-`restore-db` still running:
+the empty database. The backup holds every table, the evidence tables too. Load it before anyone
+signs in: the API is already serving, and a request during the load would see a half-replaced
+database (DNS may point at the server; just do not use the site yet). Scaling `api` to 0 does not
+help, as Argo CD's self-heal scales it back. From the Mac, with `restore-db` still running:
 
 ```
 docker exec restore-db pg_dump -U app -d restored --format=custom \
@@ -330,9 +332,23 @@ docker exec restore-db pg_dump -U app -d restored --format=custom \
 ```
 
 `--clean --if-exists` drops what the migration made before loading the copy, and one transaction
-means a failure leaves the empty database as it was. The data travels inside SSH. Then restart the
-API so it reads the restored database fresh:
-`sudo k3s kubectl -n denial-appeal-agent rollout restart deployment/api`.
+means a failure leaves the empty database as it was. The data travels inside SSH.
+
+The load also brings back the backup's `alembic_version`. If a migration merged after the backup
+was taken, the database is now older than the code. Run the migration again with a new sync (not
+tried; the `migrate` hook runs on every sync), then check the revision and restart the API so it
+reads the restored database fresh. On the server:
+
+```
+sudo k3s kubectl -n argocd patch application denial-appeal-agent --type merge \
+  -p '{"operation":{"sync":{}}}'
+sudo k3s kubectl -n denial-appeal-agent exec db-0 -- psql -U app -d app --tuples-only --no-align \
+  -c 'SELECT version_num FROM alembic_version'
+sudo k3s kubectl -n denial-appeal-agent rollout restart deployment/api
+```
+
+**Success looks like:** the application is `Synced Healthy` again, and the revision printed is the
+number of the newest file in `src/db/migrations/versions` (`0024` on 2026-11-04).
 
 Compare the counts with the ones of 7.3.1:
 
@@ -471,16 +487,23 @@ newest revision, then the API and web start.
 
 ### 7.5.7 Load the data (not tried)
 
-As in [7.4.8](#748-load-the-data-rehearsed), only into the Compose database. From the Mac, with
-`restore-db` of [7.3.1](#731-restore-the-newest-backup-on-the-mac) still running:
+As in [7.4.8](#748-load-the-data-rehearsed), only into the Compose database, and before anyone
+signs in. From the Mac, with `restore-db` of [7.3.1](#731-restore-the-newest-backup-on-the-mac)
+still running, load the copy, run the migration again (a backup older than the code brings back an
+older `alembic_version`), check the revision, then restart the API:
 
 ```
 docker exec restore-db pg_dump -U app -d restored --format=custom \
   | ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
       exec -T db pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction \
       --exit-on-error'
+ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml run --rm migrate'
+ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml \
+  exec -T db psql -U app -d app --tuples-only --no-align -c "SELECT version_num FROM alembic_version"'
 ssh <user>@<address> 'cd DENIAL-APPEAL-AGENT && docker compose -f deploy/prod/compose.yml restart api'
 ```
+
+The revision printed is the number of the newest file in `src/db/migrations/versions`.
 
 Then compare the counts with the ones of 7.3.1:
 

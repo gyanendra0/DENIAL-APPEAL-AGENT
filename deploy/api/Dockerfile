@@ -17,7 +17,7 @@
 # MODEL_DIR), tests, data. See .dockerignore.
 
 # python:3.11-slim, the Python version CI tests on; the digest names one exact image.
-FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937 AS build
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS build
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -33,7 +33,7 @@ RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.tx
 RUN /opt/venv/bin/pip check
 
 
-FROM python:3.11-slim@sha256:ae952e0a57138a4317b9b61caaa19a8217c2f356803f8d7e63aad08769950937
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 # The project is not pip-installed: uvicorn and Alembic import `src` from /app.
 ENV PATH=/opt/venv/bin:$PATH \

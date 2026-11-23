@@ -17,7 +17,7 @@ name: denial-appeal-agent-prod
 services:
   db:
     # pgvector/pgvector:pg16, multi-arch index (amd64 + arm64); the digest names one exact image.
-    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    image: pgvector/pgvector:pg16@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/prod/.env}
